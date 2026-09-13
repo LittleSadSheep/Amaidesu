@@ -586,50 +586,28 @@ async def test_choose_option_with_missing_option_id_returns_failure(
     assert "option_id" in res.error_message
 
 
-async def test_perception_failure_emits_game_error_event(
+async def test_look_at_screen_capture_failure_has_error_in_structured(
     started_agent: Dict[str, object],
 ) -> None:
-    """感知失败（FakeScreenCapture 抛异常）→ emit game.error。"""
-    agent: TextAdvGameAgent = started_agent["agent"]  # type: ignore[assignment]
-    event_bus: EventBus = started_agent["event_bus"]  # type: ignore[assignment]
-    registry: ToolRegistry = started_agent["registry"]  # type: ignore[assignment]
+    """契约直接断言：look_at_screen capture 抛异常 → success=True + error 字段含 'capture_failed'。
 
-    # 替换 look_at_screen 工具的 capture 为抛异常的 Fake
+    屏幕感知重推后的契约：capture 异常 / 空图 → 工具内降级为 ``success=True`` +
+    ``text=""`` + ``structured_content["error"]="capture_failed: ..."``，调用方据此继续；
+    不发 ``game.error`` 事件（新契约：感知失败不外抛、不发业务事件，错误信号在结构化内容里）。
+    """
+    from src.modules.tools.models import ToolInvocation
+
+    registry = ToolRegistry()
+
     class BoomCapture:
-        def capture(self, region=None):
+        def capture(self, monitor_index, region=None, max_width=None):
             raise RuntimeError("screen unavailable")
 
-    # 直接通过 ToolRegistry 把 look_at_screen 替换为用 BoomCapture 的 provider
-    # 这里我们改用 monkeypatch 风格：构造新 provider 覆盖旧 spec
-    from src.modules.vision import LookAtScreenProvider
+    provider = LookAtScreenProvider(config={}, screen_capture=BoomCapture())
+    registry.register_provider(provider)
 
-    boom_provider = LookAtScreenProvider(config={}, screen_capture=BoomCapture())
-    # 由于 register 去重，需要先 clear registry 的 look_at_screen
-    registry.clear()
-    registry.register_provider(boom_provider)
-    # Game provider 需要重新构造并注册（内容引擎构造注入直连，无需注册表条目）
-    from src.agents.text_adv import TextAdvToolProvider
-
-    content_engine = started_agent["content_engine"]  # type: ignore[assignment]
-    registry.register_provider(
-        TextAdvToolProvider(state=agent._game_state, engine=content_engine)  # noqa: SLF001
-    )
-
-    received_errors: List[GamePayload] = []
-
-    async def on_error(event_name: str, payload: GamePayload, source: str) -> None:
-        received_errors.append(payload)
-
-    event_bus.on(CoreEvents.GAME_ERROR, on_error, model_class=GamePayload)
-
-    res = await agent.feed_state_change(
-        new_screen_text="scene error",
-        options=[TextAdvOption(option_id="e", label="E", advance_key="enter")],
-    )
-    # 感知被调用（look_at_screen 触发了）；但 provider 返回 failure result
-    assert res["perception_called"] is True
-    # 推进未被触发（感知失败 → 提前 return）
-    assert res["advance_called"] is False
-    await asyncio.sleep(0.05)
-    assert len(received_errors) >= 1
-    assert "感知失败" in received_errors[0].message
+    res = await registry.invoke(ToolInvocation(tool_name="vision_look_at_screen", arguments={}, source="test"))
+    assert res.success is True
+    assert res.structured_content is not None
+    assert "capture_failed" in str(res.structured_content.get("error") or "")
+    assert res.structured_content.get("text") == ""

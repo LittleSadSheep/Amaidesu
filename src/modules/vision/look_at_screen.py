@@ -1,28 +1,28 @@
-"""look_at_screen 工具 —— 屏幕快照异步工具
+"""look_at_screen 工具 —— 屏幕快照异步工具（被动多显示器/区域感知）
 
 定位：
 - 屏幕画面 = **快照型** → 工具内异步调用（gather 等齐结果）
-- 任何 Agent 都可调用（公共工具，放 ``tools/perception/``）
+- 任何 Agent 都可调用（公共工具，注册名 ``vision_look_at_screen``）
 - 后端（屏幕采集 / 文本识别）通过 Protocol 注入
-- 后端缺失时**优雅降级**：返回成功 + 空文本 + 警告 block（不抛）
+- 后端缺失 / 抓取失败 / VLM 失败 → **不抛**，统一返回 ``success=True`` +
+  ``text=""`` + ``error``（降级语义，调用方据此继续）
 
 数据流：
-    Agent → ToolRegistry.invoke("look_at_screen")
+    Agent → ToolRegistry.invoke("vision_look_at_screen")
         → LookAtScreenProvider.invoke(invocation)        (async)
-        → ScreenCapture.capture(region)                  (PIL Image or None)
-        → TextReader.read(image, question=...)           (async; str 或空，可选)
-        → ToolExecutionResult (text content + image block)
+        → ScreenCapture.capture(monitor_index, region, max_width)   (PNG bytes or None)
+        → TextReader.read(image_bytes, question=...)     (async; str 或空)
+        → ToolExecutionResult (text content + image block + structured_content)
 
 落地形态：
 - 后端注入即可用：测试用 ``FakeScreenCapture`` + ``FakeTextReader`` 跑通感知-推进闭环
-- 生产环境：注入基于 pyautogui / mss / dxcam 的真实采集后端（与屏幕采集器同源，
-  但本工具只暴露**调用即看**的同步接口，不做变化检测轮询）
+- 生产环境：注入 ``MssScreenCapture`` + ``LlmVisionTextReader``（组合根 ``main.py``）
+- 零参 ``invoke(arguments={})`` 必须可用（``text_adv`` Agent 的调用形态）
 
-设计要点（判别口诀）：
-- ✅ 只暴露"能力契约"（ToolSpec + ToolProvider）
-- ✅ 后端可换可 mock（Protocol 注入）
-- ❌ 不内置采集器逻辑（流型归 collectors/screen/，本工具只快照）
-- ❌ 不依赖具体游戏（任何需要"看屏幕"的 Agent 都可用）
+设计要点：
+- 工具描述里写**何时用**的引导；主播提示词不动
+- 所有入参可选，缺省走 provider 配置默认
+- 图片生命周期 = 工具调用内编码，调用结束后即丢弃引用（无缓存）
 """
 
 from __future__ import annotations
@@ -49,9 +49,10 @@ from src.modules.tools.provider import BaseToolProvider
 
 logger = get_logger("look_at_screen")
 
-# VLM 调用的默认超时（秒）。下游契约重写任务可能改为可配置，本模块先以常量
-# 形式钉住，避免调用点散落魔数。失败/超时一律降级为空串，不抛。
+# VLM 调用的默认超时（秒）。生产路径改为 ``LookAtScreenProvider.ConfigSchema.vlm_timeout_ms``
+# 驱动（毫秒），保留此常量作模块级默认值与 ``LlmVisionTextReader`` 构造的兜底。
 DEFAULT_VLM_TIMEOUT_S: float = 15.0
+DEFAULT_VLM_TIMEOUT_MS: int = 15000
 
 # LlmVisionTextReader 的 VLM 调用模板键（由 Task 3 迁移到 vision/prompts/）。
 SCREEN_VLM_PROMPT_KEY = "screen_vlm_prompt"
@@ -59,7 +60,7 @@ SCREEN_VLM_SYSTEM_KEY = "screen_vlm_system"
 
 
 # ---------------------------------------------------------------------------
-# 后端协议（依赖注入点；测试用 Fake 实现，生产用 PIL/mss/pyautogui）
+# 后端协议（依赖注入点；测试用 Fake 实现，生产用 MssScreenCapture）
 # ---------------------------------------------------------------------------
 
 
@@ -74,6 +75,7 @@ class ScreenCaptureResult:
         mime_type: 图像 MIME（如 ``"image/png"``；image=None 时为空）
         region: 实际采集区域 ``[x1, y1, x2, y2]``；None 表示全屏
         captured_at_ms: 采集时刻（Unix 毫秒）
+        monitor_index: 实际使用的显示器索引（非法回退后会与入参不同）
     """
 
     image: Optional[bytes] = None
@@ -82,26 +84,35 @@ class ScreenCaptureResult:
     mime_type: str = ""
     region: Optional[List[int]] = None
     captured_at_ms: int = 0
+    monitor_index: int = 0
 
 
 class ScreenCapture(Protocol):
     """屏幕采集后端协议（依赖注入点）。
 
-    生产实现可基于 pyautogui / mss / dxcam；测试用 ``FakeScreenCapture``。
-    不存在该协议的方法视为"后端不可用" → 工具返回空快照（不抛）。
+    生产实现为 ``MssScreenCapture``（基于 mss 库，支持多显示器 / 区域相对换算
+    / 越界 clamp / 真缩放）；测试用 ``FakeScreenCapture``。后端缺失或抓取
+    失败时 ``image=None``，由 ``LookAtScreenProvider`` 走降级路径。
     """
 
     def capture(
         self,
+        monitor_index: int,
         region: Optional[Tuple[int, int, int, int]] = None,
+        max_width: Optional[int] = None,
     ) -> ScreenCaptureResult:
-        """截取屏幕快照。
+        """截取指定显示器（+ 可选区域）的快照。
 
         Args:
-            region: 可选区域 ``(x1, y1, x2, y2)``；None = 全屏
+            monitor_index: 显示器索引（1..N 物理显示器）；非法 → 后端自行
+                决定降级（``MssScreenCapture`` 回退到首个物理显示器 + warning）。
+            region: 可选区域 ``(x1, y1, x2, y2)``，相对所选显示器左上角；
+                None = 全屏。
+            max_width: 非 None 且图宽 > ``max_width`` 时做等比缩放；
+                None 或 0 = 不缩放。
 
         Returns:
-            :class:`ScreenCaptureResult`；image=None 表示后端不可用
+            :class:`ScreenCaptureResult`；``image=None`` 表示后端不可用或抓取失败。
         """
         ...
 
@@ -109,8 +120,8 @@ class ScreenCapture(Protocol):
 class TextReader(Protocol):
     """图像→文本 协议（OCR / VLM 均可实现，异步）。
 
-    可选注入：不注入时 ``look_at_screen`` 只返回图像块，不含文本。
-    异步契约是 VLM/OCR 等 I/O 调用的硬要求，避免阻塞事件循环。
+    异步契约是 VLM/OCR 等 I/O 调用的硬要求，避免阻塞事件循环。失败 / 超时
+    一律返回 ``""``（由 ``LookAtScreenProvider`` 组装 ``error`` 字段）。
     """
 
     async def read(
@@ -129,7 +140,7 @@ class TextReader(Protocol):
                 None = 实现自行决定使用默认提示
 
         Returns:
-            提取的文本（空串表示无可读文本或识别失败）
+            提取的文本（空串表示无可读文本或识别失败/超时/异常）
         """
         ...
 
@@ -141,25 +152,44 @@ class TextReader(Protocol):
 # 提供者标识统一来源（ToolSpec.provider / 追溯用），避免字面量重复
 PROVIDER_NAME = "vision"
 
+# 工具声明名（不含 provider 前缀）。注册后全名 = ``vision_look_at_screen``，
+# 与 ``text_adv`` Agent 的既有调用形态一致（名称稳定即兼容锚点）。
+TOOL_NAME = "look_at_screen"
+
 LOOK_AT_SCREEN_SPEC = ToolSpec(
-    name="look_at_screen",
+    name=TOOL_NAME,
     description=(
-        "截取屏幕快照（同步工具，调用即看）。返回当前屏幕的文本内容"
-        "（来自注入的 OCR/VLM reader）+ 图像块（base64）。"
-        "无屏幕采集后端时返回成功 + 空内容（不抛异常，Agent 可继续）。"
+        "当你需要知道屏幕上/游戏里正在发生什么时调用；可用 question 指定要看什么。"
+        "可指定 monitor_index 切显示器、region 限定子区域、max_width 控制图像最大宽度"
+        "（等比缩放，省 token）。所有参数都可选；不传则使用 provider 配置的默认值。"
+        "失败时（采集失败 / VLM 超时 / 异常）返回空文本 + error 字段，不抛异常。"
     ),
     parameters_schema={
         "type": "object",
         "properties": {
+            "question": {
+                "type": "string",
+                "description": '本次识别想问的问题（如"屏幕上显示什么"）；不传则走默认提示',
+                "minLength": 1,
+                "maxLength": 500,
+            },
             "region": {
                 "type": "array",
                 "items": {"type": "integer"},
-                "description": "可选截图区域 [x1, y1, x2, y2]；缺省=全屏",
+                "minItems": 4,
+                "maxItems": 4,
+                "description": "截图子区域 [x1, y1, x2, y2]，相对所选显示器左上角；不传则全屏",
+            },
+            "monitor_index": {
+                "type": "integer",
+                "description": "显示器索引（1..N 物理显示器；非法 → 自动回退并 warning）",
+                "minimum": 0,
             },
             "max_width": {
                 "type": "integer",
-                "description": "图像缩放最大宽度（像素，0=不缩放；省 token 用）",
-                "minimum": 0,
+                "description": "图像缩放最大宽度（像素）；超出会等比缩放；不传则走 provider 默认",
+                "minimum": 100,
+                "maximum": 3840,
             },
         },
         "required": [],
@@ -169,11 +199,27 @@ LOOK_AT_SCREEN_SPEC = ToolSpec(
     output_schema={
         "type": "object",
         "properties": {
-            "text": {"type": "string", "description": "OCR/VLM 提取的文本"},
-            "image": {"type": "string", "description": "图像 base64（PNG）"},
-            "width": {"type": "integer"},
-            "height": {"type": "integer"},
-            "backend_available": {"type": "boolean"},
+            "text": {"type": "string", "description": "VLM/OCR 提取的文本；失败时空串"},
+            "image": {
+                "type": "string",
+                "description": "图像 base64（PNG）；采集失败时缺失",
+            },
+            "width": {"type": "integer", "description": "图像宽度（像素）"},
+            "height": {"type": "integer", "description": "图像高度（像素）"},
+            "monitor_index": {"type": "integer", "description": "实际使用的显示器索引"},
+            "region": {
+                "type": "array",
+                "items": {"type": "integer"},
+                "description": "实际采集区域（相对显示器左上角）；None 表示全屏",
+            },
+            "error": {
+                "type": "string",
+                "description": "降级原因（capture_failed / vlm_timeout / vlm_failed 等）；无错误时缺失",
+            },
+            "latency_ms": {
+                "type": "integer",
+                "description": "工具调用总耗时（毫秒）",
+            },
         },
     },
 )
@@ -196,8 +242,9 @@ class LookAtScreenProvider(BaseToolProvider):
 
     Example:
         >>> provider = LookAtScreenProvider(
-        ...     config={"default_max_width": 1280},
-        ...     screen_capture=PyautoguiCapture(),
+        ...     config={"default_max_width": 1280, "vlm_timeout_ms": 15000},
+        ...     screen_capture=MssScreenCapture(),
+        ...     text_reader=LlmVisionTextReader(llm_manager=llm_mgr),
         ... )
         >>> registry.register_provider(provider)
     """
@@ -206,12 +253,30 @@ class LookAtScreenProvider(BaseToolProvider):
     category = "vision"
 
     class ConfigSchema(BaseConfig):
-        """look_at_screen 配置（默认最大图像宽度；省 token 用）
+        """look_at_screen 配置（默认显示器 / 区域 / VLM 超时 / 最大图像宽度）
 
         TOML 段位：[tools.vision].config
         """
 
         type: str = "vision"
+        # 默认显示器索引（1..N 物理显示器）；对应 ToolSpec 的 monitor_index 入参缺省
+        monitor_index: int = Field(
+            default=1,
+            ge=0,
+            description="默认显示器索引（1..N 物理显示器）；非法 → 后端回退并 warning",
+        )
+        # 默认区域 [x1, y1, x2, y2]（相对显示器左上角）；None = 全屏
+        default_region: Optional[List[int]] = Field(
+            default=None,
+            description="默认区域 [x1, y1, x2, y2]（相对显示器左上角）；None = 全屏",
+        )
+        # VLM 调用超时（毫秒）；传给 LlmVisionTextReader；默认 15000
+        vlm_timeout_ms: int = Field(
+            default=DEFAULT_VLM_TIMEOUT_MS,
+            ge=1,
+            description="VLM 调用超时（毫秒）；失败/超时一律降级为空文本，不抛",
+        )
+        # 图像缩放最大宽度（像素，0=不缩放；省 token 用）
         default_max_width: int = Field(
             default=1280,
             ge=0,
@@ -229,10 +294,40 @@ class LookAtScreenProvider(BaseToolProvider):
         self._config_raw = dict(config) if config is not None else {}
         self.typed_config = self.ConfigSchema.from_dict(self._config_raw)
         self._default_max_width = int(self.typed_config.default_max_width)
+        self._default_monitor_index = int(self.typed_config.monitor_index)
+        self._default_region: Optional[Tuple[int, int, int, int]] = None
+        if self.typed_config.default_region is not None:
+            try:
+                r = self.typed_config.default_region
+                if len(r) == 4:
+                    self._default_region = (int(r[0]), int(r[1]), int(r[2]), int(r[3]))
+            except (TypeError, ValueError):
+                self._default_region = None
+        self._vlm_timeout_s = max(0.001, self.typed_config.vlm_timeout_ms / 1000.0)
 
         self._capture = screen_capture
         self._reader = text_reader
+        # 若注入的是 LlmVisionTextReader 且未指定 timeout_s，则用配置驱动的超时覆盖
+        self._apply_timeout_to_reader(self._reader, self._vlm_timeout_s)
+
         self._call_count = 0
+
+    @staticmethod
+    def _apply_timeout_to_reader(reader: Optional[TextReader], timeout_s: float) -> None:
+        """若 reader 是 LlmVisionTextReader 且未自定义 timeout_s，覆盖为 provider 默认。
+
+        LlmVisionTextReader 构造时默认 15s；此处按 provider 配置（vlm_timeout_ms）
+        推一次，保证 provider 配置真正驱动 reader 超时。其他 reader 类型不修改。
+        """
+        if reader is None:
+            return
+        current = getattr(reader, "_timeout_s", None)
+        # 仅在 reader 仍是模块默认（15.0）时才覆盖——若调用方已自定义则尊重之
+        if current == DEFAULT_VLM_TIMEOUT_S:
+            try:
+                reader._timeout_s = float(timeout_s)
+            except Exception:  # noqa: BLE001 - 防御：自定义 reader 不一定有该字段
+                pass
 
     @property
     def name(self) -> str:
@@ -246,103 +341,115 @@ class LookAtScreenProvider(BaseToolProvider):
         """测试用：累计调用次数。"""
         return self._call_count
 
+    # ----- 入参解析辅助 -----
+
+    @staticmethod
+    def _parse_region(raw: Any) -> Optional[Tuple[int, int, int, int]]:
+        """把入参 region 规范化为 ``(x1, y1, x2, y2)`` 四元组。非法 → None。"""
+        if not isinstance(raw, (list, tuple)) or len(raw) != 4:
+            return None
+        try:
+            return (int(raw[0]), int(raw[1]), int(raw[2]), int(raw[3]))
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _parse_positive_int(raw: Any) -> Optional[int]:
+        """int 解析；None / 非法 → None。"""
+        if raw is None:
+            return None
+        try:
+            return int(raw)
+        except (TypeError, ValueError):
+            return None
+
+    # ----- invoke 主流程 -----
+
     async def invoke(self, invocation: ToolInvocation) -> ToolExecutionResult:
-        """执行 look_at_screen：截屏 + 可选 OCR + 返回 ResultBlocks。"""
+        """执行 look_at_screen：截屏 + 可选 VLM + 返回 ResultBlocks + structured_content。"""
         self._call_count += 1
         started_ms = int(time.time() * 1000)
         # 注册名（vision_look_at_screen）即调用方使用的名；结果回显它保持溯源一致
         tool_name = invocation.tool_name
 
         args = invocation.arguments or {}
-        region_raw = args.get("region")
-        region: Optional[Tuple[int, int, int, int]] = None
-        if isinstance(region_raw, (list, tuple)) and len(region_raw) == 4:
-            try:
-                region = (int(region_raw[0]), int(region_raw[1]), int(region_raw[2]), int(region_raw[3]))
-            except (TypeError, ValueError):
-                region = None
 
-        max_width_raw = args.get("max_width")
-        try:
-            max_width = int(max_width_raw) if max_width_raw is not None else 0
-        except (TypeError, ValueError):
-            max_width = 0
-        if max_width <= 0:
+        # 入参解析（缺省走 provider 配置）
+        question_raw = args.get("question")
+        if isinstance(question_raw, str):
+            question = question_raw.strip() or None
+        elif question_raw is None:
+            question = None
+        else:
+            question = None
+
+        region_arg = self._parse_region(args.get("region"))
+        region = region_arg if region_arg is not None else self._default_region
+
+        monitor_arg = self._parse_positive_int(args.get("monitor_index"))
+        monitor_index = monitor_arg if monitor_arg is not None else self._default_monitor_index
+
+        max_width_arg = self._parse_positive_int(args.get("max_width"))
+        if max_width_arg is not None and max_width_arg > 0:
+            max_width = max_width_arg
+        else:
             max_width = self._default_max_width
 
-        # 采集后端不可用 → 优雅降级（不抛，返回成功 + 空文本 + 警告块）
+        # 采集后端不可用 → 优雅降级（不抛，返回成功 + 空文本 + error）
         if self._capture is None:
-            return ToolExecutionResult(
+            latency_ms = int(time.time() * 1000) - started_ms
+            return self._build_no_backend_result(
                 tool_name=tool_name,
-                success=True,
-                content="(no screen capture backend installed; returning empty snapshot)",
-                blocks=[
-                    ResultBlock(
-                        kind="text",
-                        text=(
-                            "[look_at_screen] 后端 ScreenCapture 未注入；"
-                            "返回空快照。请在生产 wiring 处注入 pyautogui/mss/dxcam 后端；"
-                            "测试场景下注入 FakeScreenCapture 即可。"
-                        ),
-                    ),
-                ],
-                structured_content={"text": "", "backend_available": False},
-                timestamp_ms=int(time.time() * 1000),
-                duration_ms=int(time.time() * 1000) - started_ms,
+                started_ms=started_ms,
+                latency_ms=latency_ms,
             )
 
         # 调用采集后端（捕获异常 → 失败 result，不抛）
         try:
-            result = self._capture.capture(region=region)
+            result = self._capture.capture(
+                monitor_index=monitor_index,
+                region=region,
+                max_width=max_width,
+            )
         except Exception as exc:  # noqa: BLE001 - 边界处兜底
             logger.warning(f"look_at_screen 采集失败: {exc}", exc_info=True)
-            return ToolExecutionResult(
+            return self._build_capture_failed_result(
                 tool_name=tool_name,
-                success=False,
-                error_message=f"ScreenCapture.capture 失败: {type(exc).__name__}: {exc}",
-                timestamp_ms=int(time.time() * 1000),
-                duration_ms=int(time.time() * 1000) - started_ms,
+                started_ms=started_ms,
+                error=f"capture_failed: {type(exc).__name__}: {exc}",
             )
 
-        # 采集后端返回 None（场景：无显示/无权限）→ 同样优雅降级
-        if result.image is None:
-            return ToolExecutionResult(
+        # 采集后端返回 None（场景：无显示 / 无权限 / 越界退化）→ 优雅降级
+        if result is None or result.image is None:
+            logger.warning("look_at_screen 采集后端返回空图像（可能无显示 / 无权限 / mss 不可用）")
+            return self._build_capture_failed_result(
                 tool_name=tool_name,
-                success=True,
-                content="(screen capture returned empty)",
-                blocks=[
-                    ResultBlock(
-                        kind="text",
-                        text="[look_at_screen] 屏幕采集后端返回空图像（可能无显示/无权限）。",
-                    ),
-                ],
-                structured_content={"text": "", "backend_available": True, "image_empty": True},
-                timestamp_ms=int(time.time() * 1000),
-                duration_ms=int(time.time() * 1000) - started_ms,
+                started_ms=started_ms,
+                error="capture_failed: empty image (no display / permission denied / mss unavailable)",
             )
 
-        # 可选 OCR/VLM 文本提取（异步：避免阻塞事件循环；reader.read 内部负责超时/降级）
+        # 可选 VLM 文本提取（异步：避免阻塞事件循环；reader 内部负责超时/降级）
         text = ""
+        vlm_error: Optional[str] = None
         if self._reader is not None:
             try:
-                question = args.get("question")
-                if isinstance(question, str):
-                    question = question.strip() or None
                 text = await self._reader.read(
                     result.image,
                     mime_type=result.mime_type or "image/png",
                     question=question,
                 )
-            except Exception as exc:  # noqa: BLE001 - 边界处兜底
+            except Exception as exc:  # noqa: BLE001 - 边界处兜底（不抛）
                 logger.warning(f"look_at_screen TextReader 失败: {exc}", exc_info=True)
                 text = ""
+                vlm_error = f"vlm_failed: {type(exc).__name__}: {exc}"
 
-        # 缩放：当前不真做缩放，只在文本里声明 max_width
-        #    简化原则：宁可不缩放也别误删信息。
-        # 组装 result
+        latency_ms = int(time.time() * 1000) - started_ms
+
+        # 组装 blocks（text + image）
         blocks: List[ResultBlock] = []
         if text:
             blocks.append(ResultBlock(kind="text", text=text))
+        encoded = ""
         if result.image:
             encoded = base64.b64encode(result.image).decode("ascii")
             blocks.append(
@@ -353,25 +460,94 @@ class LookAtScreenProvider(BaseToolProvider):
                 )
             )
         if not blocks:
-            # 既无文本也无图像（极端情况）→ 放一个空文本兜底
+            # 既无文本也无图像（极端情况：reader 返回空且 image 为 None）→ 空文本兜底
             blocks.append(ResultBlock(kind="text", text=""))
+
+        # structured_content：含 image 字段（base64），供调用方按需取图
+        structured: Dict[str, Any] = {
+            "text": text,
+            "width": int(result.width),
+            "height": int(result.height),
+            "monitor_index": int(result.monitor_index or monitor_index),
+            "region": list(result.region) if result.region else None,
+            "latency_ms": int(latency_ms),
+        }
+        if encoded:
+            structured["image"] = encoded
+        if vlm_error:
+            structured["error"] = vlm_error
 
         return ToolExecutionResult(
             tool_name=tool_name,
             success=True,
             content=text or "(no text extracted)",
             blocks=blocks,
-            structured_content={
-                "text": text,
-                "width": int(result.width),
-                "height": int(result.height),
-                "region": list(result.region) if result.region else None,
-                "max_width": int(max_width),
-                "backend_available": True,
-                "captured_at_ms": int(result.captured_at_ms),
-            },
+            structured_content=structured,
             timestamp_ms=int(time.time() * 1000),
-            duration_ms=int(time.time() * 1000) - started_ms,
+            duration_ms=int(latency_ms),
+        )
+
+    # ----- 降级结果工厂（统一 success=True + text="" + error 模式）-----
+
+    @staticmethod
+    def _build_no_backend_result(
+        *,
+        tool_name: str,
+        started_ms: int,
+        latency_ms: int,
+    ) -> ToolExecutionResult:
+        """ScreenCapture 未注入时的降级结果。"""
+        finished_ms = int(time.time() * 1000)
+        return ToolExecutionResult(
+            tool_name=tool_name,
+            success=True,
+            content="(no screen capture backend installed; returning empty snapshot)",
+            blocks=[
+                ResultBlock(
+                    kind="text",
+                    text=(
+                        "[look_at_screen] 后端 ScreenCapture 未注入；"
+                        "返回空快照。请在生产 wiring 处注入 MssScreenCapture；"
+                        "测试场景下注入 FakeScreenCapture 即可。"
+                    ),
+                ),
+            ],
+            structured_content={
+                "text": "",
+                "error": "capture_failed: no screen capture backend installed",
+                "latency_ms": int(latency_ms),
+            },
+            timestamp_ms=finished_ms,
+            duration_ms=int(latency_ms),
+        )
+
+    @staticmethod
+    def _build_capture_failed_result(
+        *,
+        tool_name: str,
+        started_ms: int,
+        error: str,
+    ) -> ToolExecutionResult:
+        """capture 失败 / 空图时的降级结果（success=True + text="" + error）。"""
+        finished_ms = int(time.time() * 1000)
+        latency_ms = finished_ms - started_ms
+        return ToolExecutionResult(
+            tool_name=tool_name,
+            success=True,
+            content="(screen capture failed; returning empty snapshot)",
+            blocks=[
+                ResultBlock(
+                    kind="text",
+                    text=f"[look_at_screen] 屏幕采集失败: {error}",
+                ),
+            ],
+            structured_content={
+                "text": "",
+                "error": error,
+                "latency_ms": int(latency_ms),
+            },
+            timestamp_ms=finished_ms,
+            duration_ms=int(latency_ms),
         )
 
 
@@ -383,6 +559,9 @@ class LookAtScreenProvider(BaseToolProvider):
 class FakeScreenCapture:
     """测试用 ScreenCapture，可注入预置的截图结果序列。
 
+    新协议形态：``capture(monitor_index, region=None, max_width=None)``，与
+    生产 ``MssScreenCapture`` 同形（Task 4 收口后协议已统一）。
+
     Example:
         >>> cap = FakeScreenCapture()
         >>> cap.queue_png(b"\\x89PNG...fake bytes...", width=1920, height=1080)
@@ -391,7 +570,8 @@ class FakeScreenCapture:
 
     def __init__(self) -> None:
         self._queue: List[ScreenCaptureResult] = []
-        self.calls: List[Optional[Tuple[int, int, int, int]]] = []
+        self.calls: List[dict[str, Any]] = []
+        self._raise: Optional[BaseException] = None
 
     def queue(self, result: ScreenCaptureResult) -> None:
         """入队一个采集结果（下次 capture 调用返回）。"""
@@ -406,18 +586,39 @@ class FakeScreenCapture:
                 height=height,
                 mime_type="image/png",
                 captured_at_ms=int(time.time() * 1000),
+                monitor_index=1,
             )
         )
 
+    def queue_empty(self) -> None:
+        """便捷方法：入队一个空 result（image=None），代表无显示/无权限。"""
+        self.queue(ScreenCaptureResult(captured_at_ms=int(time.time() * 1000)))
+
+    def set_raise(self, exc: Optional[BaseException]) -> None:
+        """下一次 capture 调用抛该异常（用于测试 capture 异常降级）。"""
+        self._raise = exc
+
     def capture(
         self,
+        monitor_index: int,
         region: Optional[Tuple[int, int, int, int]] = None,
+        max_width: Optional[int] = None,
     ) -> ScreenCaptureResult:
-        self.calls.append(region)
+        self.calls.append(
+            {
+                "monitor_index": int(monitor_index),
+                "region": region,
+                "max_width": max_width,
+            }
+        )
+        if self._raise is not None:
+            exc = self._raise
+            self._raise = None
+            raise exc
         if self._queue:
             return self._queue.pop(0)
         # 缺省：返回空 result（代表无显示/无图像）
-        return ScreenCaptureResult()
+        return ScreenCaptureResult(captured_at_ms=int(time.time() * 1000), monitor_index=int(monitor_index))
 
 
 class FakeTextReader:
@@ -425,10 +626,21 @@ class FakeTextReader:
 
     def __init__(self) -> None:
         self._queue: List[str] = []
-        self.calls = 0
+        self.calls: List[dict[str, Any]] = []
+        self._raise: Optional[BaseException] = None
+        self._hang_until: Optional[float] = None  # asyncio.get_event_loop().time() 截止时刻
 
     def queue_text(self, text: str) -> None:
         self._queue.append(text)
+
+    def set_raise(self, exc: Optional[BaseException]) -> None:
+        """下一次 read 调用抛该异常（用于测试 reader 异常降级）。"""
+        self._raise = exc
+
+    def set_hang_until_ms(self, deadline_ms_from_now: int) -> None:
+        """挂起到指定时间点后返回空串（用于测试 reader 超时降级）。"""
+        loop_now = asyncio.get_event_loop().time()
+        self._hang_until = loop_now + deadline_ms_from_now / 1000.0
 
     async def read(
         self,
@@ -437,7 +649,24 @@ class FakeTextReader:
         mime_type: str = "image/png",
         question: Optional[str] = None,
     ) -> str:
-        self.calls += 1
+        self.calls.append(
+            {
+                "image_bytes_len": len(image_bytes),
+                "mime_type": mime_type,
+                "question": question,
+            }
+        )
+        if self._raise is not None:
+            exc = self._raise
+            self._raise = None
+            raise exc
+        if self._hang_until is not None:
+            now = asyncio.get_event_loop().time()
+            remaining = self._hang_until - now
+            if remaining > 0:
+                await asyncio.sleep(remaining)
+            self._hang_until = None
+            return ""
         if self._queue:
             return self._queue.pop(0)
         return ""
@@ -449,15 +678,16 @@ class FakeTextReader:
 
 
 class LlmVisionTextReader:
-    """通过 LLMManager.generate_vision 把图像转文本（异步，15s 超时降级）。
+    """通过 LLMManager.generate_vision 把图像转文本（异步，默认 15s 超时降级）。
 
-    降级语义（与 LookAtScreenProvider 的"空快照"约定一致）：
+    降级语义：
     - 成功 → 返回 response.content（已 strip）
     - 超时 → 返回 ``""`` + warning 日志
     - success=False → 返回 ``""`` + warning 日志
     - 异常 → 返回 ``""`` + warning 日志
 
-    不抛、不缓存、不重试；契约面留扩展点给下游重写。
+    不抛、不缓存、不重试；超时由构造参数 ``timeout_s`` 控制（LookAtScreenProvider
+    会按 ConfigSchema.vlm_timeout_ms 推一次默认值）。
 
     Example:
         >>> reader = LlmVisionTextReader(llm_manager=llm_mgr, prompt_manager=prompt_mgr)
@@ -541,10 +771,13 @@ __all__ = [
     "LookAtScreenProvider",
     "LOOK_AT_SCREEN_SPEC",
     "build_look_at_screen_spec",
+    "PROVIDER_NAME",
+    "TOOL_NAME",
     "FakeScreenCapture",
     "FakeTextReader",
     "LlmVisionTextReader",
     "DEFAULT_VLM_TIMEOUT_S",
+    "DEFAULT_VLM_TIMEOUT_MS",
     "SCREEN_VLM_PROMPT_KEY",
     "SCREEN_VLM_SYSTEM_KEY",
 ]
