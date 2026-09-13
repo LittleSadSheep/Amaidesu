@@ -120,8 +120,13 @@ class TestAvatarStudioDomains:
 
 class TestSpecializedDomains:
     def test_vision(self):
-        cfg = VisionProviderConfig(enabled=True, config={"default_max_width": 1280})
+        cfg = VisionProviderConfig(enabled=True)
         assert cfg.enabled is True
+        # config 字段复用 LookAtScreenProvider.ConfigSchema，自动具备全部默认
+        assert cfg.config.monitor_index == 1
+        assert cfg.config.default_region is None
+        assert cfg.config.vlm_timeout_ms == 15000
+        assert cfg.config.default_max_width == 1280
 
     def test_memory_default_enabled_true(self):
         """记忆分类默认 enabled=true（消除配置漂移）"""

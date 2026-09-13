@@ -250,10 +250,17 @@ def _table_from_model(instance: BaseModel) -> Any:
     dict 值（free-form 子段）不加容器级 description 注释——注释插在父表流
     会与子表表头错位，且破坏按表头定位键值的文本消费者；子段内字段的
     注释由字段级 description 在具体 Schema 序列化路径中提供。
+
+    字段值为 ``None`` 时直接跳过：TOML 原生不支持 null，Optional 字段
+    在 dump 时保留 None，须由序列化器兜底（与 ``_generate_root_toml`` 的
+    ``if field_value is None: continue`` 同源惯例）。
     """
     table = tomlkit.table()
     for sub_name, sub_info in type(instance).model_fields.items():
         value = getattr(instance, sub_name)
+        if value is None:
+            # None = 未设置 / Optional 默认；不落盘，与 generate_toml_string 兜底一致
+            continue
         if isinstance(value, BaseModel):
             inner = _table_from_model(value)
         elif isinstance(value, list) and value and all(isinstance(v, BaseModel) for v in value):
@@ -433,7 +440,9 @@ def _validate_collectors_sections(
 ) -> None:
     """按组件注册表校验采集器子段与 enabled 名单（阶段④ 的 collectors 分支）。
 
-    - 子段名 / enabled 名不在注册表 → 硬错（Typo 防护，列出合法名单）
+    - 子段名 / enabled 名不在注册表 → 跳过 + warning（已退役或残留段容忍），
+      不抛 ConfigValidationError。采集器实例化侧（``factory.instantiate_collector``）
+      同样做未知名跳过；此处保证加载期也不抛，让配置残留段平滑过渡。
     - 在册子段 → 包内 ConfigSchema 校验 + 漂移检测；漂移路径以
       ``<采集器名>.<字段>`` 前缀并入宿主文件报告
     - 校验后的干净子段 dict 回填 root 实例的 extras，供阶段⑤ 全量写回
@@ -445,21 +454,22 @@ def _validate_collectors_sections(
     known = sorted(COMPONENT_SCHEMAS)
     for enabled_name in root_instance.enabled:
         if enabled_name not in COMPONENT_SCHEMAS:
-            raise ConfigValidationError(
-                "collectors.toml",
-                "collectors.enabled",
-                f"未注册的采集器名 {enabled_name!r}（合法名单：{known}）",
+            logger.warning(
+                f"collectors.enabled 含未注册采集器名 {enabled_name!r}（合法名单：{known}），已跳过加载。"
+                f"该名通常是已退役采集器（如 screen）的残留项；可从 enabled 列表移除。"
             )
+            continue
 
     extras = root_instance.__pydantic_extra__ or {}
     for name in sorted(extras):
         schema_cls = COMPONENT_SCHEMAS.get(name)
         if schema_cls is None:
-            raise ConfigValidationError(
-                "collectors.toml",
-                f"collectors.{name}",
-                f"未注册的采集器段（合法名单：{known}）；新采集器需在其包内定义 ConfigSchema 并登记注册表",
+            logger.warning(
+                f"collectors.toml 残留未注册段 [collectors.{name}]（合法名单：{known}），已跳过加载。"
+                f"该段通常是已退役采集器的残留项；CollectorsRootConfig.extra='allow' 保留段不删除，"
+                f"供人工复核后再清理。"
             )
+            continue
         sub_raw = extras[name]
         if not isinstance(sub_raw, dict):
             raise ConfigValidationError(

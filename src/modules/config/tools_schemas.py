@@ -59,6 +59,7 @@ from pydantic import ConfigDict, Field
 
 from src.modules.config.file_meta import FileMetaConfig
 from src.modules.config.schemas.base import BaseConfig
+from src.modules.vision.look_at_screen import LookAtScreenProvider
 
 
 # ---------------------------------------------------------------------------
@@ -98,7 +99,18 @@ class StudioProviderConfig(ToolProviderConfig):
 
 
 class VisionProviderConfig(ToolProviderConfig):
-    """视觉基础模块（工具出口 look_at_screen；被调才看，快照型）"""
+    """视觉基础模块（工具出口 look_at_screen；被调才看，快照型）
+
+    ``config`` 直接复用 ``LookAtScreenProvider.ConfigSchema``——provider
+    包内的 schema 是默认值与字段权威的唯一事实源，配置层只持有引用，
+    保证漂移写回自动补齐 ``monitor_index`` / ``default_region`` /
+    ``vlm_timeout_ms`` / ``default_max_width`` 等字段。
+    """
+
+    config: LookAtScreenProvider.ConfigSchema = Field(
+        default_factory=LookAtScreenProvider.ConfigSchema,
+        description="视觉提供者配置（直接复用 LookAtScreenProvider.ConfigSchema）",
+    )
 
     model_config = ConfigDict(extra="allow")
 

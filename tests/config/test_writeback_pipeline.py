@@ -4,8 +4,11 @@
 - 写回短路：内容不变时不写盘、不产生备份
 - 冗余物理删除：写回后磁盘上的冗余段真实消失
 - 自写抑制：标记/消费/TTL 语义 + 管线写回自动压标（FileWatcher 跳过的前提）
-- 校验硬错：类型违约 / 未注册采集器段 / 未注册 enabled 名单
+- 校验硬错：类型违约 / 未注册采集器容忍（warn + 跳过，不抛）
 - 注册表动态装配：伪组件注入后按其包内 Schema 校验子段
+
+注：``TestValidationHardFail`` 历史用例中"未注册采集器段 / enabled 名"两条
+已从硬错改为 warn+跳过（Task 7 残留容忍），断言相应更新为"不抛 + warning"。
 """
 
 from __future__ import annotations
@@ -14,6 +17,7 @@ import shutil
 import time
 
 import pytest
+from loguru import logger as _loguru_logger
 from pydantic import ConfigDict
 
 from src.modules.config.errors import ConfigValidationError
@@ -142,6 +146,33 @@ def _replace_enabled(config_dir, file_name: str, old: str, new: str) -> None:
     path.write_text(content.replace(old, new), encoding="utf-8-sig")
 
 
+class _LoguruCapture:
+    """内存里捕获 loguru 日志（项目用 loguru，caplog 不适用）。"""
+
+    def __init__(self) -> None:
+        self.records: list[dict] = []
+        self._sink_id: int | None = None
+
+    def __enter__(self):
+        def _sink(message) -> None:
+            record = message.record
+            self.records.append(
+                {
+                    "level": record["level"].name,
+                    "message": record["message"],
+                    "module": record["name"],
+                }
+            )
+
+        self._sink_id = _loguru_logger.add(_sink, level="DEBUG")
+        return self
+
+    def __exit__(self, *exc_info) -> None:
+        if self._sink_id is not None:
+            _loguru_logger.remove(self._sink_id)
+            self._sink_id = None
+
+
 class TestValidationHardFail:
     def test_type_violation_raises(self, temp_config_dir):
         """字段类型违约 → 硬错，无 raw dict 降级。"""
@@ -156,18 +187,19 @@ class TestValidationHardFail:
         with pytest.raises(ConfigValidationError):
             load_config_dir(temp_config_dir)
 
-    def test_unregistered_collector_section_raises(self, temp_config_dir):
-        """未注册的采集器段 → ConfigValidationError（Typo 防护）。"""
+    def test_unregistered_collector_section_warns_and_skips(self, temp_config_dir):
+        """未注册的采集器段 → warning + 跳过，不抛（残留段容忍）。"""
         generate_default_configs(temp_config_dir)
         _append(temp_config_dir, "collectors.toml", "\n[ghost_collector]\nenabled = true\n")
 
-        with pytest.raises(ConfigValidationError) as exc_info:
-            load_config_dir(temp_config_dir)
-        assert exc_info.value.file_name == "collectors.toml"
-        assert "ghost_collector" in str(exc_info.value)
+        with _LoguruCapture() as cap:
+            cfg, _report = load_config_dir(temp_config_dir)
+        # 不抛 + 加载成功
+        assert cfg
+        assert any("ghost_collector" in r["message"] and r["level"] == "WARNING" for r in cap.records)
 
-    def test_unregistered_enabled_name_raises(self, temp_config_dir):
-        """enabled 名单出现未注册名 → ConfigValidationError。"""
+    def test_unregistered_enabled_name_warns_and_skips(self, temp_config_dir):
+        """enabled 名单出现未注册名 → warning + 跳过，不抛。"""
         generate_default_configs(temp_config_dir)
         _replace_enabled(
             temp_config_dir,
@@ -176,9 +208,10 @@ class TestValidationHardFail:
             'enabled = ["console_input", "no_such_collector"]',
         )
 
-        with pytest.raises(ConfigValidationError) as exc_info:
-            load_config_dir(temp_config_dir)
-        assert "no_such_collector" in str(exc_info.value)
+        with _LoguruCapture() as cap:
+            cfg, _report = load_config_dir(temp_config_dir)
+        assert cfg
+        assert any("no_such_collector" in r["message"] and r["level"] == "WARNING" for r in cap.records)
 
 
 class _PseudoSchema(BaseConfig):

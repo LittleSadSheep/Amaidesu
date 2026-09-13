@@ -52,6 +52,26 @@ def _unwrap_to_baseconfig_list(annotation: Any) -> type["BaseConfig"] | None:
     return None
 
 
+def _is_optional_none_default(field_info: Any) -> bool:
+    """判断字段是否"默认值为 None 且类型允许 None"——用于排除 TOML 不可表达的字段。
+
+    满足条件：field_info.default is None 且类型注解包含 ``None``（Optional / Union[X, None]）。
+    TOML 无原生 null，序列化时一律跳过 None 字段；这些字段即使缺失也不算漂移。
+    """
+    if getattr(field_info, "default", None) is not None:
+        return False
+    if getattr(field_info, "default_factory", None) is not None:
+        # 有 factory = 默认值由 factory 决定（即使是 None factory），不算"类型级默认 None"
+        return False
+    annotation = getattr(field_info, "annotation", None)
+    if annotation is None:
+        return False
+    origin = get_origin(annotation)
+    if origin is Union:
+        return type(None) in get_args(annotation)
+    return False
+
+
 @dataclass
 class DriftReport:
     """配置漂移报告
@@ -148,7 +168,13 @@ class BaseConfig(BaseModel):
 
         # 检测缺失字段（Schema 有，配置没有）——禁 None 政策：所有字段一律
         # 落盘，缺失即漂移，由写回按默认值补齐（全量写出语义）
+        #
+        # 例外：字段默认值为 None 且类型可承载 None（TOML 无 null 字面量，
+        # 序列化侧会跳过该字段）→ 不算漂移，避免"生成 → 加载 → 报告写回"
+        # 的空转循环（典型如 ``default_region: Optional[List[int]] = None``）。
         for key in class_fields - data_keys:
+            if key in cls.model_fields and _is_optional_none_default(cls.model_fields[key]):
+                continue
             report.missing.append(key)
 
         # 剥离多余字段（extra="allow" 时保留）
