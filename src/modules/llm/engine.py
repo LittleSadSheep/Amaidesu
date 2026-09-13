@@ -23,6 +23,7 @@ profile 解析与 provider 池/模型索引的装配在 :mod:`src.modules.llm.bo
 from __future__ import annotations
 
 import asyncio
+import json
 import random
 import time
 import uuid
@@ -48,6 +49,7 @@ from src.modules.llm.observation import record_usage
 from src.modules.llm.payload import GenerateRequest, ImagePart, Message, Response, TextPart, ToolCall, ToolSpec, Usage
 from src.modules.logging import get_logger
 from src.modules.storage.repos import LLMRepo
+from src.modules.storage.repos.llm import LLMRequestInsert
 
 __all__ = ["LLMManager", "LLMResponse", "RetryConfig"]
 
@@ -983,16 +985,18 @@ class LLMManager:
         if result.usage and self._llm_repo:
             duration_ms = int((time.time() - start_time) * 1000)
             try:
-                await self._persist_llm_usage(
+                await self._persist_llm_call(
+                    request_id=request_id,
                     profile_name=profile_name,
                     model_name=model_name,
                     method=method,
                     result=result,
+                    kwargs=kwargs,
                     duration_ms=duration_ms,
                 )
             except Exception as exc:  # noqa: BLE001
-                # 兜底（_persist_llm_usage 内部已 try/except；此处防止传播异常）
-                self.logger.warning(f"llm_usage 落库包装失败: {exc}")
+                # 兜底（_persist_llm_call 内部已 try/except；此处防止传播异常）
+                self.logger.warning(f"两账落库包装失败: {exc}")
         self._record_request_history(
             request_id=request_id,
             client_type=profile_name,
@@ -1001,19 +1005,39 @@ class LLMManager:
             start_time=start_time,
         )
 
-    async def _persist_llm_usage(
+    @staticmethod
+    def _build_request_params(kwargs: Dict[str, Any]) -> Dict[str, Any]:
+        """从调用 kwargs 提取请求参数快照（两账落库与请求历史共用）。"""
+        request_params = {
+            "messages": kwargs.get("messages"),
+            "temperature": kwargs.get("temperature"),
+            "max_tokens": kwargs.get("max_tokens"),
+            "tools": kwargs.get("tools"),
+        }
+        if request_params["messages"] is None and kwargs.get("request") is not None:
+            # 中立 payload 契约路径：消息以 GenerateRequest 承载
+            request_params["messages"] = [m.model_dump() for m in kwargs["request"].messages]
+            request_params["tools"] = [t.model_dump() for t in kwargs["request"].tools] or None
+        return {k: v for k, v in request_params.items() if v is not None}
+
+    async def _persist_llm_call(
         self,
         *,
+        request_id: str,
         profile_name: str,
         model_name: str,
         method: str,
         result: LLMResponse,
+        kwargs: Dict[str, Any],
         duration_ms: int,
     ) -> None:
-        """把一次成功调用的 token 消耗写入 ``llm_usage`` 表（``LLMRepo`` 注入时生效）。
+        """一次成功调用的两账同事务落库（``llm_usage`` + ``llm_requests`` 原子写入）。
 
-        费用口径与请求历史一致（同走 ``TokenUsageManager._calculate_cost``）；
-        任何写入失败只记 warning，绝不阻断 LLM 调用链。
+        ``LLMRepo`` 注入且结果带 usage 时生效；聚合账与请求明细共享同一
+        ``request_id``，经 observation（``record_usage`` 携带明细载荷）在单个
+        SQLite 事务内写入，第二步失败整体回滚。费用口径与请求历史一致
+        （同走 ``TokenUsageManager._calculate_cost``）；任何写入失败只记
+        warning，绝不阻断 LLM 调用链。
         """
         try:
             usage = result.usage or {}
@@ -1028,8 +1052,30 @@ class LLMManager:
             provider_name = "unknown"
             if model_name in self._models:
                 _, provider_name = self._models[model_name]
-            # 落库统一走 observation.record_usage（llm_usage 单一写入点）；
-            # 缓存列与成本入参的处理收敛在 observation 侧
+            # 请求明细行与 _record_request_history 的 RequestRecord 同源同构
+            # （request_params 构造共用）；先于历史链路落库，其 INSERT OR
+            # IGNORE 对同一 request_id 幂等
+            request_row = LLMRequestInsert(
+                request_id=request_id,
+                timestamp_ms=int(time.time() * 1000),
+                client_type=profile_name,
+                model_name=result.model or model_name,
+                request_params_json=json.dumps(self._build_request_params(kwargs), ensure_ascii=False, default=str),
+                response_content=result.content,
+                reasoning_content=result.reasoning_content,
+                tool_calls_json=json.dumps(result.tool_calls or [], ensure_ascii=False, default=str),
+                prompt_tokens=int(usage.get("prompt_tokens", 0)),
+                completion_tokens=int(usage.get("completion_tokens", 0)),
+                total_tokens=int(usage.get("total_tokens", 0)),
+                cache_hit_tokens=int(usage.get("cache_hit_tokens", 0)),
+                cache_miss_tokens=int(usage.get("cache_miss_tokens", 0)),
+                cost=cost,
+                success=result.success,
+                error=result.error,
+                latency_ms=duration_ms,
+            )
+            # 落库统一走 observation.record_usage（两表唯一写入点）；携带明细
+            # 载荷即两账同事务，缓存列与成本入参的处理收敛在 observation 侧
             await record_usage(
                 self._llm_repo,
                 model_name=result.model or model_name,
@@ -1039,9 +1085,10 @@ class LLMManager:
                 cost=cost,
                 duration_ms=duration_ms,
                 profile_name=profile_name,
+                request=request_row,
             )
         except Exception as exc:  # noqa: BLE001
-            self.logger.warning(f"llm_usage 落库失败: {exc}")
+            self.logger.warning(f"两账落库失败: {exc}")
 
     def _record_request_history(
         self,
@@ -1063,17 +1110,7 @@ class LLMManager:
             latency_ms = int((time.time() - start_time) * 1000)
             model_name = result.model or "unknown"
 
-            request_params = {
-                "messages": kwargs.get("messages"),
-                "temperature": kwargs.get("temperature"),
-                "max_tokens": kwargs.get("max_tokens"),
-                "tools": kwargs.get("tools"),
-            }
-            if request_params["messages"] is None and kwargs.get("request") is not None:
-                # 中立 payload 契约路径：消息以 GenerateRequest 承载
-                request_params["messages"] = [m.model_dump() for m in kwargs["request"].messages]
-                request_params["tools"] = [t.model_dump() for t in kwargs["request"].tools] or None
-            request_params = {k: v for k, v in request_params.items() if v is not None}
+            request_params = self._build_request_params(kwargs)
 
             usage = None
             if result.usage:

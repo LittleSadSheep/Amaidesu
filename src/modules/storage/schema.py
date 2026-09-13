@@ -39,7 +39,7 @@ from __future__ import annotations
 from typing import List
 
 # 当前 Schema 版本——改动表结构时必须同步升级
-SCHEMA_VERSION: int = 7
+SCHEMA_VERSION: int = 8
 
 
 # =============================================================================
@@ -295,7 +295,8 @@ CREATE TABLE IF NOT EXISTS llm_usage (
     cache_miss_tokens  INTEGER NOT NULL,
     cost               REAL NOT NULL,
     duration_ms        INTEGER NOT NULL,
-    timestamp_ms       INTEGER NOT NULL
+    timestamp_ms       INTEGER NOT NULL,
+    request_id         TEXT
 );
 """.strip()
 
@@ -388,6 +389,8 @@ CREATE TABLE IF NOT EXISTS llm_requests (
     prompt_tokens       INTEGER NOT NULL DEFAULT 0,
     completion_tokens   INTEGER NOT NULL DEFAULT 0,
     total_tokens        INTEGER NOT NULL DEFAULT 0,
+    cache_hit_tokens    INTEGER NOT NULL DEFAULT 0,
+    cache_miss_tokens   INTEGER NOT NULL DEFAULT 0,
     cost                REAL NOT NULL DEFAULT 0,
     success             INTEGER NOT NULL DEFAULT 1,
     error               TEXT,

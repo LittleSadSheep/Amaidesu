@@ -2,12 +2,14 @@
 
 单一费用口径：按 ``model.toml`` ``[[llm_models]]`` 的定价字段
 （price_in / price_out，每百万 token）把一次调用的 token 消耗折算为费用。
-引擎的 llm_usage 落库与请求历史记录共用本模块的计算结果，
-保证两条账本的费用口径一致。
 
 JSON 使用量账本（``TokenUsageManager``）的完整退役属后续任务；
 本波仅把费用计算逻辑收拢到这里，原文件以薄委托引用。
-``record_usage`` 是 ``llm_usage`` 表在 llm 模块内的唯一写入入口：
+
+本模块是 ``llm_usage`` 与 ``llm_requests`` 两表在 llm 模块内的**唯一写入者**：
+- ``record_usage``：只写聚合账（既有调用方兼容路径）
+- ``record_request``：只写请求明细（请求历史链路经此落库）
+- ``record_call``：两表同事务写入（原子记账，连接键由同一 request_id 保证）
 调用方传 provider 归一化后的 usage 与已算费用，缓存列归零策略在此收敛。
 """
 
@@ -15,9 +17,15 @@ from __future__ import annotations
 
 from typing import Any, Dict, Optional
 
-from src.modules.storage.repos.llm import LLMRepo
+from src.modules.storage.repos.llm import LLMRepo, LLMRequestInsert, LLMUsageInsert
 
-__all__ = ["calculate_cost", "get_model_price", "record_usage"]
+__all__ = [
+    "calculate_cost",
+    "get_model_price",
+    "record_call",
+    "record_request",
+    "record_usage",
+]
 
 
 def get_model_price(model_prices: Dict[str, Dict[str, float]], model_name: str) -> Optional[Dict[str, float]]:
@@ -93,18 +101,23 @@ async def record_usage(
     cost: float = 0.0,
     duration_ms: int = 0,
     profile_name: Optional[str] = None,
+    request_id: Optional[str] = None,
+    request: Optional[LLMRequestInsert] = None,
 ) -> int:
-    """把一次成功调用的消耗写入 ``llm_usage`` 表（llm 模块内唯一写入点）。
+    """把一次成功调用的消耗写入 ``llm_usage`` 表。
 
     usage 为 provider 上报的中立字典；缓存字段（cache_hit_tokens /
     cache_miss_tokens）缺省或 None 视为 provider 未上报，按计划 v1 约定落 0。
     cost 由调用方按统一口径（``calculate_cost``）预先算好传入，本函数不再
     二次计价，保证费用行为只随计算口径一处变化。
+    ``request`` 携带请求明细载荷时走两账同事务（``llm_usage`` +
+    ``llm_requests`` 原子写入，连接键取 ``request.request_id``）；不携带时
+    只写聚合账，``request_id`` 可选用于补连接键。
     """
     u = usage or {}
     hit = u.get("cache_hit_tokens")
     miss = u.get("cache_miss_tokens")
-    return await repo.insert_llm_usage(
+    usage_row = LLMUsageInsert(
         model_name=model_name,
         provider_name=provider_name,
         request_type=request_type,
@@ -116,4 +129,45 @@ async def record_usage(
         cost=float(cost),
         duration_ms=duration_ms,
         profile_name=profile_name,
+        request_id=request.request_id if request is not None else request_id,
     )
+    if request is not None:
+        return await repo.insert_llm_call(usage=usage_row, request=request)
+    return await repo.insert_llm_usage_row(usage_row)
+
+
+async def record_request(repo: LLMRepo, row: LLMRequestInsert) -> bool:
+    """把一条请求明细写入 ``llm_requests`` 表（``request_id`` 冲突时忽略）。"""
+    return await repo.insert_llm_request(
+        request_id=row.request_id,
+        timestamp_ms=row.timestamp_ms,
+        client_type=row.client_type,
+        model_name=row.model_name,
+        request_params_json=row.request_params_json,
+        response_content=row.response_content,
+        reasoning_content=row.reasoning_content,
+        tool_calls_json=row.tool_calls_json,
+        prompt_tokens=row.prompt_tokens,
+        completion_tokens=row.completion_tokens,
+        total_tokens=row.total_tokens,
+        cache_hit_tokens=row.cache_hit_tokens,
+        cache_miss_tokens=row.cache_miss_tokens,
+        cost=row.cost,
+        success=row.success,
+        error=row.error,
+        latency_ms=row.latency_ms,
+    )
+
+
+async def record_call(
+    repo: LLMRepo,
+    *,
+    usage: LLMUsageInsert,
+    request: LLMRequestInsert,
+) -> int:
+    """一次调用的两账同事务落库（``llm_usage`` + ``llm_requests`` 原子写入）。
+
+    两载荷应填同一个 ``request_id`` 构成连接键；第二步写入失败整体回滚，
+    两表均不产生新行。返回 usage 行 rowid。
+    """
+    return await repo.insert_llm_call(usage=usage, request=request)

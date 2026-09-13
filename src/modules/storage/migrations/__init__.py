@@ -26,6 +26,7 @@ from src.modules.storage.migrations import (
     v5_event_llm_history_tables,
     v6_rundowns_replace_agenda,
     v7_drop_profiles_table,
+    v8_llm_request_link,
 )
 
 SCHEMA_MIGRATIONS: Dict[int, Callable[[sqlite3.Connection], None]] = {
@@ -36,6 +37,7 @@ SCHEMA_MIGRATIONS: Dict[int, Callable[[sqlite3.Connection], None]] = {
     5: v5_event_llm_history_tables.migrate,
     6: v6_rundowns_replace_agenda.migrate,
     7: v7_drop_profiles_table.migrate,
+    8: v8_llm_request_link.migrate,
 }
 
 __all__ = ["SCHEMA_MIGRATIONS"]

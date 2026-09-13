@@ -1,14 +1,17 @@
 """LLMRepo —— LLM 调用记录仓储（llm_usage + llm_requests）。
 
-- ``llm_usage``：每次 LLM 调用的 token/费用记录（LLMManager 写入）。
-- ``llm_requests``：完整请求/响应历史（RequestHistoryManager 落库）。
-  usage 拆平为三列以便 SQL 聚合（statistics/费用汇总）；request_params 与
+- ``llm_usage``：每次 LLM 调用的 token/费用记录（observation 写入）。
+- ``llm_requests``：完整请求/响应历史（observation 写入）。
+  usage 拆平为列以便 SQL 聚合（statistics/费用汇总）；request_params 与
   tool_calls 结构不定，存 JSON 文本。dashboard 历史页按时间倒序分页查询。
+- 两表经 ``request_id`` 连接；``insert_llm_call`` 把两表写入放进同一事务，
+  供调用方做"聚合账 + 请求明细"的原子记账。
 """
 
 from __future__ import annotations
 
 import sqlite3
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
@@ -16,58 +19,131 @@ from src.modules.storage.repos._base import BaseRepo
 from src.modules.time_utils import now_ms
 
 
+@dataclass
+class LLMUsageInsert:
+    """``llm_usage`` 单行插入载荷（时间戳 None 表示入库时取当前毫秒）。"""
+
+    model_name: str
+    provider_name: str
+    request_type: str
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    total_tokens: int = 0
+    cache_hit_tokens: int = 0
+    cache_miss_tokens: int = 0
+    cost: float = 0.0
+    duration_ms: int = 0
+    profile_name: Optional[str] = None
+    assign_name: Optional[str] = None
+    live_session_id: Optional[int] = None
+    request_id: Optional[str] = None
+    timestamp_ms: Optional[int] = None
+
+
+@dataclass
+class LLMRequestInsert:
+    """``llm_requests`` 单行插入载荷（JSON 列由调用方序列化好传入）。"""
+
+    request_id: str
+    timestamp_ms: int
+    client_type: str = ""
+    model_name: str = ""
+    request_params_json: Optional[str] = None
+    response_content: Optional[str] = None
+    reasoning_content: Optional[str] = None
+    tool_calls_json: Optional[str] = None
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    total_tokens: int = 0
+    cache_hit_tokens: int = 0
+    cache_miss_tokens: int = 0
+    cost: float = 0.0
+    success: bool = True
+    error: Optional[str] = None
+    latency_ms: int = 0
+
+
 class LLMRepo(BaseRepo):
     """llm_usage / llm_requests 两张表的读写。"""
 
-    async def insert_llm_usage(
-        self,
-        *,
-        model_name: str,
-        provider_name: str,
-        request_type: str,
-        prompt_tokens: int,
-        completion_tokens: int,
-        total_tokens: int,
-        cache_hit_tokens: int = 0,
-        cache_miss_tokens: int = 0,
-        cost: float = 0.0,
-        duration_ms: int = 0,
-        profile_name: Optional[str] = None,
-        assign_name: Optional[str] = None,
-        live_session_id: Optional[int] = None,
-        timestamp_ms: Optional[int] = None,
-    ) -> int:
-        """插入一条 ``llm_usage`` 调用记录，返回 lastrowid。"""
-        ts = timestamp_ms if timestamp_ms is not None else now_ms()
+    @staticmethod
+    def _usage_row_params(row: LLMUsageInsert) -> tuple:
+        """组装 llm_usage 插入参数（时间戳在入库时刻解析）。"""
+        ts = row.timestamp_ms if row.timestamp_ms is not None else now_ms()
+        return (
+            row.live_session_id,
+            row.model_name,
+            row.assign_name,
+            row.profile_name,
+            row.provider_name,
+            row.request_type,
+            row.prompt_tokens,
+            row.completion_tokens,
+            row.total_tokens,
+            row.cache_hit_tokens,
+            row.cache_miss_tokens,
+            row.cost,
+            row.duration_ms,
+            ts,
+            row.request_id,
+        )
+
+    @staticmethod
+    def _usage_insert_sql() -> str:
+        return (
+            "INSERT INTO llm_usage ("
+            "live_session_id, model_name, assign_name, profile_name, provider_name,"
+            " request_type, prompt_tokens, completion_tokens, total_tokens,"
+            " cache_hit_tokens, cache_miss_tokens, cost, duration_ms, timestamp_ms, request_id"
+            ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+        )
+
+    @staticmethod
+    def _request_row_params(row: LLMRequestInsert) -> tuple:
+        """组装 llm_requests 插入参数。"""
+        return (
+            row.request_id,
+            row.timestamp_ms,
+            row.client_type,
+            row.model_name,
+            row.request_params_json,
+            row.response_content,
+            row.reasoning_content,
+            row.tool_calls_json,
+            row.prompt_tokens,
+            row.completion_tokens,
+            row.total_tokens,
+            row.cache_hit_tokens,
+            row.cache_miss_tokens,
+            row.cost,
+            1 if row.success else 0,
+            row.error,
+            row.latency_ms,
+        )
+
+    @staticmethod
+    def _request_insert_sql() -> str:
+        return (
+            "INSERT OR IGNORE INTO llm_requests ("
+            "request_id, timestamp_ms, client_type, model_name, request_params, response_content,"
+            " reasoning_content, tool_calls, prompt_tokens, completion_tokens, total_tokens,"
+            " cache_hit_tokens, cache_miss_tokens, cost, success, error, latency_ms"
+            ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+        )
+
+    async def insert_llm_usage_row(self, row: LLMUsageInsert) -> int:
+        """按插入载荷写一条 ``llm_usage``，返回 lastrowid（dataclass 直插面）。"""
 
         def _exec() -> int:
             with self._manager.transaction() as conn:
-                cur = conn.execute(
-                    "INSERT INTO llm_usage ("
-                    "live_session_id, model_name, assign_name, profile_name, provider_name,"
-                    " request_type, prompt_tokens, completion_tokens, total_tokens,"
-                    " cache_hit_tokens, cache_miss_tokens, cost, duration_ms, timestamp_ms"
-                    ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                    (
-                        live_session_id,
-                        model_name,
-                        assign_name,
-                        profile_name,
-                        provider_name,
-                        request_type,
-                        prompt_tokens,
-                        completion_tokens,
-                        total_tokens,
-                        cache_hit_tokens,
-                        cache_miss_tokens,
-                        cost,
-                        duration_ms,
-                        ts,
-                    ),
-                )
+                cur = conn.execute(self._usage_insert_sql(), self._usage_row_params(row))
                 return int(cur.lastrowid or 0)
 
         return await self._run_in_executor(_exec)
+
+    async def insert_llm_usage(self, **kwargs: Any) -> int:
+        """插入一条 ``llm_usage`` 调用记录，返回 lastrowid。"""
+        return await self.insert_llm_usage_row(LLMUsageInsert(**kwargs))
 
     async def insert_llm_request(
         self,
@@ -83,6 +159,8 @@ class LLMRepo(BaseRepo):
         prompt_tokens: int = 0,
         completion_tokens: int = 0,
         total_tokens: int = 0,
+        cache_hit_tokens: int = 0,
+        cache_miss_tokens: int = 0,
         cost: float = 0.0,
         success: bool = True,
         error: Optional[str] = None,
@@ -93,34 +171,51 @@ class LLMRepo(BaseRepo):
         Returns:
             True 实际插入；False 已存在被忽略。
         """
+        row = LLMRequestInsert(
+            request_id=request_id,
+            timestamp_ms=timestamp_ms,
+            client_type=client_type,
+            model_name=model_name,
+            request_params_json=request_params_json,
+            response_content=response_content,
+            reasoning_content=reasoning_content,
+            tool_calls_json=tool_calls_json,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            total_tokens=total_tokens,
+            cache_hit_tokens=cache_hit_tokens,
+            cache_miss_tokens=cache_miss_tokens,
+            cost=cost,
+            success=success,
+            error=error,
+            latency_ms=latency_ms,
+        )
 
         def _exec() -> bool:
             with self._manager.transaction() as conn:
-                cur = conn.execute(
-                    "INSERT OR IGNORE INTO llm_requests ("
-                    "request_id, timestamp_ms, client_type, model_name, request_params, response_content,"
-                    " reasoning_content, tool_calls, prompt_tokens, completion_tokens, total_tokens,"
-                    " cost, success, error, latency_ms"
-                    ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                    (
-                        request_id,
-                        timestamp_ms,
-                        client_type,
-                        model_name,
-                        request_params_json,
-                        response_content,
-                        reasoning_content,
-                        tool_calls_json,
-                        prompt_tokens,
-                        completion_tokens,
-                        total_tokens,
-                        cost,
-                        1 if success else 0,
-                        error,
-                        latency_ms,
-                    ),
-                )
+                cur = conn.execute(self._request_insert_sql(), self._request_row_params(row))
                 return cur.rowcount > 0
+
+        return await self._run_in_executor(_exec)
+
+    async def insert_llm_call(
+        self,
+        *,
+        usage: LLMUsageInsert,
+        request: LLMRequestInsert,
+    ) -> int:
+        """同事务写入 ``llm_usage`` 与 ``llm_requests`` 两行，返回 usage 行 rowid。
+
+        连接键由调用方保证：两载荷填同一个 ``request_id`` 时聚合账与请求
+        明细可 join。第二步失败（如约束/触发器报错）整体回滚，两表均无新行。
+        """
+
+        def _exec() -> int:
+            with self._manager.transaction() as conn:
+                cur = conn.execute(self._usage_insert_sql(), self._usage_row_params(usage))
+                usage_rowid = int(cur.lastrowid or 0)
+                conn.execute(self._request_insert_sql(), self._request_row_params(request))
+                return usage_rowid
 
         return await self._run_in_executor(_exec)
 

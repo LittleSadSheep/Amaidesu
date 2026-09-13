@@ -22,7 +22,9 @@ from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
+from src.modules.llm.observation import record_request
 from src.modules.logging import get_logger
+from src.modules.storage.repos.llm import LLMRequestInsert
 from src.modules.time_utils import now_ms
 
 if TYPE_CHECKING:
@@ -220,27 +222,36 @@ class RequestHistoryManager:
         return record.request_id
 
     async def _persist_request(self, record_dict: Dict[str, Any]) -> None:
-        """写单条请求到 ``llm_requests`` 表；失败仅告警（记账旁路语义）。"""
+        """写单条请求到 ``llm_requests`` 表；失败仅告警（记账旁路语义）。
+
+        SQLite 写入统一走 observation（两表唯一写入者），本方法只负责把
+        请求记录字典整理成插入载荷。
+        """
         usage = record_dict.get("usage") or {}
         try:
-            await self._llm_repo.insert_llm_request(
-                request_id=record_dict["request_id"],
-                timestamp_ms=record_dict.get("timestamp", 0),
-                client_type=record_dict.get("client_type", ""),
-                model_name=record_dict.get("model_name", ""),
-                request_params_json=json.dumps(
-                    record_dict.get("request_params") or {}, ensure_ascii=False, default=str
+            await record_request(
+                self._llm_repo,
+                LLMRequestInsert(
+                    request_id=record_dict["request_id"],
+                    timestamp_ms=record_dict.get("timestamp", 0),
+                    client_type=record_dict.get("client_type", ""),
+                    model_name=record_dict.get("model_name", ""),
+                    request_params_json=json.dumps(
+                        record_dict.get("request_params") or {}, ensure_ascii=False, default=str
+                    ),
+                    response_content=record_dict.get("response_content"),
+                    reasoning_content=record_dict.get("reasoning_content"),
+                    tool_calls_json=json.dumps(record_dict.get("tool_calls") or [], ensure_ascii=False, default=str),
+                    prompt_tokens=int(usage.get("prompt_tokens", 0)),
+                    completion_tokens=int(usage.get("completion_tokens", 0)),
+                    total_tokens=int(usage.get("total_tokens", 0)),
+                    cache_hit_tokens=int(usage.get("cache_hit_tokens", 0)),
+                    cache_miss_tokens=int(usage.get("cache_miss_tokens", 0)),
+                    cost=float(record_dict.get("cost", 0.0)),
+                    success=bool(record_dict.get("success", True)),
+                    error=record_dict.get("error"),
+                    latency_ms=int(record_dict.get("latency_ms", 0)),
                 ),
-                response_content=record_dict.get("response_content"),
-                reasoning_content=record_dict.get("reasoning_content"),
-                tool_calls_json=json.dumps(record_dict.get("tool_calls") or [], ensure_ascii=False, default=str),
-                prompt_tokens=int(usage.get("prompt_tokens", 0)),
-                completion_tokens=int(usage.get("completion_tokens", 0)),
-                total_tokens=int(usage.get("total_tokens", 0)),
-                cost=float(record_dict.get("cost", 0.0)),
-                success=bool(record_dict.get("success", True)),
-                error=record_dict.get("error"),
-                latency_ms=int(record_dict.get("latency_ms", 0)),
             )
         except Exception as exc:  # noqa: BLE001 边界处吸收 + 日志
             self.logger.warning(f"请求历史写库失败: {exc}")
