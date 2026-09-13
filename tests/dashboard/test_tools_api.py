@@ -35,7 +35,7 @@ def _make_spec(
     name: str,
     description: str,
     parameters_schema=None,
-    provider: str = "builtin",
+    provider: str = "framework",
     kind: str = "sync",
     result_event: str = "",
 ):

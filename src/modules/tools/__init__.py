@@ -16,7 +16,7 @@ Amaidesu 工具层
   - "async"：调用→发送即受理；完成结果经 ``result_event`` 事件回传
 
 ## provider 来源溯源
-- "builtin"：进程内框架内置（含 AgentControl、speak 等）
+- "framework"：进程内框架内置（AgentControl 等框架级能力）
 - "game"   ：玩家引擎 Agent 声明的工具（动态，list_tools 返回）
 - "mcp"    ：MCP server 暴露的工具（见 ``src/modules/mcp/provider.py``）
 

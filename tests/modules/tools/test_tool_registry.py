@@ -178,8 +178,8 @@ async def test_provider_registration_keys_are_derived_full_names(registry: ToolR
     # provider 过滤（按提供者名）
     game_tools = registry.list_tools(provider="game")
     assert len(game_tools) == 2
-    builtin_tools = registry.list_tools(provider="builtin")
-    assert len(builtin_tools) == 0
+    framework_tools = registry.list_tools(provider="framework")
+    assert len(framework_tools) == 0
 
 
 async def test_provider_name_spec_provider_mismatch_rejected(registry: ToolRegistry) -> None:

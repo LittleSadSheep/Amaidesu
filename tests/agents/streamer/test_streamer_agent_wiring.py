@@ -486,10 +486,10 @@ async def test_vts_exception_does_not_break_decision_loop():
 
     registry.register(
         ToolSpec(
-            name="vts_set_expression",
+            name="set_expression",
             description="failing mock",
             kind="sync",
-            provider="builtin",
+            provider="vts",
         ),
         _failing_vts,
     )

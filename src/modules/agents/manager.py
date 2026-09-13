@@ -36,7 +36,7 @@ class AgentRegistration:
     agent: BaseAgent
     description: str = ""
     registered_at_ms: int = 0
-    spec_provider: str = "builtin"  # 工具来源溯源标记
+    spec_provider: str = "framework"  # 工具来源溯源标记
 
 
 class AgentManager:
@@ -72,14 +72,14 @@ class AgentManager:
         agent: BaseAgent,
         *,
         description: Optional[str] = None,
-        spec_provider: str = "builtin",
+        spec_provider: str = "framework",
     ) -> bool:
         """注册一个 Agent。
 
         Args:
             agent: BaseAgent 实例
             description: 显示描述（默认用 agent.description）
-            spec_provider: 工具来源溯源（"builtin" / Agent 名；"mcp" 预留枚举值，暂无实现）
+            spec_provider: 工具来源溯源（"framework" / Agent 名；"mcp" 预留枚举值，暂无实现）
         """
         if not agent.name:
             logger.warning(

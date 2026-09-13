@@ -75,7 +75,7 @@ _BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 # Agent 注册元数据：spec_provider（工具来源溯源）与描述，键 = 注册名。
 _AGENT_REGISTRATION_META: Dict[str, Tuple[str, str]] = {
     "streamer": (
-        "builtin",
+        "streamer",
         "直播主播决策主体：聚合弹幕 → Planner 决策 → Replyer 表达",
     ),
     "minecraft": ("minecraft", "游戏 AI 玩家代理（Minecraft / MaiCraftMod）"),

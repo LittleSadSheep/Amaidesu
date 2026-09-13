@@ -718,12 +718,12 @@ class MyAgent(BaseAgent):
 **同包内工具**（`src/agents/<name>/my_tool.py`，参见「添加工具」章 路径 ①）：
 
 ```python
-# my_tool.py（放在同包内，provider="game" 或 "builtin" 按业务归属）
+# my_tool.py（放在同包内，provider 按提供者归属取 Agent 名或 "framework"）
 from src.modules.tools import ToolSpec, ToolInvocation, ToolExecutionResult
 from src.modules.tools.provider import ToolProvider
 
 def build_my_tool_spec() -> ToolSpec:
-    return ToolSpec(name="my_agent_tool", ..., provider="game")  # 或 "builtin"
+    return ToolSpec(name="my_agent_tool", ..., provider="game")  # 或 "framework"
 
 class MyToolProvider(ToolProvider):
     @property
@@ -774,7 +774,7 @@ class MyToolProvider(ToolProvider):
 | 范例 | 文件 | 说明 |
 |------|------|------|
 | StreamerAgent（业务 Agent） | `src/agents/streamer/streamer_agent.py` | 完整范例：订阅事件 + 后台双任务 + 流程单 + 三工具 Provider |
-| StreamerAgent 工具 | `src/agents/streamer/tools/{reply_tool,proactive_tool,command_tool}.py` | `provider="builtin"`；StreamerAgent 内部用 |
+| StreamerAgent 工具 | `src/agents/streamer/tools/{reply_tool,rundown_tool}.py` | reply 为 `provider="streamer"`、rundown_control 为 `provider="rundown"`；StreamerAgent 内部用 |
 | TextAdvGameAgent（游戏 Agent） | `src/agents/text_adv/agent.py` | 自包含包；`provider="text_adv"`（分类 game）；感知-推进闭环 |
 | TextAdvGameAgent 工具 | `src/agents/text_adv/tools.py` | `provider="text_adv"`（分类 game）；Agent 专属推进工具 |
 | StreamerAgent 便捷工厂 | `src/agents/streamer/streamer_agent.py::build_streamer_agent` | 构造 + register 一站式 |

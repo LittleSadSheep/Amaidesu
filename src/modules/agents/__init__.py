@@ -4,7 +4,7 @@ Amaidesu Agent 模块
 提供：
 - ``BaseAgent`` —— 框架对 Agent 的唯一最小契约（协议六面）
 - ``AgentManager`` —— 统一注册 / 启动 / 监控 / 重启所有 Agent
-- ``AgentControl`` —— 框架级 pause/resume/shutdown/restart 工具（provider=builtin）
+- ``AgentControl`` —— 框架级 pause/resume/shutdown/restart 工具（provider=framework）
 
 ## 协议六面（最小契约）
 

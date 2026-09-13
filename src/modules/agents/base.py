@@ -23,7 +23,7 @@ class MinecraftAgent(BaseAgent):
 
 ## 关键决策
 - 框架级统一控制（pause/resume/shutdown）：由 ``AgentControl`` 工具提供
-  （provider="builtin"——框架内置提供，非独立源）
+  （provider="framework"——框架内置提供，非独立源）
 - 无子 Agent（用户定）：Agent 只有一层
 """
 
