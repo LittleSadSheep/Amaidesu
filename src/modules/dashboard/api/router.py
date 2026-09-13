@@ -9,6 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from src.modules.dashboard.api import (
     agenda,
+    agents,
     components,
     config,
     debug,
@@ -58,6 +59,9 @@ def create_app() -> FastAPI:
 
     # 观众统计只读端点（viewers 表最小消费面）
     app.include_router(viewers.router, prefix="/api/v1/viewers", tags=["Viewers"])
+
+    # Agent 控制面（运行态观测 + 框架级控制）
+    app.include_router(agents.router, prefix="/api/v1/agents", tags=["Agents"])
 
     return app
 

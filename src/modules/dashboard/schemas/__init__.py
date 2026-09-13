@@ -38,6 +38,14 @@ from src.modules.dashboard.schemas.llm import (
     LLMUsageSummaryResponse,
     TokenUsageSchema,
 )
+from src.modules.dashboard.schemas.agent import (
+    AgentControlAction,
+    AgentControlRequest,
+    AgentControlResponse,
+    AgentListResponse,
+    AgentStateResponse,
+    AgentSummary,
+)
 from src.modules.dashboard.schemas.agenda import (
     RundownConfigView,
     RundownControlAction,
@@ -104,6 +112,13 @@ __all__ = [
     "SubscribeRequest",
     "SubscribeResponse",
     "ClientInfo",
+    # Agent 控制面
+    "AgentControlAction",
+    "AgentControlRequest",
+    "AgentControlResponse",
+    "AgentListResponse",
+    "AgentStateResponse",
+    "AgentSummary",
     # LLM
     "TokenUsageSchema",
     "LLMUsageStatsResponse",
