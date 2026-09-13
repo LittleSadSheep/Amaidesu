@@ -70,5 +70,5 @@ dashboard 维持三张映射表 + 手写类型/约束校验（复刻 Pydantic �
 
 ## 参考
 
-- [组件开发指南 · 配置 Schema 约定](../../development/component-guide.md#配置-schema-约定包内权威)
-- [架构总览 · 配置驱动](../overview.md)
+- [组件开发指南 · 配置 Schema 约定](../guides/component.md#配置-schema-约定包内权威)
+- [v2 架构叙事 · §6.2 配置](../architecture/v2-architecture.md)

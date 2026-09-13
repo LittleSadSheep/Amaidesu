@@ -1,6 +1,6 @@
 # 数据流规则（v2.0.0）
 
-> **本文档是 Amaidesu v2 数据流与边界规则的权威定义。** 完整事件表见 [事件系统](event-system.md)，组件清单见 [架构总览](overview.md)。本文不复制事件表与组件清单，只约束数据怎么走、边界在哪里。
+> **本文档是 Amaidesu v2 数据流与边界规则的权威定义。** 完整事件表见 [事件系统](event-system.md)；组件清单以代码为唯一事实源（`src/`、`ToolRegistry`）。本文不复制事件表与组件清单，只约束数据怎么走、边界在哪里。
 
 ## 架构一句话
 
@@ -11,9 +11,9 @@ v2 不再有 Input/Decision/Output 三阶段流水线，组件通过**语义域�
 | 我想…… | 查看文档 |
 |--------|---------|
 | 知道所有事件名、Payload 类型、订阅者 | [事件系统](event-system.md) |
-| 知道组件清单与目录结构 | [架构总览](overview.md) |
-| 知道事件命名规范 | [事件命名规范](event-naming-convention.md) |
-| 知道怎么开发 Agent/工具/采集器 | [组件开发指南](../development/component-guide.md) |
+| 知道组件清单与目录结构 | （代码：`src/`、`ToolRegistry`） |
+| 知道事件命名规范 | [事件命名](event-naming.md) |
+| 知道怎么开发 Agent/工具/采集器 | [组件开发指南](../guides/component.md) |
 | **知道数据该往哪儿流、哪儿不能流** | 本文档 |
 
 ---
@@ -266,9 +266,9 @@ v2 中不同数据走不同通道，不要混用：
 
 | 我想知道…… | 权威处 |
 |----------|--------|
-| 全部事件名 + Payload 类型 + 发布者/订阅者 | [事件系统 - 事件事实表](event-system.md#事件事实表) |
-| 组件清单、目录结构、启动时序 | [架构总览 - 组件清单](overview.md#组件清单) |
-| 事件命名规范与语义域分层 | [事件命名规范](event-naming-convention.md) |
-| Agent/工具/采集器三范式开发详解 | [组件开发指南](../development/component-guide.md) |
+| 全部事件名 + Payload 类型 + 发布者/订阅者 | [事件系统 - 事件事实表](event-system.md#事件事实表与拓扑) |
+| 组件清单、目录结构、启动时序 | （代码：`src/`、`ToolRegistry`） |
+| 事件命名规范与语义域分层 | [事件命名](event-naming.md) |
+| Agent/工具/采集器三范式开发详解 | [组件开发指南](../guides/component.md) |
 | 拦截器开发指南 | [事件系统 - 事件拦截器](event-system.md#事件拦截器interceptor) |
-| ADR 决策记录（Wave 1-6 各次重构） | [架构决策记录](adr/README.md) |
+| ADR 决策记录（Wave 1-6 各次重构） | [架构决策记录](../decisions/README.md) |

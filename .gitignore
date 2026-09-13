@@ -230,3 +230,4 @@ config.toml.backup*
 /*.mkv
 /*.webm
 .playwright-mcp/
+.zcode/plans/plan-sess_eb34abcd-0072-4aaf-a9e6-168eb2d2c159.md

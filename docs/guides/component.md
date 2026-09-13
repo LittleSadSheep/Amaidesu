@@ -11,11 +11,41 @@
 
 ## 目录
 
+- [判据：组件该做成哪一类](#判据组件该做成哪一类)
 - [添加采集器](#添加采集器)
 - [添加工具](#添加工具)
 - [添加 Agent](#添加-agent)
 - [端到端消息流](#端到端消息流)
 - [通用规范与引用](#通用规范与引用)
+
+---
+
+## 判据：组件该做成哪一类
+
+新组件落地前，先按以下三个问题按序作答。三问归一答案即该组件的顶层类型（**采集器 / 工具 / Agent**）。
+
+```
+Q1  它持有一个「办事过程」吗？
+    （一次调用返回后，它是否还在为某个目标干活，或被唤起继续干）
+    │
+    ├─ 否 ──▶ 工具
+    │        每次调用独立完成。可以有内部状态、可以有维护性后台循环
+    │        （MCP 重连、健康探活）——但**不持有跨调用的办事过程**。
+    │
+    └─ 是 ──▶ Q2
+              过程怎么推进由谁决定？
+              ├─ 「它自己」（命令方只给目标不给步骤）──▶ Agent
+              │     ├─ 没人下命令也持续跑 ──▶ 主播 Agent（本项目唯一）
+              │     └─ 收到命令才启动一段、完成即停 ──▶ 游戏 Agent
+              └─ 「外部逐步规定」──▶ 这不是过程，是多次工具调用 ──▶ 回工具
+
+Q3（数据源型并行判据）
+    持续采数据并推送、无目标无起止、生命周期挂装配期 ──▶ 采集器
+```
+
+**关键**：Q2 的「自主决定」**不要求是 LLM**，代码决定也算。本次讨论反复摇摆（工具↔Agent↔采集器）的根源就是**误用「有无 LLM 循环」当尺子**。
+
+**与「红线三分」的区别**：本节判**组件顶层类型**（采集器 / 工具 / Agent）；Agent 内部的部件如何处置（注册为工具 / 留在 Agent 内 / 代码直连）是**另一轴**，见下文[红线三分](#红线三分)。
 
 ---
 
@@ -427,7 +457,9 @@ registry.register_provider(
    由 Agent 经 `framework_delegate` 工具委派游戏 Agent（映射值为给目标
    Agent 的自然语言指令，非 LLM 可调命令）。
 
-**红线三分**（AGENTS.md 同款表述）：
+#### 红线三分
+
+Agent 内部件处置轴（AGENTS.md 同款表述）；组件顶层定类见[判据：组件该做成哪一类](#判据组件该做成哪一类)。
 
 | 类别 | 处置 | 例子 |
 |------|------|------|
@@ -836,7 +868,7 @@ class MyToolProvider(ToolProvider):
 
 ### 已知缺口
 
-- **TTS 已基础模块化（原缺口已闭环 + v2.0.12 §8 修正）**：`infra.toml [tts].enabled = true` 后，`build_tts_infrastructure` 装配期按 `[tts].provider` 单选构造引擎实例，StreamerAgent 构造期接收并把 `engine.handle_speech` 注入 UtteranceQueue；reply 产出的 speech 经 UtteranceQueue → 引擎 `handle_speech` 播出（不走 ToolRegistry，零 TTS 工具条目）。设计决策见 [ADR-007](../architecture/adr/007-tts-infrastructure-pipeline.md)。
+- **TTS 已基础模块化（原缺口已闭环 + v2.0.12 §8 修正）**：`infra.toml [tts].enabled = true` 后，`build_tts_infrastructure` 装配期按 `[tts].provider` 单选构造引擎实例，StreamerAgent 构造期接收并把 `engine.handle_speech` 注入 UtteranceQueue；reply 产出的 speech 经 UtteranceQueue → 引擎 `handle_speech` 播出（不走 ToolRegistry，零 TTS 工具条目）。设计决策见 [ADR-007](../decisions/007-tts-infrastructure-pipeline.md)。
 - **工具注册路径唯一**：`AgentManager` 不聚合工具注册——真实注册只走两条：① Agent 子类 `_register_tools()` 中自己 `registry.register_provider(provider, visible_to=...)`；② 分类工具在 `main.py` 由 `bind_core_tools(registry, tools_cfg)` 按域开关装配。装配结束后 `AgentManager.audit_tools(registry)` 按派生全名对账（缺失即 warning），不写任何工具实现。
 
 ---
@@ -865,9 +897,9 @@ class MyToolProvider(ToolProvider):
 
 ### 相关文档
 
-- [开发规范](../development-guide.md) — 代码风格与命名约定
-- [测试指南](testing-guide.md) — 测试规范与技巧
-- [3阶段架构总览](../architecture/overview.md) — 顶层架构
+- [开发规范](../../AGENTS.md#代码约定) — 代码风格与命名约定
+- [测试指南](testing.md) — 测试规范与技巧
+- [v2 架构叙事](../architecture/v2-architecture.md) — 顶层架构
 - [事件系统](../architecture/event-system.md) — EventBus 与事件拦截器
-- [事件命名规范](../architecture/event-naming-convention.md) — 事件名动词链
+- [事件命名](../architecture/event-naming.md) — 事件名动词链
 - [数据流规则](../architecture/data-flow.md) — 单向数据流约束

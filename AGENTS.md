@@ -11,7 +11,7 @@
 ## 快速方向
 
 - 架构与设计文档：`docs/architecture/`
-- 开发指南文档：`docs/development/`
+- 开发指南文档：`docs/guides/`
 - 安装与运行：README.md
 
 ## 硬约束
@@ -32,9 +32,10 @@
 - **游戏 Agent**：命令驱动（类 Code Agent）——收到命令才启动任务内有界循环，任务完成即停、空闲零消耗；因有自身状态与任务内自主决策，仍属 Agent
 - **工具**：被动驱动，被调才干活，无循环（TTS 等基础能力属基础设施，走独立装配通道）
 - 直播内容 = 编排配置 + Planner 上下文/行为模式的变化，代码模块零新增
+- 新组件的定类判据序列（Q1 持过程 → Q2 推进权 → Q3 数据源）见 [组件开发指南](docs/guides/component.md#判据组件该做成哪一类)
 
 **边界规则**（判据的直接应用，违反即架构回退）：
-- **架构红线三分**（详见 `docs/development/component-guide.md` 红线三分节）：
+- **架构红线三分**（详见 `docs/guides/component.md` 红线三分节）：
   1. **LLM 可调的内部工具** → 注册 + 名单隔离（自己的工具填自己；如 `streamer_reply` / `minecraft_todo`）
   2. **Planner / Replyer 类本体** → 留在 Agent 内部，不进表（决策循环与表达引擎；代码直连）
   3. **代码直连的内部件** → 不是工具、不进表（无 ToolSpec、无注册；如 ProactiveTrigger、命令解析原语）
@@ -58,6 +59,8 @@
 - **时间字段**：统一毫秒——时刻用 `int` Unix epoch 毫秒，时长/超时命名 `<name>_ms`，秒单位变体（`timestamp_s` / `duration_seconds`）与本仓库约定冲突；历史 `timestamp` 字段用 Pydantic alias 兼容
 - **依赖注入**：服务对象（LLM/提示词/事件总线等）一律构造器注入；跨组件传递用参数显式传递，Context 容器只装上下文数据
 - **import 纪律**：import 一律放文件顶部（`from __future__` 之后），按 isort 排序。函数体内 import 限 5 种情形，且必须自足注释说明原因：TYPE_CHECKING 块、循环 import 规避、可选重型依赖延迟加载、Pydantic `model_rebuild()` forward-ref、测试可 mock 性。顶部已有同模块 import 时，函数内直接复用顶部引用
+- **类型注解**：所有函数与方法必须含完整类型注解（参数与返回值类型）；缺注解视为缺陷，必要时通过 `TYPE_CHECKING` 推迟导入以避免循环
+- **日志使用**：统一通过 `src.modules.logging.get_logger` 取 logger，参数用类名或模块名（命令行 `--filter <name>` 按此过滤可见输出）；异常路径一律 `logger.error(..., exc_info=True)` 或 `logger.warning(...)` 携带上下文，不得静默吞异常
 
 ### AI 痕迹防范（防 AI slop）
 
@@ -82,7 +85,26 @@
 
 ### 文档维护
 
-**单一事实源**：修改以下事实时只改权威处，其他文件只引用链接——事件表→`docs/architecture/event-system.md`；组件清单/目录结构→`docs/architecture/overview.md`；数据流规则→`docs/architecture/data-flow.md`；游戏 Agent 范式→`docs/architecture/minecraft-agent.md`；三范式开发指南→`docs/development/component-guide.md`；架构决策记录→`docs/architecture/adr/`（按创建时间递增编号，含状态/日期/实现提交 hash）。
+**单一事实源**：每个事实只在权威处定义一次，其他位置用链接引用，绝不复制。可导出事实（组件清单、目录树、工具目录、配置键列表、事件名清单等）一律以代码为唯一事实源，文档不手抄。
+
+| 事实 | 权威处 |
+|------|--------|
+| 事件名（有哪些/常量值） | 代码 `src/modules/events/names.py` 的 `CoreEvents` |
+| 事件语义/订阅契约/拦截器 | `docs/architecture/event-system.md` |
+| 事件命名规则 | `docs/architecture/event-naming.md` |
+| 数据流边界与禁止模式 | `docs/architecture/data-flow.md` |
+| 组件清单/目录结构/工具目录/生命周期 | 代码（`src/`、`ToolRegistry`、`BaseAgent`/`BaseCollector`） |
+| 配置键/Schema/迁移 | 代码 `src/modules/config/` |
+| 存储表结构 | 代码 `src/modules/storage/` + `SCHEMA_VERSION` |
+| 硬约束/代码约定/提交纪律/配置与存储规程/文档规程/ADR 政策 | `AGENTS.md`（本文件） |
+| 架构决策 | `docs/decisions/` |
+| 三范式开发流程 | `docs/guides/component.md` |
+| 版本与发布 | `docs/guides/release.md` |
+| 游戏 Agent 范式 | `docs/architecture/minecraft-agent.md` |
+
+**ADR 编写规范**：决策记录位于 `docs/decisions/`，文件名 `NNN-短横线描述.md`，编号按创建时间递增、全局连续、不得跳号或重复；失效 ADR 直接删除（git 历史保留）。每篇标题下必须含三行元数据——状态（已采纳/已废弃/草案）、日期（YYYY-MM-DD）、实现提交（完整 40 位 hash 加 `git show <hash>` 可追溯的提交信息）。正文采用 Nygard 四段式：**背景 / 决策 / 替代方案 / 后果**。新增 ADR 后同步更新 `docs/decisions/README.md` 清单。
+
+**链接规范**：文档间引用一律相对路径，目录层级需正确换算（`docs/architecture/` 引用 `docs/guides/` 加 `../`）；图片统一以 `![描述](../images/xxx.png)` 引用；锚点基于标题生成，标题编号会保留在锚点中。
 
 - 变更历史只在 git log，文档内不设"变更记录/最后更新"条目——文末堆积式 changelog 是本项目真实发生过的事故（持续污染每次 AI 会话上下文）；文档正文陈述当前事实即可
 - 图片放 `docs/images/`，视频放 `docs/videos/`
@@ -110,7 +132,7 @@
 
 - pyproject `version` 是对外版本号的唯一声明处，git tag `vX.Y.Z` 是发布事实源；版本号只在发布时 bump，发布动作（CHANGELOG + bump + tag）在开发主线 v2.0.0 上完成，main 仅作 `--ff-only` 快进的发布线，不产生自己的提交
 - 配置 `[meta].version` 与存储 `SCHEMA_VERSION` 是数据迁移机制，版本流独立，不参与发布
-- 发布步骤与 CHANGELOG 格式见 `docs/development/release-guide.md`，决策依据见 `docs/architecture/adr/016-versioning-and-release-model.md`
+- 发布步骤与 CHANGELOG 格式见 `docs/guides/release.md`，决策依据见 `docs/decisions/016-versioning-and-release-model.md`
 
 ### 多工作树并行开发
 

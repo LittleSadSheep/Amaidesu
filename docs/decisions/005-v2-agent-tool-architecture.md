@@ -4,7 +4,7 @@
 - 日期：2026-08-23（定案）/ 2026-08-25（实现落库）/ 2026-09-07（判据修正）
 - 实现提交：`22519a5c057b8675fdd83faca2e6e0ac0a070f1b`（feat(v2): 主播 Agent——planner/replyer 决策内核与 Agenda 子系统）；配套落地见 `1012b31`（采集器主动推事件）、`4187a54`（webui 适配）等 v2 提交链
 
-> **完整叙事**（四代架构史、主体性判据推导、防换皮铁闸、九 Wave 落地过程）见 [v2-architecture.md](../v2-architecture.md)；本文仅保留决策记录的标准四段式。
+> **完整叙事**（四代架构史、主体性判据推导、防换皮铁闸、九 Wave 落地过程）见 [v2-architecture.md](../architecture/v2-architecture.md)；本文仅保留决策记录的标准四段式。
 
 ## 背景（Context）
 

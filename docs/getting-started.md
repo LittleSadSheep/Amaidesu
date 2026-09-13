@@ -141,7 +141,7 @@ user_nickname = "控制台"
 
 #### 启用渲染输出（可选）
 
-字幕 / 皮套 / OBS 等渲染工具由 `config/tools.toml` 的提供者开关控制（开一个提供者 = 其全部工具进入可见集）；**TTS 是基础设施**，由 `config/infra.toml` 的 `[tts]` 段独立控制（`enabled = true` 即主播每句话自动合成播出，`provider` 单选引擎；ToolRegistry 中零 TTS 条目），详见 [ADR-007](architecture/adr/007-tts-infrastructure-pipeline.md)。
+字幕 / 皮套 / OBS 等渲染工具由 `config/tools.toml` 的提供者开关控制（开一个提供者 = 其全部工具进入可见集）；**TTS 是基础设施**，由 `config/infra.toml` 的 `[tts]` 段独立控制（`enabled = true` 即主播每句话自动合成播出，`provider` 单选引擎；ToolRegistry 中零 TTS 条目），详见 [ADR-007](decisions/007-tts-infrastructure-pipeline.md)。
 
 ```toml
 # config/tools.toml —— 提供者开关（avatar=皮套 / studio=演播）
@@ -190,11 +190,11 @@ uv run python main.py --dry
 | **业务 Agent（Agent）** | 拥有内部状态与工具的主循环体；订阅事件、决策、调用工具 | `src/agents/` | `[agents]` + `[agents.<name>]` |
 | **工具（Tool）** | 单一能力契约（ToolSpec + BaseToolProvider / as_tool_impl），由 Agent 在决策时按需调用 | `src/modules/tools/` | `tools.toml` 提供者开关与子配置 |
 
-> 渲染工具（字幕 / VTS / OBS 等）在 v2 中以 **Tool Provider** 的形式注册：开启对应提供者开关后，工具包内的组件会注册到 `ToolRegistry` 中。**TTS 是例外**——语音已成为基础模块（v2.0.12 §8 修正：整体提升为基础设施，移出工具池），位于 `src/modules/tts/`，由 `config/infra.toml` 的 `[tts]` 段驱动装配（`build_tts_infrastructure` 按 `[tts].provider` 单选构造引擎实例注入 StreamerAgent，ToolRegistry 中零 TTS 条目；开启后主播每句话自动播出），详见 [组件开发指南](development/component-guide.md) 与 [ADR-007](architecture/adr/007-tts-infrastructure-pipeline.md)。
+> 渲染工具（字幕 / VTS / OBS 等）在 v2 中以 **Tool Provider** 的形式注册：开启对应提供者开关后，工具包内的组件会注册到 `ToolRegistry` 中。**TTS 是例外**——语音已成为基础模块（v2.0.12 §8 修正：整体提升为基础设施，移出工具池），位于 `src/modules/tts/`，由 `config/infra.toml` 的 `[tts]` 段驱动装配（`build_tts_infrastructure` 按 `[tts].provider` 单选构造引擎实例注入 StreamerAgent，ToolRegistry 中零 TTS 条目；开启后主播每句话自动播出），详见 [组件开发指南](guides/component.md) 与 [ADR-007](decisions/007-tts-infrastructure-pipeline.md)。
 
 ### 3.3 可用组件清单
 
-完整字段含义见 [3阶段架构总览](architecture/overview.md)；本节列出当前已落地的组件名。
+完整字段含义见 [v2 架构叙事](architecture/v2-architecture.md)；本节列出当前已落地的组件名。
 
 #### 采集器（`SUPPORTED_COLLECTORS`，即注册表在册名单）
 
@@ -398,9 +398,9 @@ vite_dev_port = 60315                               # Vite 开发服务器端口
 
 ## 6. 下一步
 
-- 了解架构设计：[3阶段架构总览](architecture/overview.md)
-- 学习开发规范：[开发规范](development-guide.md)
-- 写一个自己的组件（Collector / Agent / Tool / 拦截器）：[组件开发指南](development/component-guide.md)
+- 了解架构设计：[v2 架构叙事](architecture/v2-architecture.md)
+- 学习开发规范：[开发规范](../AGENTS.md#代码约定)
+- 写一个自己的组件（Collector / Agent / Tool / 拦截器）：[组件开发指南](guides/component.md)
 
 ---
 

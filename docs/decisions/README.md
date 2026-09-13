@@ -26,10 +26,8 @@ ADR 记录已经作出的决定，不替代实现文档，也不用于记录迁�
 
 ## 现有 ADR
 
-- [ADR-001：Pipeline 使用依赖注入而非 Context Object](001-pipeline-uses-di-not-context.md)（已废弃：管道系统移除）
-- [ADR-002：Pipeline[T] 泛型基类设计](002-pipeline-generic-abstraction.md)（已废弃：管道系统移除）
-- [ADR-003：@pipeline 装饰器注册机制](003-pipeline-decorator-registration.md)（已废弃：管道系统移除）
-- [ADR-004：OutputHandlerManager 直接调度 Handler](004-output-direct-dispatch.md)（已废弃：三阶段架构移除）
+ADR 编号按创建时间递增，不因条目删除而重排——001~004 因对应系统（管道 / 三阶段输出）已移除而不再列出，从 005 起保留编号语义（被删除条目的编号空缺以避免交叉引用失锚）。
+
 - [ADR-005：v2.0.0 采用 Agent + 工具 + 存储 + 编排架构](005-v2-agent-tool-architecture.md)
 - [ADR-006：LLM 模拟器是官方开发基础设施，mock 采集器仅承担确定性回放](006-simulator-is-dev-infrastructure.md)
 - [ADR-007：TTS 作为配置驱动基础设施（reply → utterance 事件 → 引擎）；§8 概念修正后 TTS 提升为基础设施（基础模块），退出工具池](007-tts-infrastructure-pipeline.md)
@@ -40,5 +38,6 @@ ADR 记录已经作出的决定，不替代实现文档，也不用于记录迁�
 - [ADR-012：工具可见名单机制（注册处生产侧声明）](012-tool-visibility-list.md)
 - [ADR-013：异步任务基建与 Agent 委派原语](013-async-task-infrastructure-and-delegation.md)
 - [ADR-014：配置体系六文件重构（每文件版本 / 包内权威 / 单一管线 / 值迁移不做）](014-config-six-file-refactor.md)
+- [ADR-015：live_chat 单一事实源，删除 ContextService](015-live-chat-single-source.md)
 - [ADR-016：版本号与发布模型（pyproject 单一声明 + tag 事实源 + main 发布线）](016-versioning-and-release-model.md)
 - [ADR-017：主播 Agent 分包按接缝抽厚簇（执行抽、调度不抽）](017-streamer-agent-seam-split.md)

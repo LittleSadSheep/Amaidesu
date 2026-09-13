@@ -169,7 +169,7 @@ input_config = config_service.get_config_with_defaults(
 )
 ```
 
-> 配置文件的完整结构与 LLM provider/profile 两层模型见 [快速开始 - 编辑配置文件](../getting-started.md#25-编辑配置文件)。
+> 配置文件的完整结构与 LLM provider/profile 两层模型见 [快速开始 - 编辑配置](../getting-started.md#25-编辑配置)。
 
 ### 配置文件结构
 
@@ -264,11 +264,11 @@ uv run python main.py
 
 ## 相关文档
 
-- [组件开发指南](component-guide.md) - 如何开发自定义采集器/工具/Agent
-- [主播上下文构成](streamer-context.md) - 主播 Agent 决策窗的消息形态、参考段与输入预算
+- [组件开发指南](component.md) - 如何开发自定义采集器/工具/Agent
+- [主播上下文构成](../architecture/streamer-context.md) - 主播 Agent 决策窗的消息形态、参考段与输入预算
 - [事件拦截器](../architecture/event-system.md#事件拦截器interceptor) - 如何开发自定义拦截器
-- [开发规范](../development-guide.md) - 代码风格和约定
-- [架构总览](../architecture/overview.md) - v2.0.0 架构设计总览
+- [开发规范](../../AGENTS.md#代码约定) - 代码风格和约定
+- [v2 架构叙事](../architecture/v2-architecture.md) - v2.0.0 架构设计总览
 - [事件系统](../architecture/event-system.md) - EventBus 使用指南
 
 ---

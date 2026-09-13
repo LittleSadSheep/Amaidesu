@@ -51,4 +51,4 @@ v2.0.0 重构以来项目没有任何发布动作：仓库零 git tag，main 停
 
 ## 参考
 
-- [发布指南（操作流程）](../../development/release-guide.md)
+- [发布指南（操作流程）](../guides/release.md)

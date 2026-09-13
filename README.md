@@ -33,7 +33,7 @@ Amaidesu!
 
 - **采集器（Collector）**：持续采集外部数据（B站弹幕、语音、屏幕变化、控制台），经 EventBus 以语义域事件（`room.message.*` 等）主动推送，事件拦截器做限流/相似过滤
 - **业务 Agent**：主播 Agent 自主决策——MessageBuffer 聚合弹幕 → Planner 决策循环 → Replyer 表达引擎生成回复/情绪/动作；游戏代理（AI 玩家）为另一范式
-- **工具（Tool）**：被动能力契约，经 ToolRegistry 统一调度——字幕、VTS/Warudo 皮套、OBS、屏幕感知等约 51 个工具（v2.0.12 起 TTS 已提升为基础设施，迁出 ToolRegistry）
+- **工具（Tool）**：被动能力契约，经 ToolRegistry 统一调度——字幕、VTS/Warudo 皮套、OBS、屏幕感知等（v2.0.12 起 TTS 已提升为基础设施，迁出 ToolRegistry）
 - **TTS 基础设施**：`src/modules/tts/` 包内自治（4 引擎 Provider：`EdgeTTSProvider` / `GPTSoVITSProvider` / `VoiceboxProvider` / `OmniTTSProvider`），由 `infra.toml [tts].provider` 装配期单选构造，注入 StreamerAgent 直接调用 `handle_speech`——不走 ToolRegistry
 - **存储与记忆**：SQLite 记录场次/消息/礼物/SC/流程单；SimpleMemory 提供跨场关键词记忆召回——决策上下文自动注入相关记忆，LLM 亦可主动调用 `query_memory` 工具检索
 
@@ -42,7 +42,7 @@ Amaidesu!
 2. 主播 Agent 订阅消费：聚合缓冲 → Planner 判断是否回复（置信度门槛）→ Replyer 生成表达
 3. 通过工具调用渲染输出（`reply` 返回 speech/emotion/action，emotion/action 经工具调用驱动皮套/OBS；speech 经发言队列送入装配期注入的 TTS 引擎实例直接播出——v2.0.12 起 TTS 不再走 ToolRegistry）
 
-架构图、完整组件清单与生命周期详见 [架构总览](docs/architecture/overview.md)。
+完整组件清单与生命周期以代码为唯一事实源（`src/`、`ToolRegistry`）；架构叙事见 [v2 架构叙事](docs/architecture/v2-architecture.md)。
 
 ## 安装与运行
 
@@ -125,25 +125,7 @@ pnpm run dev      # → Vite 启动在 http://localhost:60315
 
 ## 文档导航
 
-### 新手入门
-- [快速开始](docs/getting-started.md) - 环境搭建和基本使用
-- [开发规范](docs/development-guide.md) - 代码风格和约定
-
-### 架构理解
-- [v2.0.0 架构叙事](docs/architecture/v2-architecture.md) - 重构缘由与设计推导（先读这篇）
-- [架构总览](docs/architecture/overview.md) - v2.0.0 组件清单与目录结构
-- [数据流规则](docs/architecture/data-flow.md) - 数据流约束
-- [事件系统](docs/architecture/event-system.md) - EventBus 使用
-- [事件命名规范](docs/architecture/event-naming-convention.md) - 事件命名规则
-- [架构决策记录](docs/architecture/adr/README.md) - ADR 决策清单
-
-### 开发指南
-- [组件开发指南](docs/development/component-guide.md) - 采集器/工具/Agent 三范式
-- [事件系统](docs/architecture/event-system.md#事件拦截器interceptor) - 事件拦截器开发
-- [提示词管理](docs/development/prompt-management.md)
-- [依赖注入](docs/development/dependency-injection.md)
-- [测试指南](docs/development/testing-guide.md)
-- [文档维护规范](docs/development/documentation-guide.md)
+完整文档索引见 [docs/README.md](docs/README.md)。
 
 ## Git 工作流
 

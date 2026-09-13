@@ -113,8 +113,8 @@ url = "http://127.0.0.1:8766/mcp"
 
 ## 相关文档
 
-- [架构总览](overview.md) — 组件图与目录结构
+- 组件图与目录结构以代码为唯一事实源（`src/`、`ToolRegistry`）
 - [v2.0.0 架构叙事](v2-architecture.md) — Agent/Tool 判据推导
 - [事件系统](event-system.md) — game.* 事件语义单一事实源
 - [数据流规则](data-flow.md) — 事件流约束
-- [组件开发指南](../development/component-guide.md) — 游戏 Agent 范式
+- [组件开发指南](../guides/component.md) — 游戏 Agent 范式

@@ -62,13 +62,17 @@ Amaidesu 的业务层组织方式经历过四代。git 历史考实了这条演�
 
 ### 3.3 核心判别式：谁驱动谁
 
-落到工程上，整个架构收敛为一个判别式：
+落到工程上，整个架构收敛为一个判别式。从四个维度展开才能区分干净：
 
-| | 驱动方式 | 循环/目标 | 例子 |
-|---|---|---|---|
-| **主播 Agent** | 自我驱动（唯一），直播期间持续运行 | 有 | 主播 Planner 决策循环 |
-| **游戏 Agent** | 命令驱动（类 Code Agent）：命令启动任务内有界循环，完成即停、空闲零消耗 | 任务内 | MinecraftAgent（minecraft_send_prompt 唤醒） |
-| **工具** | 被动驱动，被调才干活 | 无 | Replyer 表达引擎、屏幕捕捉、VLM（TTS 自 v2.0.12 §8 修正起已是基础模块，不再是工具） |
+| | 谁驱动 | 形态 | 暴露 | 例子 |
+|---|---|---|---|---|
+| **主播 Agent** | 自我驱动（唯一），直播期间持续运行 | 继承 `BaseAgent`，拥有决策循环 + 后台维护 | 整个生命周期 + `list_tools()` 聚合到 ToolRegistry | `StreamerAgent`（Planner 决策循环 + 后台 BackgroundMaintainer） |
+| **游戏 Agent** | 命令驱动（类 Code Agent）：命令唤醒，任务内有界循环，完成即停、空闲零消耗 | 同上 | 同上 | `TextAdvGameAgent`、`MinecraftAgent`（minecraft_send_prompt 唤醒） |
+| **工具** | 被调才干活（纯被动，调用即返回 `ToolExecutionResult`） | 继承 `ToolProvider`，`list_tools()` + `invoke(ToolInvocation)` | 仅经 `ToolRegistry.invoke(name, args)` 暴露给 LLM | `vision_look_at_screen`、`memory_query_memory`、`vts_set_expression`（TTS 自 v2.0.12 §8 修正起已是基础模块，不再是工具） |
+
+**判别口诀**：能自我维持状态/轮询/心跳的就是 Agent，只在被调用时执行的就是 Tool。落到工程上只需回答一句——"这个功能有没有自己的状态/轮询/心跳？"有就做成 Agent，没就做成 Tool。
+
+这条规则同时约束**反对偷换概念**：基础能力（屏幕感知、记忆查询）即便被多个 Agent 复用，也应做成 Tool（走 ToolRegistry + Protocol 注入），而不是塞进某个 Agent 内部。Agent 包的红线细则见 §4.2。
 
 以及一句对内容生产者的解放：**直播内容是编排配置 + Planner 上下文/行为模式的变化，不是代码模块。** 加一档节目不需要写代码，加一类游戏才需要一个新 Agent 包。
 
@@ -148,7 +152,29 @@ flowchart TB
 
 ### 6.2 配置：六文件 + 每文件版本 + 包内权威 + 单一管线
 
-`agents / collectors / tools / model / storage / infra` 六文件按领域拆分（`config/` 目录）；每文件自带 `[meta].version` 结构版本，经升级钩子注册表按区间独立推进（缺失硬错）。组件配置权威在各组件包内的 `ConfigSchema`（中央树只留槽位与聚合段），加载走单一管线（read → 版本推进 → Pydantic 校验硬错 → 漂移写回（备份 + 自写压标）→ 合并视图）。启用开关收敛为两处：`[agents].enabled` 与 `collectors.toml` 顶层 `enabled`；全局工具停用名单为 `[tools].disabled_tools`（重启生效）。设计决策见 [ADR-014](adr/014-config-six-file-refactor.md)。
+`agents / collectors / tools / model / storage / infra` 六文件按领域拆分（`config/` 目录）；每文件自带 `[meta].version` 结构版本，经升级钩子注册表按区间独立推进（缺失硬错）。组件配置权威在各组件包内的 `ConfigSchema`（中央树只留槽位与聚合段），加载走单一管线（read → 版本推进 → Pydantic 校验硬错 → 漂移写回（备份 + 自写压标）→ 合并视图）。启用开关收敛为两处：`[agents].enabled` 与 `collectors.toml` 顶层 `enabled`；全局工具停用名单为 `[tools].disabled_tools`（重启生效）。设计决策见 [ADR-014](../decisions/014-config-six-file-refactor.md)。
+
+### 6.3 错误隔离：让边界守边界，不让一处失败扩散成全局停摆
+
+v2 的错误处理不是"防御性编程的清单"，而是一条贯穿边界的契约——**任一边界都对自己的失败负责，上层永远拿到结构化结果而非异常。**
+
+这条契约有四个具名落点：
+
+- **`ToolRegistry.invoke` 永远不抛异常**。未知工具返回失败 `ToolExecutionResult`；调用方抛异常也返回失败结果 + `error_message`。Agent/LLM 在工具失败时仍能拿到结构化结果继续推进，而不是被异常打断决策循环。
+- **事件拦截器**返回 `None` 即丢事件；拦截器内部异常被吞并放行——上游 bug 不能阻塞全链路分发。
+- **Collector 后台消费任务**异常被 catch（`CancelledError` 重抛），单次循环出错不影响采集器后续轮次。
+- **`AgentManager.stop_all` / `cleanup_all`** 按注册顺序逐一 try/except，单个 Agent 失败不影响其余 Agent；`Dashboard` 启动失败（ImportError 等）仅 warning，整体仍可继续运行。
+
+工程含义是双重的：一方面单点故障被局部化——一个工具挂掉不会拖垮 Agent，一个 Agent 停不下来不会卡住其他 Agent 的清理；另一方面上层不需要到处包 try/except，假设下层永远返回结构化结果。这反过来要求每条边界都对自己的失败"兜底"——边界守边界。
+
+### 6.4 依赖注入：服务走构造器，数据走参数
+
+v2 的依赖传递有且只有两条路径：
+
+- **服务对象**（`EventBus` / `LLMManager` / `PromptManager` / `ConfigService` 等）一律构造器注入
+- **数据对象**（Payload、配置 dict）走参数或 `**kwargs`
+
+**禁止**把服务塞进 Context 容器传递。这条禁令的工程含义是：依赖图在 `__init__` 签名里就是完整的、可静态扫描的——重构时改一个构造器签名，所有调用点会立刻被类型检查或 IDE 跳出来；用 Context 容器则把耦合推迟到运行时，调用点靠"上下文里有这个键"才能工作。详见 [依赖注入指南](../guides/dependency-injection.md)。
 
 ## 七、落地：九个 Wave 的渐进迁移
 
@@ -181,23 +207,30 @@ flowchart TB
 
 ## 九、遗留与下一步
 
-如实的欠账清单（详见 [架构总览](overview.md) 已知缺口小节）：
+如下欠账不影响架构成立，但属于"叙事已更新、细节待抹平"的部分，将在后续迭代中逐项消化：
 
-- **TTS 族装配已闭环 + §8 概念修正后最终态**（v2.0.12）：TTS 整体提升为基础设施，迁至 `src/modules/tts/` 基础模块；装配期由 `build_tts_infrastructure(core [tts], event_bus)` 按 `[tts].provider` 单选构造引擎实例并直接注入 StreamerAgent；ToolRegistry 中零 TTS 条目；`[tts].enabled=false` 不构造引擎。其余非 TTS 工具族（subtitle / vts / warudo / obs / vrchat）由 `bind_core_tools` 按 `[tools.output.config] enabled` 列表驱动自注册（v2.0.10 起）。详见 [ADR-007](adr/007-tts-infrastructure-pipeline.md) 与 [架构总览 - 已知缺口](overview.md#已知缺口)。
-- **AudioStreamChannel 已拆除**（v2 pull 编排下无扇出场景，lip-sync 责任归皮套软件 + 工具 invoke 能力的重建）；
-- **迁移期遗留待清理**：`src/modules/config/schemas/input_schemas.py`、`output_schemas.py`（不再被加载的旧 Schema）、main.py 顶部过期 docstring；
-- **存储记账器 `simulated` 列写入链**：`live_chat` / `gifts` / `super_chats` 表已有 `simulated INTEGER NOT NULL DEFAULT 0` 贯穿列（schema 已就位），但记账器尚未从 `RoomMessagePayload.simulated` 读取该字段写入对应列——属存储侧改造，**不升 SCHEMA_VERSION**（详见 ADR-006 §C + [模拟器指南 §4](development/simulator-guide.md#4-simulated-溯源)）；
+- **TTS 族装配已闭环 + §8 概念修正后最终态**（v2.0.12）：TTS 整体提升为基础设施，迁至 `src/modules/tts/` 基础模块；装配期由 `build_tts_infrastructure(core [tts], event_bus)` 按 `[tts].provider` 单选构造引擎实例并直接注入 StreamerAgent；ToolRegistry 中零 TTS 条目；`[tts].enabled=false` 不构造引擎。其余非 TTS 工具族（subtitle / vts / warudo / obs / vrchat）由 `bind_core_tools` 按 `[tools.output.config] enabled` 列表驱动自注册（v2.0.10 起）。详见 [ADR-007](../decisions/007-tts-infrastructure-pipeline.md)。
+- **AudioStreamChannel 已拆除**（v2 pull 编排下无扇出场景，lip-sync 责任归皮套软件 + 工具 invoke 能力的重建）。
+- **`tts.utterance.*` 订阅端尚未接线**：v2.0.10 三事件已发布，但当前生产代码暂无订阅者；字幕精准对齐是首要目标消费者，待字幕子系统接入事件总线后即可启用。详见 [ADR-007 §后果](../decisions/007-tts-infrastructure-pipeline.md#后果consequences) 遗留项。
+- **`game_events` 有写链但暂无数据源**：`StorageLedger` 已订阅 `game.*`（milestone / attention_required / error）落库 `game_events` 表，通路已就绪；但游戏代理（AI 玩家）尚未上线，全项目无发布方，表暂时为空。游戏代理落地后事件出现即自动落库，无需再改存储层。
+- **迁移期遗留待清理**：`src/modules/config/schemas/input_schemas.py`、`output_schemas.py`（不再被加载的旧 Schema）、main.py 顶部过期 docstring。
 - 工具接入走 ToolSpec + BaseToolProvider（重场景）或 as_tool_impl + make_provider_from_specs（轻场景）两条正典路径，统一经 ToolRegistry 注册；不再使用装饰器形式的接入。
 
-这些不影响架构成立，但属于"叙事已更新、细节待抹平"的部分，将在后续迭代中逐项消化。
+### 非缺口（设计如此，勿重复上报）
+
+下列"看似缺口但有结构性原因"的状态，是 v2 的设计判断而非缺陷。链接指向各权威文档以避免重复事实：
+
+- **流程单运行进度不持久化**：流程单权威源是 `rundowns` 表（WebUI 建立，TOML 已移除），运行进度（当前环节/计时）纯内存——重启即从头读起。`agenda_plan`/`agenda_runtime` 表已随 Schema 迁移 DROP。详见 [ADR-011](../decisions/011-rundown-replaces-agenda.md) 与 [rundown.md](rundown.md)。
+- **`enter` 事件不落库**：进场消息无对应明细表（`live_sessions` 心跳与进场是不同概念），`StorageLedger` 收到后 debug 日志丢弃。
+- **`simulated` 溯源已闭环**：`StorageLedger` 已从 `RoomMessagePayload.simulated` 端到端写穿 `live_chat` / `gifts` / `super_chats` 三表贯穿列，测试覆盖完整。详见 [ADR-006 §C](../decisions/006-simulator-is-dev-infrastructure.md) 与 [模拟器指南 §5](../guides/simulator.md#5-simulated-溯源定案)。
 
 ---
 
 ## 相关文档
 
-- [架构总览](overview.md) - 组件清单、目录结构、启动时序（速查）
+- 组件清单、目录结构、启动时序以代码为唯一事实源（`src/`、`ToolRegistry`）
 - [数据流与边界规则](data-flow.md) - 三条约束层面的精确表述
 - [事件系统](event-system.md) - 事件全表、通配语义、拦截器开发
-- [组件开发指南](../development/component-guide.md) - 采集器/工具/Agent 三范式实操
-- [ADR-005](adr/005-v2-agent-tool-architecture.md) - 本决策的正式决策记录
+- [组件开发指南](../guides/component.md) - 采集器/工具/Agent 三范式实操
+- [ADR-005](../decisions/005-v2-agent-tool-architecture.md) - 本决策的正式决策记录
 - 完整定案存档：`.omo/drafts/amaidesu-v2-architecture.md`（41 条定案清单）

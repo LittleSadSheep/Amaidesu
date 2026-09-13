@@ -19,7 +19,7 @@ ContextService 曾按"四层"设计：事实源（SQLite `live_chat`）→ 内�
 
 - 三个活消费点（决策窗、回复路径、后台摘要）改经 `SQLiteStore.list_recent_live_chat`（角色过滤 + limit）；补组合索引 `idx_live_chat_session_ts(live_session_id, timestamp_ms)`（幂等 DDL，随表 DDL 块创建，不升 SCHEMA_VERSION）。
 - 场次标识统一经 `LiveSessionManager.resolve_pk()`，与写路径（StorageLedger）同源；无显式场次（首场首窗）读取返回空列表，不抛错。
-- 配套结构收口：组装器收缩并入 `src/agents/streamer/planner_context.py`（`src/modules/context/` 目录消失）；对话改为原生 user/assistant 消息形态（canonical 单一映射，见 `docs/development/streamer-context.md`）；`/api/messages` 死端点、`session_selector` 死模块与配套测试一并清除；context 域秒单位字段随删清零。
+- 配套结构收口：组装器收缩并入 `src/agents/streamer/planner_context.py`（`src/modules/context/` 目录消失）；对话改为原生 user/assistant 消息形态（canonical 单一映射，见 `docs/architecture/streamer-context.md`）；`/api/messages` 死端点、`session_selector` 死模块与配套测试一并清除；context 域秒单位字段随删清零。
 
 ## 替代方案（Alternatives）
 
@@ -39,5 +39,5 @@ ContextService 曾按"四层"设计：事实源（SQLite `live_chat`）→ 内�
 
 ## 参考
 
-- [开发指南 · 主播上下文构成](../../development/streamer-context.md)
-- [架构总览](../overview.md)
+- [开发指南 · 主播上下文构成](../architecture/streamer-context.md)
+- [v2 架构叙事](../architecture/v2-architecture.md)

@@ -2,7 +2,7 @@
 
 Amaidesu 采用**发布-订阅（Pub/Sub）模式**构建事件驱动架构，EventBus 是组件间松耦合通信的唯一通道，内部分为两条职责清晰的通道：**拦截管道**（有序、可改可拦）与**订阅广播**（并发、互不影响）。
 
-> **架构版本**：本文档对应 v2 **语义域事件**（无三阶段 Input/Decision/Output 概念）。命名规范详见 [事件命名规范](event-naming-convention.md)。
+> **架构版本**：本文档对应 v2 **语义域事件**（无三阶段 Input/Decision/Output 概念）。命名规范详见 [事件命名](event-naming.md)。
 
 ## 目录
 
@@ -182,39 +182,23 @@ event_bus.reset_stats(event_name=None)
 
 ## 事件事实表与拓扑
 
-> **单一事实源**：本表是 Amaidesu 当前全部 **24 个具名事件 + 3 个通配占位符**的权威定义（与 `CoreEvents` 一致，启动硬检查 `ensure_registry_consistency()` 守护）。任何新增/删除/重命名事件，**必须先修改本表再写代码**。"发布者 / 订阅者"两列即事件拓扑事实；订阅者均含事件记录器（catch-all），表中不再重复标注。
+> **单一事实源（代码导出）**：所有具名事件（含 3 个通配占位符）以 `src/modules/events/names.py` 的 `CoreEvents` 常量为唯一权威定义。`CoreEvents.get_all_events()`（或 `CoreEvents.ALL_EVENTS`）枚举全部具名事件；启动期 `ensure_registry_consistency()` 守护 `EVENT_REGISTRY` 与 `CoreEvents` 具名事件集合完全一致——漂移在启动期暴露，拒启。Payload 类与字段语义写在 `src/modules/events/payloads/*.py` 与 `CoreEvents` 常量 docstring 里，以代码为准。
 
-| 事件名 | Payload 类 | 发布者 | 订阅者（记录器除外） | 说明 |
-|--------|-----------|--------|--------|------|
-| `core.startup` | `CoreStartupPayload` | `main.py` 启动流程 | `Broadcaster`（直通） | 系统启动通知 |
-| `core.shutdown` | `CoreShutdownPayload` | `main.py` 关闭流程 | `Broadcaster`（直通） | 系统关闭通知 |
-| `core.error` | `CoreErrorPayload` | 各组件错误兜底发射 | `Broadcaster`（直通）；Dashboard 首页"最近异常"按 `core.error` 判定 | 系统级错误；level 推导为 error |
-| `live.started` | `LiveStartedPayload` | `LiveSessionManager`（`open_session`：手动开启 / 回放自动开启） | `StreamerAgent`（放行主动发言）；`Broadcaster`（直通） | 显式场次开启；payload 含 `live_session_id`（INTEGER 主键）/ `source`（manual/replay）/ `title` / `room_id` / `started_at_ms` |
-| `live.ended` | `LiveEndedPayload` | `LiveSessionManager`（`close_session` / 进程退出收口 / 回放结束） | `StreamerAgent`（收闸主动发言）；`Broadcaster`（直通） | 显式场次结束；payload 含 `reason` / `duration_ms` / `empty_discarded` / `ended_at_ms` |
-| `room.message.danmaku` | `RoomMessagePayload` | bilibili 采集器（official / legacy）；console 输入；`collectors/base.py` 兜底转发；Dashboard debug 注入；模拟器（generate / replay） | `StreamerAgent`（进弹幕缓冲驱动决策）；`StorageLedger`（订 `room.message.#` 落 live_chat + viewers 统计）；`Broadcaster`（WS type `room.message`）；`DanmakuWidgetService` | 弹幕；`message_type="danmaku"`，填 `content` |
-| `room.message.gift` | `RoomMessagePayload` | bilibili 采集器（official / legacy）；console 输入；兜底转发 | `StreamerAgent`（TimingGate 判定付费消息强制进决策轮）；`StorageLedger`（通配 → gifts 落库 + 礼物计数）；`Broadcaster`；`DanmakuWidgetService` | 礼物；`message_type="gift"`，填 `gift` 结构体 |
-| `room.message.super_chat` | `RoomMessagePayload` | bilibili 采集器（official / legacy）；console 输入；兜底转发 | `StreamerAgent`（付费消息强制进决策轮）；`StorageLedger`（通配 → super_chats 落库）；`Broadcaster`；`DanmakuWidgetService` | SuperChat；`message_type="super_chat"`，填 `content` + `sc` |
-| `room.message.guard` | `RoomMessagePayload` | bilibili official 采集器（GuardMessage 分支）；console `/guard` 命令 | `StreamerAgent`（付费消息强制进决策轮）；`StorageLedger`（通配 → live_chat，`sender_role="guard"`） | 上舰（舰长/提督/总督，付费消息）；`content` 填人读描述，供下游优先回应 |
-| `room.message.enter` | `RoomMessagePayload` | bilibili 采集器；console 输入；兜底转发 | `DanmakuWidgetService`；`StorageLedger`（enter 行 debug 丢弃，不落库） | 进房；`message_type="enter"`。决策侧不消费 |
-| `room.message.partner_speech` | `RoomMessagePayload` | STT 采集器（联动对象发言） | `StorageLedger`（通配 → live_chat，`sender_role="partner"`，不计观众统计） | 房间里第三个说话者（非弹幕、非主播） |
-| `game.milestone` | `GamePayload` | 游戏 Agent（BaseAgent 事件上报面） | `StreamerAgent`（叙事收集进 Planner 上下文）；`StorageLedger`（订 `game.*` → `game_events` 表） | 游戏重大进展（挖到钻石 / 通关章节）；`event_type="milestone"` |
-| `game.attention_required` | `GamePayload` | 游戏 Agent | 同上 | 安全阀偏差报告（"我先回血再去挖钻石"）；`event_type="attention_required"` |
-| `game.error` | `GamePayload` | 游戏 Agent | 同上 | 游戏异常（主播由此得知命令失败等原因）；`event_type="error"` |
-| `game.report` | `GamePayload` | 游戏 Agent（`minecraft_report` 工具回调 / 批次终止兜底交付） | 同上；主播"是否回提示词"的决策数据源 | 游戏 Agent 主动上报：`report_kind`（`delivery` / `escalation`，仅本事件有值） |
-| `rundown.changed` | `RundownChangedPayload` | `RundownState`（唯一变更边界：工具 / Dashboard 手动 / 编辑写穿 / 装配层 load 四路同径） | `Broadcaster`（直通） | 流程单变更：load / goto / next（含 finish）/ pause / resume / reload（编辑写穿替换定义）；`by` 区分 agent/human/system；finish 时 `segment_id=""` 且 `index==total`；写穿后游标重置时 `index==-1` |
-| `task.changed` | `TaskChangedPayload` | 任务记录表（`TaskLedger` / `TaskTracker`，仅状态真迁移或停滞告警时发） | `BaseAgent`（全部 Agent 基类订阅，按 `payload.initiator == self.name` 过滤唤醒） | 异步任务生命周期（受理 → 进行中 → 终态）；通知是提示、记录表是事实源 |
-| `planner.decision` | `PlannerDecisionPayload` | `StreamerAgent`（两阶段决策收口，每轮恰好一条） | `Broadcaster`（直通，决策卡数据源） | 决策轮记录：`round_id`（本轮全链路关联键）、决策结论、`reply_to_message_id`、`silent_reason`、`llm_request_id`、分段耗时 |
-| `planner.verdict` | `PlannerVerdictPayload` | `ReplyToolProvider`（reply 工具被调用、表达生成之前） | `Broadcaster`（直通，裁决卡实时渲染） | 裁决时刻即时事件：`round_id` / `topic_summary` / `reply_guidance` / `confidence` / `target`。沉默轮无 verdict |
-| `streamer.stage` | `StreamerStagePayload` | `StreamerAgent`（决策循环边界） | `Broadcaster`（直通，状态条数据源） | 决策管线阶段（planning / replying / idle）；LLM 挂起时状态条停格即证据 |
-| `streamer.speech` | `StreamerSpeechPayload` | `StreamerAgent`（speech 非空时统一发射出口） | `SimulatorService`（节奏唤醒）；`StorageLedger`（落 live_chat `sender_role="assistant"` 行）；`Broadcaster`（直通） | 主播发言业务事实（与 TTS 启用正交）；`utterance_id` 与 `tts.utterance.*` 共用关联键；`reply_to_message_id` 与 live_chat 观众行构成互动关联 |
-| `tts.utterance.started` | `UtteranceStartedPayload` | TTS 引擎（流式=首块 PCM 写声卡；全量=`play_audio` 调用；仅 `handle_speech` 收到非空 `utterance_id` 时发） | 无业务订阅者（字幕接线属预留） | 一次发声开始；`utterance_id`（`utt_{epoch_ms}_{seq}`）/ `speech_text` / `engine` / `duration_ms`（流式合成未完=None） |
-| `tts.utterance.finished` | `UtteranceFinishedPayload` | TTS 引擎（播放完成时刻） | 无业务订阅者（句末再决策等消费者预留） | 一次发声播放完成；`duration_ms` 由 PCM 样本数÷采样率计算（百毫秒级精度，不含声卡缓冲残余） |
-| `tts.utterance.failed` | `UtteranceFailedPayload` | TTS 引擎（合成 / 播放失败时） | 无业务订阅者（错误兜底消费者预留） | 一次发声失败；payload 含 `error_message` |
-| `tool.result.<tool_name>` | `ToolResultPayload` | `ToolRegistry.invoke`（工具执行完成即广播，无论成败） | `Broadcaster`（订 `tool.result.#` 通配） | 工具结果回传；事件名 emit 时动态填（`ToolSpec.result_event` 可定制）；payload 含 `tool_name` / `status` / `arguments` / `result` / `error_message` / `round_id` |
-| `tool.health.<tool_name>` | `ToolHealthPayload` | `ToolRegistry`（熔断 → `state="open"`；探活恢复 → `state="closed"`；仅状态切换时发） | `Broadcaster`（订 `tool.health.#` 通配） | 工具健康切换；payload 含 `tool_name` / `provider` / `state` / `failure_count` / `last_error` |
-| `tool.result.#`（**通配占位符**，不注册到 `EVENT_REGISTRY`） | 无（仅订阅标识） | — | — | `CoreEvents.TOOL_RESULT_WILDCARD` 保留作订阅标识；具体名动态族，见 [事件注册机制](#事件注册机制) |
-| `tool.health.#`（**通配占位符**，不注册到 `EVENT_REGISTRY`） | 无（仅订阅标识） | — | — | `CoreEvents.TOOL_HEALTH_WILDCARD` 保留作订阅标识 |
-| `room.message.#`（**通配占位符**，不注册到 `EVENT_REGISTRY`） | 无（仅订阅标识） | — | — | `CoreEvents.ROOM_MESSAGE_WILDCARD` 保留作订阅标识；`StorageLedger` 用它一站式落库 |
+事件名清单 / 发布者 / 订阅者拓扑**从代码导出**，本节不再手抄：
+
+- **事件名 + Payload + 字段语义**：`src/modules/events/names.py` 的 `CoreEvents` 常量与 `src/modules/events/payloads/*.py`
+- **发布拓扑**：`grep -rn "event_bus.emit(" src/`
+- **订阅拓扑**：`grep -rn "event_bus.on(" src/`（每个 `on(...)` 即一处订阅关系；观察面组件订阅 `CoreEvents` 中的通配常量一站式监听）
+
+不可导出的关键不变量（散落各处，列出防遗忘）：
+
+- **`room.message.enter`**：决策侧不消费（仅观察面 / 进房统计）
+- **`rundown.changed`**：唯一变更边界（工具 / Dashboard / 编辑写穿 / 装配层 load 四路同径）；`by` 区分 agent/human/system；finish 时 `segment_id=""` 且 `index==total`；写穿后游标重置时 `index==-1`
+- **`tts.utterance.*`**：终点广播，消费者不得触发新一轮决策（防环；与 TTS 是否启用正交）
+- **`streamer.speech`**：业务信号，与 TTS 启用正交；`utterance_id` 与 `tts.utterance.*` 共用关联键
+- **`tool.result.<tool_name>`**：事件名 emit 时动态填（`ToolSpec.result_event` 可定制）；工具执行完成即广播（无论成败）
+
+新增/删除/重命名事件：先改 `CoreEvents` + Payload 注册（启动硬检查会守住契约），再补/删对应调用点——文档不再手抄。
 
 ### WS 类型规则
 
@@ -309,7 +293,7 @@ event_bus.get_interceptor_names()            # 已挂载拦截器（按执行顺
 
 ## 边界规则
 
-事件系统作为公共通道，以下边界由[架构红线](../AGENTS.md)派生，违反即架构回退：
+事件系统作为公共通道，以下边界由[架构红线](../../AGENTS.md)派生，违反即架构回退：
 
 **谁可以发布**
 
@@ -417,8 +401,8 @@ await event_bus.emit(
 
 ## 相关文档
 
-- [架构总览](overview.md)
+- [v2 架构叙事](v2-architecture.md)
 - [数据流规则](data-flow.md)
-- [事件命名规范](event-naming-convention.md)
-- [三范式开发指南](../development/component-guide.md)
-- [架构决策记录](adr/README.md)
+- [事件命名](event-naming.md)
+- [三范式开发指南](../guides/component.md)
+- [架构决策记录](../decisions/README.md)

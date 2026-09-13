@@ -61,6 +61,6 @@
 
 ## 相关文档
 
-- [提示词管理](prompt-management.md) - PromptManager 与 strict-only 渲染契约
-- [架构总览](../architecture/overview.md) - StreamerAgent 在系统中的位置
+- [提示词管理](../guides/prompt.md) - PromptManager 与 strict-only 渲染契约
+- [v2 架构叙事](../architecture/v2-architecture.md) - StreamerAgent 在系统中的位置
 - [数据流规则](../architecture/data-flow.md) - 采集器→存储→Agent 的数据流约束
