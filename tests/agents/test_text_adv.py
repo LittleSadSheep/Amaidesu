@@ -191,7 +191,7 @@ def test_text_adv_agent_factory_registers_in_manager() -> None:
         agent_manager=manager,
     )
     assert "text_adv" in manager
-    assert manager.get("text_adv") is agent
+    assert manager.get_agent_by_name("text_adv") is agent
 
 
 # =============================================================================

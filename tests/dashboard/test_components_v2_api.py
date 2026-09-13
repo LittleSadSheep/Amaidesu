@@ -29,10 +29,10 @@ def _make_server(
     server = MagicMock()
     cm = MagicMock()
     cm.list_running = lambda: collector_running or set()
-    cm._collectors = {name: MagicMock(description=desc) for name, desc in (collector_descs or {}).items()}
+    cm.descriptions = dict(collector_descs or {})
     am = MagicMock()
     am.list_running = lambda: agent_running or set()
-    am._agents = {name: MagicMock(description=desc) for name, desc in (agent_descs or {}).items()}
+    am.descriptions = dict(agent_descs or {})
     server.collector_manager = cm
     server.agent_manager = am
     server.tool_registry = MagicMock()

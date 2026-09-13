@@ -12,8 +12,8 @@
   与组件启停语义不同
 
 description 来源：
-- 采集器：CollectorManager._collectors[name].description（注册时填写）
-- Agent：AgentManager._agents[name].description
+- 采集器：CollectorManager.descriptions（注册时填写）
+- Agent：AgentManager.descriptions
 """
 
 import tomllib
@@ -147,11 +147,11 @@ def get_v2_component_list(config_main: Optional[Dict[str, Any]], server: Any) ->
     running_agents = _running_names(getattr(server, "agent_manager", None), "list_running")
     collector_descriptions = _manager_descriptions(
         getattr(server, "collector_manager", None),
-        "_collectors",
+        "descriptions",
     )
     agent_descriptions = _manager_descriptions(
         getattr(server, "agent_manager", None),
-        "_agents",
+        "descriptions",
     )
 
     collectors = _build_from_config(
@@ -182,10 +182,8 @@ def _running_names(manager: Any, method: str) -> set[str]:
 
 
 def _manager_descriptions(manager: Any, attr_name: str) -> Dict[str, str]:
-    """从 CollectorManager / AgentManager 提取已注册实例的 description 字典。
+    """从 CollectorManager / AgentManager 的 ``descriptions`` 属性取描述字典。
 
-    通过内部 ``_collectors`` / ``_agents`` 字典读取（与 ``list_running`` 等
-    现有 helpers 同源；不引入新的 Manager 公开 API 以避免改动面扩散）。
     防御：manager/属性不存在 / 结构不匹配时返回空 dict。
     """
     if manager is None:
@@ -193,12 +191,7 @@ def _manager_descriptions(manager: Any, attr_name: str) -> Dict[str, str]:
     internal = getattr(manager, attr_name, None)
     if not isinstance(internal, dict):
         return {}
-    result: Dict[str, str] = {}
-    for key, reg in internal.items():
-        desc = getattr(reg, "description", "") or ""
-        if desc:
-            result[key] = desc
-    return result
+    return {key: desc for key, desc in internal.items() if desc}
 
 
 def _nested(config: Dict[str, Any], *keys: str) -> Any:

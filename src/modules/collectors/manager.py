@@ -75,6 +75,11 @@ class CollectorManager:
     def list_collectors(self) -> List[str]:
         return list(self._collectors.keys())
 
+    @property
+    def descriptions(self) -> Dict[str, str]:
+        """注册名 → 描述字典（dashboard 组件清单等展示面消费）。"""
+        return {name: reg.description for name, reg in self._collectors.items()}
+
     def list_running(self) -> List[str]:
         """返回运行中的采集器。
 

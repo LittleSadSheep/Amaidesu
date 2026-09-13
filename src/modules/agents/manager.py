@@ -115,22 +115,43 @@ class AgentManager:
 
     # -------------------- 查询 --------------------
 
-    def get(self, name: str) -> Optional[BaseAgent]:
-        reg = self._agents.get(name)
-        return reg.agent if reg is not None else None
-
     def list_agents(self) -> List[str]:
         return list(self._agents.keys())
 
     def list_running(self) -> List[str]:
         return [name for name, reg in self._agents.items() if reg.agent.state == AgentState.RUNNING]
 
+    @property
+    def descriptions(self) -> Dict[str, str]:
+        """注册名 → 描述字典（dashboard 组件清单等展示面消费）。"""
+        return {name: reg.description for name, reg in self._agents.items()}
+
     # -------------------- 动态启停（Dashboard 组件管理调用） --------------------
 
     def get_agent_by_name(self, name: str) -> Optional[BaseAgent]:
-        """按注册名查找已加载的 Agent 实例（段名=注册名）。"""
+        """按注册名查找已加载的 Agent 实例（段名=注册名）。
+
+        本类唯一的查名 API（外部统一走此入口）。
+        """
         reg = self._agents.get(name)
         return reg.agent if reg is not None else None
+
+    @property
+    def tool_registry(self) -> Optional[ToolRegistry]:
+        """默认工具注册中心（构造时注入；可能为 None）。"""
+        return self._tool_registry
+
+    def replace_agent_instance(self, name: str, new_agent: BaseAgent) -> bool:
+        """把已注册 Agent 的实例引用替换为 new_agent（控制面 restart 复用）。
+
+        调用方需保证旧实例已停止；替换只换引用，不触碰注册元数据。
+        未注册名返回 False。
+        """
+        reg = self._agents.get(name)
+        if reg is None:
+            return False
+        reg.agent = new_agent
+        return True
 
     async def start_agent(self, name: str) -> bool:
         """启动（或重启）单个已注册 Agent。"""
@@ -178,8 +199,9 @@ class AgentManager:
     ) -> bool:
         """动态启用 Agent：实例化（配置段名）→ 注册 → 启动。
 
-        段名 = 注册名：实例化后强制对齐实例 name 为段名，保证
-        list_agents()/get_by_name() 与配置 enabled 列表一致。
+        段名 = 注册名：实例 name 与段名不一致时对齐为段名（生产子类均
+        显式声明 name，不会触发；见下方对齐处注释），保证
+        list_agents()/get_agent_by_name() 与配置 enabled 列表一致。
 
         构造经 ``factory.instantiate_agent`` 单一构造路径；基础设施参数
         （speech/tts/subtitle/session/thinking/task_tracker 等）按需透传，
@@ -212,6 +234,10 @@ class AgentManager:
         if instance is None:
             logger.warning(f"未实现的 Agent: {name}")
             return False
+        # 触发条件：工厂产出实例的 name 与段名不一致。生产三子类均显式
+        # 声明 name 类属性（与段名一致）不会触发；测试替身/未来子类漂移
+        # 时兜底对齐，保证 list_agents()/get_agent_by_name() 与 enabled
+        # 配置列表一致。
         if instance.name != name:
             instance.name = name
         if not self.register(instance):

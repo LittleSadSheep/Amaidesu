@@ -64,11 +64,8 @@ def _resolve_streamer_agent(server: "DashboardServer") -> Optional[Any]:
     am = getattr(server, "agent_manager", None)
     if am is None:
         return None
-    getter = getattr(am, "get_agent_by_name", None) or getattr(am, "get", None)
-    if getter is None:
-        return None
     try:
-        return getter("streamer")
+        return am.get_agent_by_name("streamer")
     except Exception:
         return None
 

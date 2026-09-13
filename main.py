@@ -645,8 +645,8 @@ async def create_app_components(
         logger.info(f"AgentManager 已启动（{len(agent_manager)} 个 Agent）")
 
     # --- ToolRegistry 工具审计：所有 Agent 声明的工具是否都已注册实现 ---
-    if agent_manager is not None and agent_manager._tool_registry is not None:
-        registry = agent_manager._tool_registry
+    if agent_manager is not None and agent_manager.tool_registry is not None:
+        registry = agent_manager.tool_registry
         logger.info(f"ToolRegistry 就绪（{len(registry)} 个工具已注册）")
         missing = agent_manager.audit_tools(registry)
         if missing:
@@ -920,7 +920,7 @@ async def _start_dashboard(
             dashboard_config=typed_dashboard_config,
             collector_manager=collector_manager,
             agent_manager=agent_manager,
-            tool_registry=(agent_manager._tool_registry if agent_manager else None),
+            tool_registry=(agent_manager.tool_registry if agent_manager else None),
             llm_manager=llm_service,
             prompt_manager=get_prompt_manager(),
             log_streamer=log_streamer,

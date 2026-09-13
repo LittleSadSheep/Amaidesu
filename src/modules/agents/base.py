@@ -241,7 +241,8 @@ class BaseAgent(abc.ABC):
     async def pause(self) -> None:
         async with self._lock:
             if self._state != AgentState.RUNNING:
-                logger.debug(f"Agent '{self.name}' pause() 状态非 RUNNING: {self._state}")
+                logger.warning(f"Agent '{self.name}' pause() 非法转移，拒绝（当前状态: {self._state}）")
+                return
             self._state = AgentState.PAUSED
         await self._on_pause()
         logger.info(f"Agent '{self.name}' 已暂停")
@@ -249,7 +250,8 @@ class BaseAgent(abc.ABC):
     async def resume(self) -> None:
         async with self._lock:
             if self._state != AgentState.PAUSED:
-                logger.debug(f"Agent '{self.name}' resume() 状态非 PAUSED: {self._state}")
+                logger.warning(f"Agent '{self.name}' resume() 非法转移，拒绝（当前状态: {self._state}）")
+                return
             self._state = AgentState.RUNNING
         await self._on_resume()
         logger.info(f"Agent '{self.name}' 已恢复")

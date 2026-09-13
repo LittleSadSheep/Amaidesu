@@ -146,7 +146,7 @@ class AgentControl:
         self._manager = manager
 
     async def pause(self, name: str) -> bool:
-        agent = self._manager.get(name)
+        agent = self._manager.get_agent_by_name(name)
         if agent is None:
             logger.warning(f"pause_agent: 未找到 Agent '{name}'")
             return False
@@ -154,7 +154,7 @@ class AgentControl:
         return True
 
     async def resume(self, name: str) -> bool:
-        agent = self._manager.get(name)
+        agent = self._manager.get_agent_by_name(name)
         if agent is None:
             logger.warning(f"resume_agent: 未找到 Agent '{name}'")
             return False
@@ -162,7 +162,7 @@ class AgentControl:
         return True
 
     async def shutdown(self, name: str) -> bool:
-        agent = self._manager.get(name)
+        agent = self._manager.get_agent_by_name(name)
         if agent is None:
             logger.warning(f"shutdown_agent: 未找到 Agent '{name}'")
             return False
@@ -170,7 +170,7 @@ class AgentControl:
         return True
 
     async def restart(self, name: str) -> bool:
-        agent = self._manager.get(name)
+        agent = self._manager.get_agent_by_name(name)
         if agent is None:
             logger.warning(f"restart_agent: 未找到 Agent '{name}'")
             return False
@@ -186,11 +186,8 @@ class AgentControl:
         # 替换管理器中的实例：
         #    仅替换引用，调用方需保证旧实例已停止（已 stop）
         #    并未清理 event_bus 注入；生产环境建议 Agent 自行管理重建流程
-        # 通过 manager 的注册表（_agents dict）替换旧实例
-        reg = self._manager._agents.get(name)  # type: ignore[attr-defined]  # noqa: SLF001
-        if reg is None:
+        if not self._manager.replace_agent_instance(name, new_agent):
             return False
-        reg.agent = new_agent  # type: ignore[attr-defined]
         # start 新实例
         await new_agent.start()
         return True
@@ -199,7 +196,7 @@ class AgentControl:
         return self._manager.list_agents()
 
     def state_of(self, name: str) -> Optional[dict]:
-        agent = self._manager.get(name)
+        agent = self._manager.get_agent_by_name(name)
         if agent is None:
             return None
         return {
@@ -331,7 +328,7 @@ class AgentControlProvider(BaseToolProvider):
             )
         # 发起方 = 调用方（invocation.source；装配侧可按需要扩展映射）
         initiator = caller or "unknown"
-        target = self.manager.get(target_name)
+        target = self.manager.get_agent_by_name(target_name)
         if target is None:
             return ToolExecutionResult(
                 tool_name="framework_delegate",

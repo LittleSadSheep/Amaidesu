@@ -244,6 +244,31 @@ async def test_pause_resume_invocations(started_agent: _SampleAgent) -> None:
     assert a.resumed == 1
 
 
+async def test_illegal_transitions_rejected(sample_agent: _SampleAgent) -> None:
+    """非法转移一律拒绝：状态不变、钩子不触发（与 start/stop 守卫同一策略）。"""
+    a = sample_agent
+
+    # CREATED 下 pause/resume 均拒绝
+    await a.pause()
+    assert a.state == AgentState.CREATED
+    assert a.paused == 0
+    await a.resume()
+    assert a.state == AgentState.CREATED
+    assert a.resumed == 0
+
+    # RUNNING 下 resume 拒绝
+    await a.start()
+    await a.resume()
+    assert a.state == AgentState.RUNNING
+    assert a.resumed == 0
+
+    # STOPPED 下 pause 拒绝
+    await a.stop()
+    await a.pause()
+    assert a.state == AgentState.STOPPED
+    assert a.paused == 0
+
+
 async def test_shutdown_calls_stop_plus_hook(started_agent: _SampleAgent) -> None:
     """shutdown = stop + _on_shutdown。"""
     shutdown_called = {"value": 0}
@@ -273,7 +298,7 @@ async def test_agent_manager_register_dedup(sample_agent: _SampleAgent) -> None:
     other = _SampleAgent()
     assert mgr.register(other) is False
     # 取出来仍是第一个
-    assert mgr.get("sample_agent") is sample_agent
+    assert mgr.get_agent_by_name("sample_agent") is sample_agent
 
 
 async def test_agent_manager_register_missing_name_rejected() -> None:
@@ -375,8 +400,8 @@ async def test_agent_manager_unregister_only_when_stopped() -> None:
 def test_agent_manager_get_and_contains(sample_agent: _SampleAgent) -> None:
     mgr = AgentManager()
     mgr.register(sample_agent)
-    assert mgr.get("sample_agent") is sample_agent
-    assert mgr.get("nonexistent") is None
+    assert mgr.get_agent_by_name("sample_agent") is sample_agent
+    assert mgr.get_agent_by_name("nonexistent") is None
     assert "sample_agent" in mgr
     assert "other" not in mgr
 
