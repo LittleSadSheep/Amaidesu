@@ -649,7 +649,3 @@ async def event_bus():
 - [组件开发指南](component-guide.md) - 组件三范式开发指南
 - [事件拦截器](../architecture/event-system.md#事件拦截器interceptor) - 事件拦截器开发指南
 - [事件系统](../architecture/event-system.md) - EventBus 使用指南
-
----
-
-*最后更新：2026-08-26（v2.0.0 全面落库——测试目录按 src/modules+src/agents 双层布局重排；移除 `tests/stages/` 整目录与各阶段旧 Mock 文件引用；采集器示例切到 BaseCollector / CollectorManager + 语义域事件 ROOM_MESSAGE_DANMAKU；架构测试与 fixtures 路径切到 v2 四层 Core ← Input ← Agent ← Tool）*

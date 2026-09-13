@@ -144,7 +144,3 @@ class PluginContext:
 ## 相关 ADR
 
 - ADR-001：Pipeline 曾用 DI 替代 Context（ADR 已随管道系统移除而废弃，DI 原则沿用）
-
----
-
-*最后更新：2026-09-06（删除反射式装配节：src/modules/di 已随 v2 组合根显式装配移除；示例改为 v2 组件；修复代码块损坏字符）*

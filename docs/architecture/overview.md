@@ -42,7 +42,7 @@ flowchart TB
 
     subgraph Game["游戏 Agent (src/agents/ 顶级自包含包)"]
         TextAdv["TextAdvGameAgent<br/>+ StubContentEngine（包内私有引擎）<br/>+ text_adv_choose_option / text_adv_get_story"]
-        MC["MinecraftAgent<br/>+ maicraft 语义工具（MCP）<br/>+ minecraft_todo / minecraft_notebook / minecraft_report / minecraft_get_state / minecraft_send_prompt"]
+        MC["MinecraftAgent<br/>+ maicraft 语义工具（MCP）<br/>+ minecraft_todo / minecraft_notebook / minecraft_get_work_log / minecraft_report"]
     end
 
     subgraph Registry["ToolRegistry (src/modules/tools/)"]
@@ -89,9 +89,8 @@ Amaidesu/
 ├── src/
 │   ├── agents/                  # 业务 Agent（StreamerAgent + GameAgent：text_adv/minecraft 范例）
 │   │   ├── streamer/            #   主播 Agent（Planner/Replyer/Rundown/工具/后台维护）
-│   │   └── game/                #   游戏 Agent（AI 玩家范式）
-│   │       ├── text_adv/        #     文字冒险 GameAgent 范例（内容引擎为包内私有接口）
-│   │       └── minecraft/       #     Minecraft GameAgent（maicraft MCP 语义工具 + minecraft_todo/minecraft_notebook/minecraft_report/minecraft_get_state/minecraft_send_prompt）
+│   │   ├── text_adv/            #   文字冒险 GameAgent（内容引擎为包内私有接口）
+│   │   └── minecraft/           #   Minecraft GameAgent（maicraft MCP 语义工具 + minecraft_todo/minecraft_notebook/minecraft_report/minecraft_get_work_log）
 │   └── modules/                 # 共享模块（基础设施 + 领域组件）
 │       ├── agents/              # Agent 框架层：BaseAgent 协议六项 / AgentManager / AgentControl（控制面直调）/ factory(SUPPORTED_AGENTS)
 │       ├── audio/               # v2.0.10 抽出：AudioDeviceManager（声卡播放 / 录音），原 `src/modules/tts/audio_device_manager.py` 上移
@@ -101,7 +100,7 @@ Amaidesu/
 │       │   ├── console/         #   控制台输入
 │       │   ├── screen/          #   屏幕变化
 │       │   └── stt/             #   语音识别
-│       ├── tools/               # 工具语法层（ToolRegistry / ToolSpec / @tool / bootstrap；零领域知识）
+│       ├── tools/               # 工具语法层（ToolRegistry / ToolSpec / BaseToolProvider / as_tool_impl / bootstrap；零领域知识）
 │       ├── avatar/              # avatar 分类：vts/（VTSProvider + 引擎子件）、vrchat/（OSC 桥接）、warudo/（每形象 = 一 Provider 实例 = 一开关单元）
 │       ├── studio/              # studio 分类：obs/
 │       ├── vision/              # vision 分类：vision_look_at_screen（同步快照工具）+ 屏幕捕获设施
@@ -261,7 +260,7 @@ sequenceDiagram
 | studio | `obs` | 4 | `obs_send_text` / `obs_switch_scene` / `obs_set_source_visibility` / `obs_send_test` |
 | vision | `vision` | 1 | `vision_look_at_screen`（同步快照工具，注入 `ScreenCapture`/`TextReader` 后端；无后端时返回成功 + 空文本，不抛异常） |
 | game | `text_adv` | 2 | `text_adv_choose_option` / `text_adv_get_story`（游戏侧 dispatch，`agents/text_adv/` 内聚） |
-| game | `minecraft` | 5 | `minecraft_todo` / `minecraft_notebook` / `minecraft_report` / `minecraft_get_state` / `minecraft_send_prompt`（`agents/minecraft/` 内聚；maicraft_* MCP 工具另见 mcp 行） |
+| game | `minecraft` | 4 | `minecraft_todo` / `minecraft_notebook` / `minecraft_get_work_log` / `minecraft_report`（`agents/minecraft/` 内聚；maicraft_* MCP 工具另见 mcp 行） |
 | memory | `memory` | 1 | `memory_query_memory`（绑定 `MemoryProvider` 后才可用） |
 | mcp | `<server 名>` | 按 server | `maicraft_*` 等（MCP server 工具经通道注册，provider = server 名） |
 | Streamer 自带 | `streamer` | 1 | `streamer_reply`（声明名 reply，经 ToolRegistry 注册 + 名单隔离；proactive/command 为代码直连内部件，不是工具） |
@@ -412,13 +411,3 @@ WebUI 配置页经根 Schema 自描述协议（`__file_name__` / `__section_labe
 - [测试指南](../development/testing-guide.md) - 测试分层（agents/architecture/config/dashboard/integration/modules + characterization/mocks 支撑）
 
 ---
-
-
-
-
-
-
-
-*上次更新：2026-08-28（ADR-006 落地：mock_danmaku 表格描述收敛为"确定性 JSONL 回放器（LLM 仿真由 simulator/ SimulatorService 承担）"；`simulator/` 目录条目改写为开发基础设施描述；启动时序补 4b SimulatorService 步骤（条件装配，--dry 强制 auto_start=False）、关闭时序补 1.5 SimulatorService 关闭步骤；已知缺口第 3 条由 `simulator/` 已脱线替换为"存储记账器 simulated 列写入链缺口"——`live_chat`/`gifts`/`super_chats` 表已有列但记账器未从 payload 读取，**不升 SCHEMA_VERSION**）*
-
-*上次更新：2026-08-27（v2.0.6 AudioStreamChannel 拆除：组合根阶 1 步骤删除、`src/modules/streaming/` 全包 `git rm`、4 个 TTS 工具 + VTS/Warudo/VRChat Provider 移除 audio_stream_channel 注入、`lip_sync_subscriber.py` 删除；`LipSyncProcessor.on_start/on_chunk/on_end` 通道回调删除（会话方法保留）；`remote_stream` 模块 docstring 移除 AudioBus 引用；启动时序 mermaid 同步去除 `Audio` 参与者，本节"已知缺口"对应条目重写为拆除说明；目录结构去掉 `streaming/` 行；v2.0.5 工具注册路径对齐：mermaid 节点 `AgentManager` 改 `audit_tools (只读)`；启动时序在 `start_all` 前补 `bind_core_tools` / `bind_pending_tools` 两步、`start_all` 后补 `audit_tools` 一步；`manager.py` 行删除 `register_all_tools` / `collect_tool_specs` 改为 `audit_tools` 只读审计；MC Agent 示例改为 Agent 子类自注册 + 显式 bind）*

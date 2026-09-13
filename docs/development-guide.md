@@ -464,8 +464,3 @@ enabled = true
 - [事件系统](architecture/event-system.md) - EventBus 与事件拦截器
 - [提示词管理](development/prompt-management.md) - PromptManager 使用
 - [测试指南](development/testing-guide.md) - 测试规范和最佳实践
-
----
-
-*最后更新：2026-08-28（v2.0.8 Sticker 事件链全链删除——`OUTPUT_STICKER_COMMAND = "output.sticker.command"` 从 §5.2 CoreEvents 示例常量代码块移除（v2.0.0 残留的"v2 保留 Sticker→VTS 单向信号（§1.46.1）"引用同步删除，C1 治理收口））*
-

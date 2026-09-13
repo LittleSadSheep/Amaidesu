@@ -189,7 +189,7 @@ uv run python main.py --dry
 |------|------|---------|---------|
 | **采集器（Collector）** | 世界→系统的入口：把弹幕、语音、控制台、屏幕变化等外部数据标准化、推事件 | `src/modules/collectors/` | `collectors.toml`（`enabled` 名单 + 同名子段） |
 | **业务 Agent（Agent）** | 拥有内部状态与工具的主循环体；订阅事件、决策、调用工具 | `src/agents/` | `[agents]` + `[agents.<name>]` |
-| **工具（Tool）** | 单一能力函数（@tool 装饰器），由 Agent 在决策时按需调用 | `src/modules/tools/` | `tools.toml` 提供者开关与子配置 |
+| **工具（Tool）** | 单一能力契约（ToolSpec + BaseToolProvider / as_tool_impl），由 Agent 在决策时按需调用 | `src/modules/tools/` | `tools.toml` 提供者开关与子配置 |
 
 > 渲染工具（字幕 / VTS / OBS 等）在 v2 中以 **Tool Provider** 的形式注册：开启对应提供者开关后，工具包内的组件会注册到 `ToolRegistry` 中。**TTS 是例外**——语音已成为基础模块（v2.0.12 §8 修正：整体提升为基础设施，移出工具池），位于 `src/modules/tts/`，由 `config/infra.toml` 的 `[tts]` 段驱动装配（`build_tts_infrastructure` 按 `[tts].provider` 单选构造引擎实例注入 StreamerAgent，ToolRegistry 中零 TTS 条目；开启后主播每句话自动播出），详见 [组件开发指南](development/component-guide.md) 与 [ADR-007](architecture/adr/007-tts-infrastructure-pipeline.md)。
 
@@ -411,5 +411,3 @@ vite_dev_port = 60315                               # Vite 开发服务器端口
 - **TTS 已基础模块化**（v2.0.12 §8 修正：TTS 提升为基础设施）：在 `config/infra.toml` 的 `[tts]` 段设 `enabled = true` 后，主播每句回复自动合成播出（引擎由 `provider` 选择，默认 `gptsovits` 需本地服务在跑；无本地服务可用 `edge_tts`，仅需网络）。字幕 / 皮套 / OBS 等渲染工具仍按 `[tools.output.config]` 的 `enabled` 列表勾选装配。
 - **控制台交互**已可用；弹幕采集、屏幕识别、语音转写需对应第三方凭据（id_code / appid / VLM API Key 等）。
 - 完整字段定义在 `src/modules/config/*_schemas.py`；本指南只覆盖"首次跑通"的最小集。
-
-*最后更新：2026-09-05（v2.0.12 §8 概念修正：TTS 提升为基础设施（基础模块）。§2.5 启用渲染输出节：TTS 注释补写为"v2.0.12 §8 修正：整体提升为基础设施，移出工具池"+"ToolRegistry 中零 TTS 条目 + `build_tts_infrastructure` 装配期注入 StreamerAgent"+ 指向 ADR-007。§3.2 组件类型表注脚同上修订。§3.3 可用组件清单 output 工具包行：删除过时的 `edge_tts_synthesize`（TTS 不再是工具），代表工具改写为"字幕 / 皮套控制 / OBS 场景切换"+ 注脚"TTS 已提升为基础设施，迁至 `src/modules/tts/` 基础模块"。§6 已知限制：TTS 由"已基础设施化"补写为"已基础模块化（v2.0.12 §8 修正：TTS 提升为基础设施）"；同日术语统一：'退役出工具池'改为'提升为基础设施'（避免误导为降级））*

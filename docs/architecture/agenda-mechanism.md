@@ -405,7 +405,3 @@ temperature = 0.7
 - `AgendaIdle` 不直接 emit 业务事件，通过 `on_advance` 回调通知 Agent 走正常决策链
 - 不订阅 Output 事件（数据流红线，见[数据流规则](./data-flow.md)）
 - 持久化失败隔离：`persist_runtime()` 异常被吞掉，返回 False，不影响 Agent 继续运行
-
----
-
-*最后更新：2026-09-04（streamer 包子包化重组：Agenda 子系统收拢 `src/agents/streamer/agenda/` 子包，§模块归属与 §架构约束路径同步更新）*

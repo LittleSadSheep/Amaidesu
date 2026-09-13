@@ -49,4 +49,4 @@ Amaidesu v1 采用 Input → Decision → Output 三阶段架构：InputCollecto
 
 - 收益：单一 Agent 包内聚完整决策闭环；扩展内容 = 新增自包含包；工具生态统一 ToolSpec 契约（约 60 个工具可被任意 Agent 复用）；事件名自带语义便于监控与通配订阅。
 - 代价：一次性迁移成本高（九个 Wave 的渐进重构）；Agent 内部复杂度上升（Planner 循环、Agenda 子系统、后台双任务都在一个包里），需要靠包内模块边界自律。
-- 需持续关注：渲染工具的注册接线尚未完全自动化（已知缺口）；`@tool` 装饰器与 ToolProvider 双路径并存需在文档中明确主路径；旧 `schemas/input_schemas.py`、`output_schemas.py` 与 `src/modules/simulator/` 为迁移期遗留，待清理。
+- 需持续关注：渲染工具的注册接线尚未完全自动化（已知缺口）；旧 `schemas/input_schemas.py`、`output_schemas.py` 与 `src/modules/simulator/` 为迁移期遗留，待清理。

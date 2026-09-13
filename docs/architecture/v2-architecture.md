@@ -187,7 +187,7 @@ flowchart TB
 - **AudioStreamChannel 已拆除**（v2 pull 编排下无扇出场景，lip-sync 责任归皮套软件 + 工具 invoke 能力的重建）；
 - **迁移期遗留待清理**：`src/modules/config/schemas/input_schemas.py`、`output_schemas.py`（不再被加载的旧 Schema）、main.py 顶部过期 docstring；
 - **存储记账器 `simulated` 列写入链**：`live_chat` / `gifts` / `super_chats` 表已有 `simulated INTEGER NOT NULL DEFAULT 0` 贯穿列（schema 已就位），但记账器尚未从 `RoomMessagePayload.simulated` 读取该字段写入对应列——属存储侧改造，**不升 SCHEMA_VERSION**（详见 ADR-006 §C + [模拟器指南 §4](development/simulator-guide.md#4-simulated-溯源)）；
-- `@tool` 装饰器与 ToolProvider 双路径并存，实际主路径为 ToolProvider 类。
+- 工具接入走 ToolSpec + BaseToolProvider（重场景）或 as_tool_impl + make_provider_from_specs（轻场景）两条正典路径，统一经 ToolRegistry 注册；不再使用装饰器形式的接入。
 
 这些不影响架构成立，但属于"叙事已更新、细节待抹平"的部分，将在后续迭代中逐项消化。
 

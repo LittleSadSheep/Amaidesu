@@ -116,5 +116,3 @@ v2.0.0 重构后，Amaidesu 已确立 Agent + 工具 + 存储 + 编排的主体�
   - **`tts.utterance.*` 订阅接线待实现**。当前生产代码**暂无订阅者**——字幕 Provider 由 StreamerAgent 通过 `speech` 文本直接 fire-and-forget，不订阅 utterance 事件（事件与字幕存在双轨，待字幕子系统接入事件总线后可统一）；详见 [架构总览 已知缺口第 3 条](overview.md#已知缺口)。接入后的事件契约本身已就绪，不需要再次改动 ADR-007。
 
 ---
-
-*最后更新：2026-09-05（§8 概念修正落库后修订——TTS 引擎整体提升为基础设施（`src/modules/tts/` 基础模块）；ToolProvider 形态 / TTS Facade / ToolRegistry 条目全部清除；装配入口改为 `build_tts_infrastructure(tts_config, event_bus=None)` 按 `[tts].provider` 单选构造并直接注入 StreamerAgent；配置 `core.toml [tts]` 自包含行为参数 + 四引擎子段、`tools.toml` 零 TTS 段、`CONFIG_VERSION` 升至 2.0.12；§决策 1 主体性、§替代方案"Facade 路由"条改为"曾采纳后 §8 否定"如实记录；§后果增"TTS 彻底基础模块化 / 装配入口单一 / 配置自包含"三条收益；文末状态行补"§8 修正已按最终状态修订"；同日术语统一：'退役出工具池'改为'提升为基础设施'（避免误导为降级；ADR 顶部的实现提交行保留原 commit 描述引文与 hash 不动——这是 git 历史事实））*
