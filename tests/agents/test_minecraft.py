@@ -11,7 +11,7 @@ from src.agents.minecraft.config import MinecraftConfig
 from src.agents.minecraft.state import MinecraftAgentState
 from src.agents.minecraft.tools import MinecraftToolProvider
 from src.modules.events.payloads.game import GamePayload
-from src.modules.llm.manager import LLMResponse
+from src.modules.llm.payload import Response, ToolCall
 from src.modules.mcp.config import McpServerConfig
 from src.modules.tools.models import ToolExecutionResult, ToolInvocation, ToolSpec
 from src.modules.tools.provider import BaseToolProvider
@@ -30,13 +30,13 @@ def _invocation(name: str, arguments: dict) -> ToolInvocation:
     return ToolInvocation(tool_name=name, arguments=arguments, source="test")
 
 
-def _tool_call(name: str, arguments: dict, call_id: str = "call_1") -> dict:
-    """完整 OpenAI 形态 tool_call（id/type/function）。"""
-    return {"id": call_id, "type": "function", "function": {"name": name, "arguments": arguments}}
+def _tool_call(name: str, arguments: dict, call_id: str = "call_1") -> ToolCall:
+    """中立扁平形态 tool_call（id/name/arguments，arguments 已解析为 dict）。"""
+    return ToolCall(id=call_id, name=name, arguments=arguments)
 
 
-def _resp(content: str = "", tool_calls: list | None = None) -> LLMResponse:
-    return LLMResponse(success=True, content=content, tool_calls=tool_calls or [])
+def _resp(content: str = "", tool_calls: list | None = None) -> Response:
+    return Response(success=True, content=content, tool_calls=tool_calls or [])
 
 
 def _reports(emitted: list) -> List[GamePayload]:
@@ -147,10 +147,6 @@ async def test_minecraft_get_work_log_reports_ring_buffer() -> None:
     assert state.reports[-1]["content"] == "上报 14"
 
 
-
-
-
-
 @pytest.mark.asyncio
 async def test_minecraft_report_emits_and_records() -> None:
     """minecraft_report：回调受理 → success；kind/content 校验；无 callback 降级。"""
@@ -231,7 +227,7 @@ async def test_minecraft_agent_emits_game_report_with_payload() -> None:
 async def test_react_natural_termination_fallback_delivery() -> None:
     """情形 3：自然终止、无 report、无 handoff → 系统兜底包装终止文本为一次 delivery。"""
     llm = MagicMock()
-    llm.chat_messages = AsyncMock(return_value=_resp("钻石挖完了，共 5 颗。"))
+    llm.generate = AsyncMock(return_value=_resp("钻石挖完了，共 5 颗。"))
     event_bus = MagicMock()
     event_bus.emit = AsyncMock()
 
@@ -242,7 +238,7 @@ async def test_react_natural_termination_fallback_delivery() -> None:
     )
     await agent.start()
     await agent.send_prompt("挖 3 个钻石")
-    await _wait_until(lambda: llm.chat_messages.await_count == 1)
+    await _wait_until(lambda: llm.generate.await_count == 1)
 
     emitted = [c.args[1] for c in event_bus.emit.await_args_list]
     reports = _reports(emitted)
@@ -270,7 +266,7 @@ async def test_react_report_delivery_stops_batch() -> None:
             )
         return _resp("不该再推理")
 
-    llm.chat_messages = fake
+    llm.generate = fake
     event_bus = MagicMock()
     event_bus.emit = AsyncMock()
 
@@ -298,7 +294,7 @@ async def test_react_report_delivery_stops_batch() -> None:
 async def test_react_report_escalation_stops_and_waits() -> None:
     """情形 2：LLM 调 report(escalation) → 停止，静默等主播 send_prompt 唤醒。"""
     llm = MagicMock()
-    llm.chat_messages = AsyncMock(
+    llm.generate = AsyncMock(
         return_value=_resp(tool_calls=[_tool_call("minecraft_report", {"kind": "escalation", "content": "需要授权"})])
     )
     event_bus = MagicMock()
@@ -312,9 +308,9 @@ async def test_react_report_escalation_stops_and_waits() -> None:
     )
     await agent.start()
     await agent.send_prompt("遇到困难的任务")
-    await _wait_until(lambda: llm.chat_messages.await_count == 1)
+    await _wait_until(lambda: llm.generate.await_count == 1)
     await asyncio.sleep(0.15)
-    assert llm.chat_messages.await_count == 1
+    assert llm.generate.await_count == 1
 
     emitted = [c.args[1] for c in event_bus.emit.await_args_list]
     reports = _reports(emitted)
@@ -322,7 +318,7 @@ async def test_react_report_escalation_stops_and_waits() -> None:
 
     # 主播回复（send_prompt）唤醒新批次（新 mock 独立计数，避免与第一批混淆）
     resume_mock = AsyncMock(return_value=_resp("收到授权，继续"))
-    llm.chat_messages = resume_mock
+    llm.generate = resume_mock
     await agent.send_prompt("授权通过了，继续")
     await _wait_until(lambda: resume_mock.await_count == 1)
     await agent.stop()
@@ -332,7 +328,7 @@ async def test_react_report_escalation_stops_and_waits() -> None:
 async def test_react_max_steps_emits_attention() -> None:
     """情形 5：LLM 恒调用工具 → 步数超上限 → attention_required 挂起。"""
     llm = MagicMock()
-    llm.chat_messages = AsyncMock(return_value=_resp(tool_calls=[_tool_call("minecraft_todo", {"action": "read"})]))
+    llm.generate = AsyncMock(return_value=_resp(tool_calls=[_tool_call("minecraft_todo", {"action": "read"})]))
     event_bus = MagicMock()
     event_bus.emit = AsyncMock()
 
@@ -343,7 +339,7 @@ async def test_react_max_steps_emits_attention() -> None:
     )
     await agent.start()
     await agent.send_prompt("循环任务")
-    await _wait_until(lambda: llm.chat_messages.await_count == 3)
+    await _wait_until(lambda: llm.generate.await_count == 3)
 
     emitted = [c.args[1] for c in event_bus.emit.await_args_list]
     attention = [p for p in emitted if isinstance(p, GamePayload) and p.event_type == "attention_required"]
@@ -370,7 +366,7 @@ async def test_react_todo_done_no_longer_emits_milestone() -> None:
             )
         return _resp("全部完成")
 
-    llm.chat_messages = fake
+    llm.generate = fake
     event_bus = MagicMock()
     event_bus.emit = AsyncMock()
 
@@ -403,7 +399,7 @@ async def test_react_full_format_feedback_and_id_association() -> None:
         )
 
     llm = MagicMock()
-    llm.chat_messages = fake
+    llm.generate = fake
     event_bus = MagicMock()
     event_bus.emit = AsyncMock()
 
@@ -468,7 +464,7 @@ async def test_react_mcp_tool_via_registry_passthrough() -> None:
 
     fake.calls = 0
     llm = MagicMock()
-    llm.chat_messages = fake
+    llm.generate = fake
     event_bus = MagicMock()
     event_bus.emit = AsyncMock()
 
@@ -498,7 +494,7 @@ async def test_react_pause_suspends_loop() -> None:
         return _resp(tool_calls=[_tool_call("minecraft_todo", {"action": "read"})])
 
     llm = MagicMock()
-    llm.chat_messages = fake
+    llm.generate = fake
     event_bus = MagicMock()
     event_bus.emit = AsyncMock()
 
@@ -530,7 +526,7 @@ async def test_instruction_injection_wakes_worker_full_chain() -> None:
     派活的工具链验证见 tests/modules/agents/test_delegation.py。
     """
     llm = MagicMock()
-    llm.chat_messages = AsyncMock(return_value=_resp("收到，开始执行"))
+    llm.generate = AsyncMock(return_value=_resp("收到，开始执行"))
     event_bus = MagicMock()
     event_bus.emit = AsyncMock()
 
@@ -544,7 +540,7 @@ async def test_instruction_injection_wakes_worker_full_chain() -> None:
     await agent.start()
 
     await agent.send_prompt("工具链目标")
-    await _wait_until(lambda: llm.chat_messages.awaited)
+    await _wait_until(lambda: llm.generate.awaited)
 
     await agent.stop()
 
@@ -560,7 +556,7 @@ async def test_agent_reusable_after_goal_completes() -> None:
         return _resp(f"汇报 {calls}")
 
     llm = MagicMock()
-    llm.chat_messages = fake
+    llm.generate = fake
     event_bus = MagicMock()
     event_bus.emit = AsyncMock()
 
@@ -605,7 +601,7 @@ async def test_prompt_without_llm_fails_fast() -> None:
 async def test_idle_costs_nothing() -> None:
     """命令驱动：空闲（无命令）时不产生任何 LLM 调用。"""
     llm = MagicMock()
-    llm.chat_messages = AsyncMock()
+    llm.generate = AsyncMock()
 
     agent = MinecraftAgent(
         MinecraftConfig(),
@@ -615,7 +611,7 @@ async def test_idle_costs_nothing() -> None:
     await agent.start()
     await asyncio.sleep(0.4)
 
-    llm.chat_messages.assert_not_awaited()
+    llm.generate.assert_not_awaited()
     await agent.stop()
 
 
@@ -623,7 +619,7 @@ async def test_idle_costs_nothing() -> None:
 async def test_llm_call_failure_emits_error() -> None:
     """LLM 调用失败（success=False）→ game.error，任务退出。"""
     llm = MagicMock()
-    llm.chat_messages = AsyncMock(return_value=LLMResponse(success=False, error="rate limit"))
+    llm.generate = AsyncMock(return_value=Response(success=False, error="rate limit"))
     event_bus = MagicMock()
     event_bus.emit = AsyncMock()
 
@@ -697,7 +693,7 @@ async def test_react_tool_failure_fed_back_to_llm() -> None:
         return _resp("接受错误，尝试重试")
 
     llm = MagicMock()
-    llm.chat_messages = fake
+    llm.generate = fake
     event_bus = MagicMock()
     event_bus.emit = AsyncMock()
 
@@ -737,7 +733,7 @@ async def test_react_multi_tool_calls_batch_execute() -> None:
             )
         return _resp("done")
 
-    llm.chat_messages = fake
+    llm.generate = fake
     event_bus = MagicMock()
     event_bus.emit = AsyncMock()
 
@@ -767,7 +763,7 @@ async def test_command_after_task_reaches_messages() -> None:
         return _resp(tool_calls=[])
 
     llm = MagicMock()
-    llm.chat_messages = fake
+    llm.generate = fake
     event_bus = MagicMock()
     event_bus.emit = AsyncMock()
 
@@ -943,9 +939,9 @@ class _RecordingLlm:
         self.captured: List[List[Dict[str, Any]]] = []
         self._script = script
 
-    async def chat_messages(self, messages: List[Dict[str, Any]], **kwargs: Any) -> LLMResponse:
-        self.captured.append([m.copy() for m in messages])
-        return await self._script(messages, **kwargs)
+    async def generate(self, input: Any, **kwargs: Any) -> Response:
+        self.captured.append([m.copy() for m in input])
+        return await self._script(input, **kwargs)
 
 
 def _make_task_agent(
@@ -1646,10 +1642,9 @@ async def test_own_tool_invoke_emits_tool_result_event() -> None:
             obs = await agent._execute_tool("minecraft_todo", {"action": "read"})
             assert obs.get("tool") == "todo"
             await asyncio.sleep(0.05)  # emit 为 fire-and-forget
-            assert any(
-                name == "tool.result.minecraft_todo" and p.status == "success"
-                for name, p in received
-            ), f"应观测到 tool.result.minecraft_todo，实际: {[(n, p.status) for n, p in received]}"
+            assert any(name == "tool.result.minecraft_todo" and p.status == "success" for name, p in received), (
+                f"应观测到 tool.result.minecraft_todo，实际: {[(n, p.status) for n, p in received]}"
+            )
         finally:
             await agent.stop()
     finally:

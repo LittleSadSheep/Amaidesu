@@ -39,7 +39,6 @@ from src.modules.agents.base import AgentState, BaseAgent
 from src.modules.events.event_bus import EventBus
 from src.modules.events.names import CoreEvents
 from src.modules.events.payloads.game import GamePayload
-from src.modules.llm.manager import normalize_tool_calls_for_protocol
 from src.modules.logging import get_logger
 from src.modules.tools.models import ToolInvocation, ToolSpec
 from src.modules.tools.registry import ToolRegistry
@@ -47,6 +46,9 @@ from src.modules.tools.registry import ToolRegistry
 from .config import MinecraftConfig
 
 __all__ = ["MinecraftAgent"]
+
+# 决策调用的 LLM profile 绑定（封闭六成员之一）：由代码显式声明，配置不承载绑定
+MINECRAFT_PROFILE = "minecraft"
 
 # 旧观察规整：最近 N 条工具结果保留原文，更早的替换为占位符（防上下文膨胀）
 _OBSERVATION_KEEP = 10
@@ -100,7 +102,6 @@ class MinecraftAgent(BaseAgent):
         config: MinecraftConfig,
         *,
         llm_manager: Optional[Any] = None,
-        llm_profile: str = "minecraft",
         prompt_manager: Optional[Any] = None,
         event_bus: Optional[EventBus] = None,
         tool_registry: Optional[ToolRegistry] = None,
@@ -112,7 +113,6 @@ class MinecraftAgent(BaseAgent):
         Args:
             config: MinecraftConfig 实例
             llm_manager: 可选 LLMManager（ReAct 循环用；无则任务失败 fast-fail）
-            llm_profile: 决策调用的 LLM profile 名（对应 [llm_profiles.<name>] 段，默认 'minecraft'）
             prompt_manager: 可选 PromptManager（渲染系统提示词）
             event_bus: 可选 EventBus（emit game.* 事件）
             tool_registry: 可选 ToolRegistry（注册 Agent 专属工具 + 动态发现 MCP 工具）
@@ -126,7 +126,6 @@ class MinecraftAgent(BaseAgent):
         super().__init__(event_bus=event_bus)
         self.typed_config = config
         self._llm = llm_manager
-        self._llm_profile = llm_profile
         self._prompt = prompt_manager
         self._event_bus = event_bus
         self._tool_registry = tool_registry
@@ -167,7 +166,7 @@ class MinecraftAgent(BaseAgent):
         self._logger = get_logger("MinecraftAgent")
         self._logger.info(
             f"MinecraftAgent 已构造 (max_steps={config.max_steps}, "
-            f"llm={'已注入' if llm_manager else '无'}@{llm_profile})"
+            f"llm={'已注入' if llm_manager else '无'}@{MINECRAFT_PROFILE})"
         )
 
     # ==================================================================
@@ -378,7 +377,7 @@ class MinecraftAgent(BaseAgent):
         循环每步：
         1. flush 命令/系统注入消息 → 追加 user 消息
         2. 规整对话历史（旧观察 → 占位符）
-        3. LLM 推理（chat_messages + 工具列表）→ tool_calls（可多个）
+        3. LLM 推理（generate + 工具列表）→ tool_calls（可多个）
         4. 串行执行：统一经 ToolRegistry（观测/停用/熔断复用既有机制）
         5. 工具结果作为观察作为观察返回（OpenAI tool role + tool_call_id）
         批次终止语义（五条，全部系统可判定）：
@@ -432,9 +431,9 @@ class MinecraftAgent(BaseAgent):
             # --- LLM 推理 ---
             on_delta = self._build_thinking_callback(mc_round, steps, mc_seq_box) if mc_round else None
             try:
-                response = await self._llm.chat_messages(
-                    messages=messages,
-                    client_type=self._llm_profile,
+                response = await self._llm.generate(
+                    messages,
+                    profile=MINECRAFT_PROFILE,
                     tools=tool_defs,
                     on_delta=on_delta,
                 )
@@ -456,7 +455,18 @@ class MinecraftAgent(BaseAgent):
                 assistant_content = json.dumps(assistant_content, ensure_ascii=False, default=str)
             assistant_msg: Dict[str, Any] = {"role": "assistant", "content": assistant_content}
             if tool_calls:
-                assistant_msg["tool_calls"] = normalize_tool_calls_for_protocol(tool_calls)
+                # 扁平 ToolCall → OpenAI 协议嵌套形态（喂回时 arguments 须为 JSON 字符串）
+                assistant_msg["tool_calls"] = [
+                    {
+                        "id": call.id,
+                        "type": "function",
+                        "function": {
+                            "name": call.name,
+                            "arguments": json.dumps(call.arguments, ensure_ascii=False, default=str),
+                        },
+                    }
+                    for call in tool_calls
+                ]
             messages.append(assistant_msg)
 
             # --- 自然终止（情形 3/4）：LLM 无 tool_calls ---
@@ -478,23 +488,15 @@ class MinecraftAgent(BaseAgent):
             # --- 工具执行与观察作为观察返回 ---
             for call in tool_calls:
                 await self._paused.wait()
-                func = call.get("function") or {}
-                name = func.get("name", "")
-                arguments = func.get("arguments") or {}
-                if isinstance(arguments, str):
-                    try:
-                        arguments = json.loads(arguments)
-                    except json.JSONDecodeError:
-                        arguments = {}
-                if not isinstance(arguments, dict):
-                    arguments = {}
+                # 扁平 ToolCall：name/arguments(id 关联观察回填)；arguments 已是解析后的 dict
+                arguments = call.arguments if isinstance(call.arguments, dict) else {}
 
-                observation = await self._execute_tool(name, arguments, round_id=mc_round)
-                self._track_receipt(name, observation)
+                observation = await self._execute_tool(call.name, arguments, round_id=mc_round)
+                self._track_receipt(call.name, observation)
                 messages.append(
                     {
                         "role": "tool",
-                        "tool_call_id": call.get("id", ""),
+                        "tool_call_id": call.id,
                         "content": json.dumps(observation, ensure_ascii=False, default=str),
                     }
                 )
