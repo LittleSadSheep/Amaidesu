@@ -10,6 +10,7 @@ StorageLedger —— 直播间消息流落库记账器
   - ``danmaku``   → live_chat（+ 顺路 upsert viewers.message_count）
   - ``gift``      → gifts（+ 顺路 upsert viewers.gift_count）
   - ``super_chat`` → super_chats（SC 属 high-value，统计计数走 SimpleMemory 语义层，不混入 viewers）
+  - ``guard``     → live_chat（message_type="guard"；content 即人读描述，不计观众发言统计）
   - ``partner_speech`` → live_chat（sender_role="partner"，**不**计观众统计）
   - ``enter``     → 当前 schema 无 enter 明细表 → debug 日志后丢弃（场次状态归 LiveSessionManager，不在本层职责）
 - viewers 写穿伴随：选在主表落库同点 upsert，避免后台 tick 的重复扫描与时序问题；SC 不计入保持现有行为
@@ -122,7 +123,7 @@ class StorageLedger:
         logger.info(
             f"StorageLedger 已订阅 {_ROOM_MESSAGE_WILDCARD}"
             "（danmaku→live_chat / gift→gifts / super_chat→super_chats"
-            " / partner_speech→live_chat.partner / enter→debug 丢弃）"
+            " / guard→live_chat / partner_speech→live_chat.partner / enter→debug 丢弃）"
             f" + {CoreEvents.STREAMER_SPEECH}（→live_chat, sender_role=assistant）"
             f" + {_GAME_EVENT_WILDCARD}（milestone/attention_required/error→game_events）",
         )
@@ -209,6 +210,21 @@ class StorageLedger:
                     user_name=payload.user.name,
                     amount=float(sc.amount),
                     message=payload.content or "",
+                    simulated=payload.simulated,
+                )
+                return
+            if msg_type == "guard":
+                # 上舰：无独立明细表也无结构化子载荷，content 即人读描述，
+                # 落 live_chat（sender_role="viewer"），不计观众发言统计
+                await self.chat_repo.insert_live_chat(
+                    live_session_id=live_pk,
+                    timestamp_ms=payload.timestamp_ms,
+                    sender_role="viewer",
+                    sender_id=payload.user.id,
+                    sender_name=payload.user.name,
+                    content=payload.content or "",
+                    message_type=msg_type,
+                    message_id=payload.message_id or None,
                     simulated=payload.simulated,
                 )
                 return

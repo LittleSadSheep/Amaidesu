@@ -539,12 +539,21 @@ class StreamerAgent(BaseAgent):
         """订阅 room.message.* + game.* + perception.* 事件（语义域事件）。"""
         if self._event_bus is None:
             return
-        self._event_bus.on(
+        # room.message 全族（danmaku/gift/super_chat/guard）共用同一回调：
+        # 按载荷自身 message_type 走 handle_message 统一入口，付费类型由
+        # TimingGate 强制判定（类型驱动，非 importance 数值）
+        for event_name in (
             CoreEvents.ROOM_MESSAGE_DANMAKU,
-            self._on_danmaku_received,
-            model_class=RoomMessagePayload,
-            priority=50,
-        )
+            CoreEvents.ROOM_MESSAGE_GIFT,
+            CoreEvents.ROOM_MESSAGE_SUPER_CHAT,
+            CoreEvents.ROOM_MESSAGE_GUARD,
+        ):
+            self._event_bus.on(
+                event_name,
+                self._on_room_message_received,
+                model_class=RoomMessagePayload,
+                priority=50,
+            )
         # 主播视觉感知（屏幕采集器 emit）：画面描述进 RoomState，
         # 经环境参考进决策上下文——不进弹幕缓冲、不落 live_chat
         self._event_bus.on(
@@ -594,7 +603,9 @@ class StreamerAgent(BaseAgent):
             model_class=LiveEndedPayload,
             priority=60,
         )
-        self._logger.info("StreamerAgent 已订阅 room.message.danmaku / game.* / live.started|ended")
+        self._logger.info(
+            "StreamerAgent 已订阅 room.message.danmaku|gift|super_chat|guard / game.* / live.started|ended"
+        )
 
     async def _on_live_started(
         self,
@@ -647,15 +658,18 @@ class StreamerAgent(BaseAgent):
         self._room_state.set_screen_context(payload.content)
         self._logger.debug(f"屏幕画面已更新（来源 {source}）: {payload.content[:50]}")
 
-    async def _on_danmaku_received(
+    async def _on_room_message_received(
         self,
         event_name: str,
         payload: RoomMessagePayload,
         source: str,
     ) -> None:
-        """弹幕事件回调：推进 RoomState + 入缓冲（载荷即事件载荷，零映射）。"""
-        if payload.message_type != "danmaku":
-            return
+        """room.message.* 回调：推进 RoomState + 入缓冲（载荷即事件载荷，零映射）。
+
+        danmaku / gift / super_chat / guard 全部进入决策链；强制响应与否由
+        handle_message 内的 TimingGate 按 message_type 判定，本回调不做过滤。
+        """
+        del event_name, source
         await self.handle_message(payload)
 
     async def handle_message(self, msg: RoomMessagePayload) -> None:

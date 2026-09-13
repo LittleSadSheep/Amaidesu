@@ -40,6 +40,7 @@ PROMPT_TEMPLATES: Dict[str, str] = {
     "danmaku": "{nickname}: {content}",
     "gift": "[礼物] {nickname}: {content}",
     "super_chat": "[醒目留言] {nickname}: {content}",
+    "guard": "[上舰] {nickname}: {content}",
     "enter": "[入场] {nickname}: {content}",
     "partner_speech": "{nickname}: {content}",
 }
