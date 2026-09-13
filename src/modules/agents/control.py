@@ -106,29 +106,6 @@ class AgentControl:
         await agent.shutdown()
         return True
 
-    async def restart(self, name: str) -> bool:
-        agent = self._manager.get_agent_by_name(name)
-        if agent is None:
-            logger.warning(f"restart_agent: 未找到 Agent '{name}'")
-            return False
-        # stop 当前实例
-        await agent.stop()
-        # 工厂重建
-        try:
-            new_agent = agent.clone()
-        except Exception as exc:  # noqa: BLE001
-            logger.error(f"Agent '{name}' 工厂重建失败: {exc}", exc_info=True)
-            return False
-        new_agent.increment_restart_counter()
-        # 替换管理器中的实例：
-        #    仅替换引用，调用方需保证旧实例已停止（已 stop）
-        #    并未清理 event_bus 注入；生产环境建议 Agent 自行管理重建流程
-        if not self._manager.replace_agent_instance(name, new_agent):
-            return False
-        # start 新实例
-        await new_agent.start()
-        return True
-
     def list_agents(self) -> List[str]:
         return self._manager.list_agents()
 

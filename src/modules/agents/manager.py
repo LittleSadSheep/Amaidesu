@@ -150,18 +150,6 @@ class AgentManager:
         """默认工具注册中心（构造时注入；可能为 None）。"""
         return self._tool_registry
 
-    def replace_agent_instance(self, name: str, new_agent: BaseAgent) -> bool:
-        """把已注册 Agent 的实例引用替换为 new_agent（控制面 restart 复用）。
-
-        调用方需保证旧实例已停止；替换只换引用，不触碰注册元数据。
-        未注册名返回 False。
-        """
-        reg = self._agents.get(name)
-        if reg is None:
-            return False
-        reg.agent = new_agent
-        return True
-
     async def start_agent(self, name: str) -> bool:
         """启动（或重启）单个已注册 Agent。"""
         reg = self._agents.get(name)

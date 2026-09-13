@@ -414,11 +414,6 @@ class BaseAgent(abc.ABC):
 
     # ----- 工厂重建（崩溃重启前提） -----
 
-    def clone(self) -> "BaseAgent":
-        """默认重建：同对象类型构造。
-        子类可覆写（依赖注入需重建）。"""
-        return self.__class__()
-
     def increment_restart_counter(self) -> None:
         self._restart_count += 1
 
