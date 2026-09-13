@@ -45,6 +45,18 @@ Q3（数据源型并行判据）
 
 **关键**：Q2 的「自主决定」**不要求是 LLM**，代码决定也算。本次讨论反复摇摆（工具↔Agent↔采集器）的根源就是**误用「有无 LLM 循环」当尺子**。
 
+**本仓组件验证表**（用真实组件回放三问，防止判据被抽象化误读）：
+
+| 组件 | 三问作答 | 归类 |
+|------|----------|------|
+| streamer（`src/agents/streamer/`） | Q1 持过程 ✓（直播决策循环）；Q2 自己推进，没人叫也在跑 | 主播 Agent |
+| minecraft（`src/agents/minecraft/`） | Q1 持过程 ✓；Q2 自己推进，收到命令才启动一段、完成即停 | 游戏 Agent |
+| text_adv（`src/agents/text_adv/`） | Q1 持过程 ✓（auto 观察循环）；Q2 自己推进，循环由 `set_auto` 命令启停、完成即停 | 游戏 Agent |
+| vision_look_at_screen（`src/modules/vision/look_at_screen.py`） | Q1 否——每次调用独立完成抓屏读屏 | 工具 |
+| McpToolProvider（`src/modules/mcp/provider.py`） | Q1 否——重连属维护性后台循环，不持跨调用的办事过程 | 工具 |
+| bili_danmaku（`src/modules/collectors/bilibili/`） | Q3 命中——持续采弹幕并推送，无目标无起止，生命周期挂装配期 | 采集器 |
+| ProactiveTrigger（`src/agents/streamer/proactive_trigger.py`） | Q1 否——被调才干活，且是代码直连部件（无 `ToolSpec`、不进表） | 代码直连内部件 |
+
 **与「红线三分」的区别**：本节判**组件顶层类型**（采集器 / 工具 / Agent）；Agent 内部的部件如何处置（注册为工具 / 留在 Agent 内 / 代码直连）是**另一轴**，见下文[红线三分](#红线三分)。
 
 ---
