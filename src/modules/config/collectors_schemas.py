@@ -39,7 +39,6 @@ class CollectorsRootConfig(BaseConfig):
                 "bili_danmaku",
                 "bili_danmaku_official",
                 "console_input",
-                "screen",
                 "stt",
             ],
         },

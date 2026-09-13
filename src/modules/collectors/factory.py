@@ -6,7 +6,6 @@
 - bili_danmaku         → BiliDanmakuCollector（legacy）
 - bili_danmaku_official→ BiliDanmakuOfficialCollector
 - console_input        → ConsoleInputCollector
-- screen               → ScreenChangeCollector
 - stt                  → STTCollector
 """
 
@@ -15,13 +14,15 @@ from __future__ import annotations
 from typing import Any, Optional
 
 from src.modules.collectors.base import BaseCollector
+from src.modules.logging import get_logger
+
+_logger = get_logger(__name__)
 
 # 已实现的采集器注册名
 SUPPORTED_COLLECTORS: tuple[str, ...] = (
     "bili_danmaku",
     "bili_danmaku_official",
     "console_input",
-    "screen",
     "stt",
 )
 
@@ -32,12 +33,7 @@ def instantiate_collector(
     event_bus: Any = None,
     llm_manager: Any = None,
 ) -> Optional[BaseCollector]:
-    """按名实例化采集器；未知名字返回 None。
-
-    ``llm_manager`` 为可选参数：仅 ``screen`` 采集器需要 LLMManager
-    调用 VLM；其余 collector 沿用事件总线即可。传入 llm_manager 后透传至屏幕
-    采集器，避免 ScreenReader 自带 aiohttp 绕过统一 profile 管理。
-    """
+    """按名实例化采集器；未知名字记录 warning 并返回 None。"""
     if name == "bili_danmaku":
         from src.modules.collectors.bilibili.legacy.bili_danmaku_collector import BiliDanmakuCollector
 
@@ -52,18 +48,15 @@ def instantiate_collector(
         from src.modules.collectors.console.console_input_collector import ConsoleInputCollector
 
         return ConsoleInputCollector(config=config or {}, event_bus=event_bus)
-    if name == "screen":
-        from src.modules.collectors.screen.screen_change_collector import ScreenChangeCollector
-
-        return ScreenChangeCollector(
-            config=config or {},
-            event_bus=event_bus,
-            llm_manager=llm_manager,
-        )
     if name == "stt":
         from src.modules.collectors.stt.stt_collector import STTCollector
 
         return STTCollector(config=config or {}, event_bus=event_bus)
+    # 未知采集器名：跳过 + warning，不抛异常（允许配置残留段平滑过渡）
+    _logger.warning(
+        f"未知的 Collector 名称 '{name}'：未在 SUPPORTED_COLLECTORS 中找到对应实现，已跳过注册。"
+        f"如该采集器已退役，可从 config/collectors.toml 的 enabled 列表移除。"
+    )
     return None
 
 

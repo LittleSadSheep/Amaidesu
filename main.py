@@ -815,8 +815,8 @@ async def _register_collectors_from_config(
         bili_danmaku = { ... }
         console_input = { ... }
 
-    新增可选 ``llm_service`` 参数，透传给需要 VLM 的采集器（仅
-    ``screen``）。其余 collector 不消费 LLMManager，参数被忽略。
+    未在 SUPPORTED_COLLECTORS 中的名称：跳过注册并输出 warning，不抛异常
+    —— 用于支持配置残留段平滑过渡（例如已退役的采集器名留 enabled）。
     """
     enabled_list = config_section.get("enabled", []) or []
     for collector_name in enabled_list:
@@ -830,7 +830,10 @@ async def _register_collectors_from_config(
             llm_manager=llm_service,
         )
         if instance is None:
-            logger.warning(f"Collector '{collector_name}' 未找到 Collector 类，跳过")
+            logger.warning(
+                f"Collector '{collector_name}' 未在 SUPPORTED_COLLECTORS 中注册，已从 enabled 列表跳过。"
+                f"如该采集器已退役，可从 config/collectors.toml 的 enabled 列表移除该名称。"
+            )
             continue
         manager.register(instance, description=sub_cfg.get("description", ""))
 

@@ -52,7 +52,7 @@ def _make_config() -> dict:
             "enabled": ["bili_danmaku", "stt"],
             "meta": {"version": "2.0.31"},
             "bili_danmaku": {"room_id": 1},
-            "screen": {},
+            "bili_danmaku_official": {},
         },
     }
 
@@ -64,7 +64,7 @@ def test_list_includes_disabled_collectors() -> None:
 
     # 新契约：组件全集 = 采集器段 ∪ enabled 名单（stt 仅在名单中，空配置占位）
     by_name = {c.name: c for c in grouped["collectors"]}
-    assert set(by_name) == {"bili_danmaku", "screen", "stt"}
+    assert set(by_name) == {"bili_danmaku", "bili_danmaku_official", "stt"}
     assert "meta" not in by_name  # 文件级键不算组件
 
     danmaku = by_name["bili_danmaku"]
@@ -72,9 +72,9 @@ def test_list_includes_disabled_collectors() -> None:
     assert danmaku.is_enabled is True
     assert danmaku.is_started is True
 
-    screen = by_name["screen"]
-    assert screen.is_enabled is False
-    assert screen.is_started is False
+    official = by_name["bili_danmaku_official"]
+    assert official.is_enabled is False
+    assert official.is_started is False
 
     stt = by_name["stt"]
     assert stt.is_enabled is True  # 仅在名单中、无配置段也算启用
@@ -141,7 +141,7 @@ class TestDescriptionEnrichment:
         grouped = get_v2_component_list(config, server)
         by_name = {c.name: c for c in grouped["collectors"]}
         assert by_name["bili_danmaku"].description == "B站弹幕接收器"
-        assert by_name["screen"].description == ""
+        assert by_name["bili_danmaku_official"].description == ""
 
     def test_agent_description_from_manager(self) -> None:
         config = _make_config()
