@@ -325,7 +325,7 @@ async def asyncio_sleep_ms(ms: int) -> None:
 工具的典型形态：
 
 - **公用感知**（如 `vision_look_at_screen`）——任何 Agent 都可能需要，放 `src/modules/vision/`
-- **Agent 专属推进**（如 `text_adv_choose_option`）——只服务于某个游戏 Agent，放该 Agent 自家包内 `src/agents/<name>/tools.py`
+- **Agent 专属推进**（如 `text_adv_advance` / `text_adv_choose`）——只服务于某个游戏 Agent，放该 Agent 自家包内 `src/agents/<name>/tools.py`
 
 ### 数据契约与协议速览
 
@@ -446,7 +446,7 @@ registry.register_provider(
 |------|------|------|
 | `memory_query_memory`（公用查询，正典样板） | `src/modules/memory/query_tool.py` | 正典路径（`as_tool_impl` + `make_provider_from_specs`） |
 | `vision_look_at_screen`（公用感知） | `src/modules/vision/look_at_screen.py` | 手写 Provider（DI `ScreenCapture` + `TextReader` 后端；多显示器 + 可选区域 + VLM 转文本；失败降级 success=True + error） |
-| `text_adv_choose_option` / `text_adv_get_story`（Agent 专属） | `src/agents/text_adv/tools.py` | 手写 Provider（`provider="text_adv"`） |
+| `text_adv_advance` / `text_adv_choose` / `text_adv_set_auto` / `text_adv_get_state`（Agent 专属，名单 `["streamer"]`） | `src/agents/text_adv/tools.py` | 手写 Provider（`provider="text_adv"`） |
 | `streamer_reply`（主播发言出口，注册 + 名单 `["streamer"]`） | `src/agents/streamer/tools/reply_tool.py` | 手写 Provider（thinking 槽位） |
 | `rundown_control`（动态工具，条件追加例外） | `src/agents/streamer/tools/rundown_tool.py` | 正典路径包装直连执行器 |
 | `framework_delegate` / `framework_task_status`（委派原语） | `src/modules/agents/control.py` | 手写 Provider（`provider="framework"`） |

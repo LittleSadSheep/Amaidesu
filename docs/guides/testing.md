@@ -503,14 +503,7 @@ def test_rate_limit_interceptor_creation():
 
 ### 6.2 集成测试
 
-`tests/integration/` 验证跨模块/跨进程的集成边界。当前主用例：
-
-```python
-# tests/integration/test_persona_pipeline.py
-class TestPersonaConfigToPromptEndToEnd:
-    """验证模拟观众人设管线（人设配置 → prompt 组装）的端到端链路"""
-    ...
-```
+`tests/integration/` 验证 Amaidesu 与外部宿主（如 MaiBot）的集成边界。当前主用例：`test_simulator_wiring.py`（组合根装配契约——`[simulator]` 启用/自启三种组合下的 SimulatorService 装配路径）与 `test_persona_pipeline.py`（人设供应链端到端防回退——配置→提示词的注入与决策/表达分离契约）。
 
 跨组件协作的 EventBus / 拦截器 / 采集器链路测试已下沉到 `tests/modules/events/test_interceptors.py` 与 `tests/modules/agents/`，不属于本目录。
 
