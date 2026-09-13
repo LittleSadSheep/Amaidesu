@@ -5,7 +5,7 @@
 - ``hard_timeout_ms`` 真生效：墙包住整个单模型尝试（含墙内 Retryable
   重试），到点取消 in-flight 请求并切下一个模型
 - 流式超时分支：首 token 前到墙可 failover；首 token 后到墙只中止，
-  部分增量不吐给调用方、不切换模型
+  已外发的增量不追溯、不切换模型
 - 启动期弱校验：profile 硬超时小于 provider 请求超时时告警
 
 落库断言只用 ``llm_usage`` 单一写入点（observation.record_usage），
@@ -144,7 +144,7 @@ async def test_timeout_cancels_and_fails_over():
 
 @pytest.mark.asyncio
 async def test_stream_timeout_after_first_token_aborts():
-    """首 token 后卡到墙：部分增量不吐给调用方、不 failover、整体中止"""
+    """首 token 后卡到墙：调用方已收到的增量不追溯、不 failover、整体中止"""
 
     async def m1_stream_then_hang(on_delta: Any) -> None:
         on_delta("content", "首段")
@@ -156,8 +156,8 @@ async def test_stream_timeout_after_first_token_aborts():
     with pytest.raises(LLMInterruptedError):
         await _run(client_cls, _timeout_config(500), on_delta=lambda kind, text: received.append(text))
 
-    # 中止语义：调用方拿不到任何增量（含首 token），后续模型未被触碰
-    assert received == []
+    # 中止语义：增量直通已外发、不追溯；后续模型未被触碰（不 failover）
+    assert received == ["首段"]
 
 
 @pytest.mark.asyncio
@@ -179,7 +179,7 @@ async def test_stream_timeout_before_first_token_fails_over():
     assert fake.calls == ["fake-1", "fake-2"]
     assert response.success is True
     assert response.content == "fake-2 接管"
-    # m2 成功：缓冲的增量（m2 无增量调用）回放为空，m1 的部分增量不存在
+    # m2 成功且无增量调用；m1 首 token 前失败、增量未外发
     assert received == []
 
 

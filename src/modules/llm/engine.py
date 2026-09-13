@@ -13,7 +13,7 @@
   成功后立即返回，不再尝试。
 - **硬超时墙**：profile 级 ``hard_timeout_ms`` 包住整个单模型尝试（含墙内
   重试），到点取消 in-flight 请求；超时切下一个模型。流式首 token 已产出
-  后到点则只中止，部分增量不外泄。
+  后到点则只中止，已外发的增量不追溯。
 - **厂商无关**：本模块不 import 任何厂商适配端（``clients/<vendor>/``），
   provider 客户端构造与能力解析一律经 ``clients`` 包的调度表完成。
 
@@ -83,35 +83,27 @@ _PAYLOAD_METHODS = frozenset({"generate", "generate_vision"})
 
 
 class _StreamGate:
-    """流式增量闸门：先把增量缓冲在 Engine 侧，成功后统一放行给调用方。
+    """流式增量直通闸门：收到增量立即转调消费方回调（打字机效果）。
 
-    流式语义下增量回调是即发即失的，一旦吐出就无法收回；为了保证
-    "首 token 之后失败只中止、部分 token 不外泄"，Engine 以回调包装的
-    方式持有增量，仅在整次调用成功时回放，切换模型 / 超时中止时丢弃。
-    ``started`` 同时作为首 token 判据：硬超时发生在首 token 前仍可
-    failover，发生在首 token 后只能中止。
+    增量外发即不可撤回，直通意味着首 token 之后的失败分支不能 failover
+    （换模型会拼出前后矛盾的输出）、也不能追溯已外发的增量（不是错误）。
+    ``started`` 作为首 token 判据：硬超时发生在首 token 前仍可 failover，
+    发生在首 token 后只能整体中止。
     """
 
     def __init__(self, on_delta: Optional[Callable[[str, str], None]]) -> None:
         self.has_consumer = on_delta is not None
         self._on_delta = on_delta
-        self._buffered: List[Tuple[str, str]] = []
         self.started = False
 
     @property
     def callback(self) -> Callable[[str, str], None]:
         def _gate(kind: str, text_delta: str) -> None:
             self.started = True
-            self._buffered.append((kind, text_delta))
+            if self._on_delta is not None:
+                self._on_delta(kind, text_delta)
 
         return _gate
-
-    def flush(self) -> None:
-        """调用成功后按原顺序回放缓冲增量。"""
-        if self._on_delta is None:
-            return
-        for kind, text_delta in self._buffered:
-            self._on_delta(kind, text_delta)
 
 
 def _content_to_parts(content: Any) -> List[Any]:
@@ -598,7 +590,7 @@ class LLMManager:
         取消 in-flight 请求（含退避等待），整个尝试标记失败交还故障切换。
         两个分支例外：
 
-        - 流式首 token 已产出：部分结果不得吐给调用方也不得切换模型，
+        - 流式首 token 已产出：已外发的增量不追溯，也不得切换模型，
           只能整体中止（以 ``LLMInterruptedError`` 表达，向上传播）
         - 调用方中断 / 父任务取消：同一取消路径收割子任务后原样传播
 
@@ -614,7 +606,7 @@ class LLMManager:
         if call_kwargs.get("max_tokens") is None:
             call_kwargs["max_tokens"] = profile.max_tokens
 
-        # 流式增量先过闸门：成功回放、中止/切换丢弃（首 token 前后分支判据在 gate.started）
+        # 流式增量直通：收到即转调消费方（首 token 前后分支判据在 gate.started）
         gate = _StreamGate(call_kwargs.get("on_delta"))
         if gate.has_consumer:
             call_kwargs["on_delta"] = gate.callback
@@ -640,13 +632,11 @@ class LLMManager:
         except HardTimeoutExceeded:
             if gate.started:
                 raise LLMInterruptedError(
-                    f"流式输出已开始后触达硬超时（{hard_timeout_ms}ms），部分结果不外泄，整体中止"
+                    f"流式输出已开始后触达硬超时（{hard_timeout_ms}ms），已输出内容不追溯，整体中止"
                 ) from None
             error = f"硬超时（{hard_timeout_ms}ms）：重试在墙内被截断"
             self.logger.warning(f"[LLM 硬超时] profile={profile_name} model={model_name} {error}，切下一个模型")
             return None, error
-        if response is not None:
-            gate.flush()
         return response, error
 
     async def _retry_loop(
