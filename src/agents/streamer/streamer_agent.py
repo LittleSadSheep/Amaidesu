@@ -894,6 +894,35 @@ class StreamerAgent(BaseAgent):
         """执行 Dashboard 手动控制动作（动作翻译见 rundown 子包）。"""
         return apply_rundown_control(self._rundown_state, action, segment_id=segment_id, now_ms=now_ms)
 
+    async def apply_rundown_definition(
+        self,
+        definition: Dict[str, Any],
+    ) -> tuple[bool, str, Optional[Dict[str, Any]]]:
+        """应用编辑后的流程单定义（Dashboard 保存时的运行态写穿）。
+
+        收 dict 由本方法内部校验转 ``Rundown``——Dashboard 不 import 本包
+        模型，规避装配链循环 import。落盘由调用方负责，本方法只管运行态：
+
+        - 运行中的流程单 id 与定义一致 → ``replace_definition``（游标按环节
+          id 对齐，进度尽量保留），成功后 Agent 下一轮决策从情境中看到新内容。
+        - Agent 未加载流程单 / 运行的是其他流程单 → 运行态不动，直接成功。
+        """
+        try:
+            rundown = Rundown.model_validate(definition)
+        except Exception as exc:
+            return False, f"流程单定义校验失败: {exc}", None
+
+        current = self._rundown_state.rundown
+        if current is None:
+            return True, "流程单已保存（运行时未加载流程单，启动后生效）", None
+        if current.rundown_id != rundown.rundown_id:
+            return True, "流程单已保存（当前直播运行的是其他流程单，不受影响）", self._rundown_state.get_snapshot()
+
+        reject = self._rundown_state.replace_definition(rundown)
+        if reject is not None:
+            return False, f"运行态更新被拒绝: {reject.reason}", self._rundown_state.get_snapshot()
+        return True, "流程单已保存并即时生效", self._rundown_state.get_snapshot()
+
     # ==================================================================
     # 历史读取（duck-typed 鸭子接口）
     # ==================================================================

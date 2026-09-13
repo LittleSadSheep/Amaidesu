@@ -203,7 +203,7 @@ event_bus.reset_stats(event_name=None)
 | `game.attention_required` | `GamePayload` | 游戏 Agent | 同上 | 安全阀偏差报告（"我先回血再去挖钻石"）；`event_type="attention_required"` |
 | `game.error` | `GamePayload` | 游戏 Agent | 同上 | 游戏异常（主播由此得知命令失败等原因）；`event_type="error"` |
 | `game.report` | `GamePayload` | 游戏 Agent（`minecraft_report` 工具回调 / 批次终止兜底交付） | 同上；主播"是否回提示词"的决策数据源 | 游戏 Agent 主动上报：`report_kind`（`delivery` / `escalation`，仅本事件有值） |
-| `rundown.changed` | `RundownChangedPayload` | `RundownState`（唯一变更边界：工具 / Dashboard 手动 / 闹钟兜底三路同径） | `Broadcaster`（直通） | 流程单变更：load / goto / next（含 finish）/ pause / resume；`by` 区分 agent/human/system；finish 时 `segment_id=""` 且 `index==total` |
+| `rundown.changed` | `RundownChangedPayload` | `RundownState`（唯一变更边界：工具 / Dashboard 手动 / 编辑写穿 / 装配层 load 四路同径） | `Broadcaster`（直通） | 流程单变更：load / goto / next（含 finish）/ pause / resume / reload（编辑写穿替换定义）；`by` 区分 agent/human/system；finish 时 `segment_id=""` 且 `index==total`；写穿后游标重置时 `index==-1` |
 | `task.changed` | `TaskChangedPayload` | 任务记录表（`TaskLedger` / `TaskTracker`，仅状态真迁移或停滞告警时发） | `BaseAgent`（全部 Agent 基类订阅，按 `payload.initiator == self.name` 过滤唤醒） | 异步任务生命周期（受理 → 进行中 → 终态）；通知是提示、记录表是事实源 |
 | `planner.decision` | `PlannerDecisionPayload` | `StreamerAgent`（两阶段决策收口，每轮恰好一条） | `Broadcaster`（直通，决策卡数据源） | 决策轮记录：`round_id`（本轮全链路关联键）、决策结论、`reply_to_message_id`、`silent_reason`、`llm_request_id`、分段耗时 |
 | `planner.verdict` | `PlannerVerdictPayload` | `ReplyToolProvider`（reply 工具被调用、表达生成之前） | `Broadcaster`（直通，裁决卡实时渲染） | 裁决时刻即时事件：`round_id` / `topic_summary` / `reply_guidance` / `confidence` / `target`。沉默轮无 verdict |

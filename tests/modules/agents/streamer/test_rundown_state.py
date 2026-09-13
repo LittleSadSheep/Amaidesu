@@ -311,6 +311,142 @@ def test_pause_resume_invalid_by_raises() -> None:
 
 
 # ---------------------------------------------------------------------------
+# replace_definition（直播中编辑写穿）
+# ---------------------------------------------------------------------------
+
+
+def test_replace_definition_keeps_position_and_elapsed() -> None:
+    clock = _FakeClock()
+    events: List[Tuple[str, Any]] = []
+    changed: List[Tuple[str, str]] = []
+    state = _make_state(clock, events, changed)
+    state.load(_make_rundown(), now_ms=clock.now)
+
+    clock.advance(120_000)
+    assert state.next(by="human") is None
+    assert state.current_segment_id == "chat"
+    clock.advance(30_000)
+
+    # 替换定义：chat 保留但缩时，并在其后新增环节
+    updated = Rundown(
+        rundown_id="test_rd",
+        title="测试流程单 v2",
+        segments=[
+            RundownSegment(id="opening", title="开场", task_description="开场目标", expected_ms=600_000),
+            RundownSegment(id="chat", title="闲聊", task_description="闲聊目标", expected_ms=900_000),
+            RundownSegment(id="qa", title="问答", task_description="问答目标", expected_ms=300_000),
+            RundownSegment(id="closing", title="收尾", task_description="收尾目标", expected_ms=300_000),
+        ],
+    )
+    assert state.replace_definition(updated, now_ms=clock.now) is None
+
+    assert state.current_segment_id == "chat"
+    assert state.status == "running"
+    # 计时锚点保留：chat 段已播 30_000，剩余按新 expected_ms 计算
+    assert state.get_current_remaining_ms(now_ms=clock.now) == 900_000 - 30_000
+
+    name, payload = events[-1]
+    assert name == "rundown.changed"
+    assert payload.segment_id == "chat"
+    assert payload.total == 4
+    assert payload.by == "human"
+    assert changed[-1] == ("chat", "human")
+    assert state.get_transitions()[-1]["action"] == "reload"
+
+
+def test_replace_definition_resets_when_current_segment_removed() -> None:
+    clock = _FakeClock()
+    events: List[Tuple[str, Any]] = []
+    state = RundownState(
+        emit=lambda n, p: events.append((n, p)),
+        clock=clock,
+    )
+    state.load(_make_rundown(), now_ms=clock.now)
+    clock.advance(60_001)
+    assert state.next(by="human") is None
+    assert state.next(by="human") is None
+    assert state.current_segment_id == "closing"
+
+    # 新定义不再包含 closing → 游标重置为未开始，Agent 从情境重新定位
+    updated = Rundown(
+        rundown_id="test_rd",
+        title="测试流程单",
+        segments=[
+            RundownSegment(id="opening", title="开场", task_description="开场目标", expected_ms=600_000),
+            RundownSegment(id="chat", title="闲聊", task_description="闲聊目标", expected_ms=600_000),
+        ],
+    )
+    assert state.replace_definition(updated, now_ms=clock.now) is None
+
+    assert state.index == -1
+    assert state.current_segment is None
+    assert state.status == "running"
+    _, payload = events[-1]
+    assert payload.segment_id == ""
+
+
+def test_replace_definition_rejects_id_mismatch() -> None:
+    clock = _FakeClock()
+    state = RundownState(clock=clock)
+    state.load(_make_rundown(), now_ms=clock.now)
+
+    other = Rundown(
+        rundown_id="other_rd",
+        title="另一份流程单",
+        segments=[RundownSegment(id="only", title="唯一环节", task_description="目标", expected_ms=60_000)],
+    )
+    reject = state.replace_definition(other, now_ms=clock.now)
+    assert isinstance(reject, RundownReject)
+    assert reject.reason == "rundown_id_mismatch"
+    assert state.rundown is not None and state.rundown.rundown_id == "test_rd"
+
+
+def test_replace_definition_keeps_done_state() -> None:
+    clock = _FakeClock()
+    state = RundownState(clock=clock)
+    state.load(_make_rundown(), now_ms=clock.now)
+    _drive_to_last(state, clock)
+    clock.advance(60_001)
+    assert state.next(by="human") is None
+    assert state.status == "done"
+
+    updated = Rundown(
+        rundown_id="test_rd",
+        title="测试流程单",
+        segments=[
+            RundownSegment(id="opening", title="开场", task_description="开场目标", expected_ms=600_000),
+            RundownSegment(id="chat", title="闲聊", task_description="闲聊目标", expected_ms=600_000),
+        ],
+    )
+    assert state.replace_definition(updated, now_ms=clock.now) is None
+
+    assert state.status == "done"
+
+
+def test_replace_definition_keeps_pause_frozen() -> None:
+    clock = _FakeClock()
+    state = RundownState(clock=clock)
+    state.load(_make_rundown(), now_ms=clock.now)
+    clock.advance(100_000)
+    assert state.pause(by="human", now_ms=clock.now) is None
+
+    updated = Rundown(
+        rundown_id="test_rd",
+        title="测试流程单",
+        segments=[
+            RundownSegment(id="opening", title="开场", task_description="开场目标", expected_ms=800_000),
+            RundownSegment(id="chat", title="闲聊", task_description="闲聊目标", expected_ms=600_000),
+        ],
+    )
+    assert state.replace_definition(updated, now_ms=clock.now) is None
+
+    assert state.status == "paused"
+    clock.advance(200_000)
+    # 暂停冻结保持：elapsed 仍为 100_000，剩余按新 expected_ms 计算
+    assert state.get_current_remaining_ms(now_ms=clock.now) == 800_000 - 100_000
+
+
+# ---------------------------------------------------------------------------
 # 只读派生
 # ---------------------------------------------------------------------------
 

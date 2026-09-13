@@ -4,15 +4,18 @@
 
 契约约定
 --------
-- ``RundownState`` 是该事件**唯一发布者**：每次 load / goto / next / pause / resume
-  校验通过后即发射；拒绝路径（未知 id / 未达 min_duration）不发事件。
+- ``RundownState`` 是该事件**唯一发布者**：每次 load / goto / next / pause / resume /
+  replace_definition（编辑写穿）校验通过后即发射；拒绝路径（未知 id / 未达
+  min_duration）不发事件。
 - ``segment_id`` 含义：
   - 正常切换：变更后的环节 id
   - finish（next 越过末段）：``segment_id=""`` 且 ``index == total``，订阅者据此识别"流程单走完"
+  - 编辑写穿后游标重置（当前环节被删）：``segment_id=""`` 且 ``index == -1``，
+    订阅者据此识别"无当前环节，等待重新定位"
 - ``by`` 字段区分触发主体：
   - ``"agent"``：Agent 通过 ``RundownControlTool`` 触发
-  - ``"human"``：Dashboard 控制台手动操作
-  - ``"system"``：超时闹钟兜底硬切换（YAGNI，预留值；当前闹钟只提醒不执法）
+  - ``"human"``：Dashboard 控制台手动操作（含编辑写穿）
+  - ``"system"``：装配层 load / 超时闹钟兜底硬切换（YAGNI，预留值；当前闹钟只提醒不执法）
 - ``at_ms`` 为变更时刻（Unix 毫秒）；与 ``RundownState._resolve_now`` 解析出的时刻一致。
 """
 
@@ -37,7 +40,8 @@ class RundownChangedPayload(BasePayload):
         rundown_id: 流程单 id（与 ``Rundown.rundown_id`` 一致）
         segment_id: 变更后的环节 id；finish 时为空字符串
         segment_title: 变更后的环节标题；finish 时为空字符串
-        index: 变更后的环节下标（``0..total``；``total`` 表示 finish）
+        index: 变更后的环节下标（``-1..total``；``total`` 表示 finish，
+            ``-1`` 表示编辑写穿后游标重置、暂无当前环节）
         total: 流程单总环节数
         by: 变更触发主体（``"agent"`` / ``"human"`` / ``"system"``）
         at_ms: 变更时刻（Unix 毫秒）
@@ -46,7 +50,11 @@ class RundownChangedPayload(BasePayload):
     rundown_id: str = Field(..., description="流程单 id")
     segment_id: str = Field(default="", description="变更后的环节 id；finish 时为空字符串")
     segment_title: str = Field(default="", description="变更后的环节标题；finish 时为空字符串")
-    index: int = Field(default=0, ge=0, description="变更后的环节下标（0..total；total 表示 finish）")
+    index: int = Field(
+        default=0,
+        ge=-1,
+        description="变更后的环节下标（-1..total；total 表示 finish，-1 表示游标重置无当前环节）",
+    )
     total: int = Field(default=0, ge=0, description="流程单总环节数")
     by: Literal["agent", "human", "system"] = Field(
         default="agent",

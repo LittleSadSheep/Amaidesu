@@ -384,6 +384,65 @@ class RundownState:
         )
         return None
 
+    def replace_definition(
+        self,
+        rundown: Rundown,
+        *,
+        now_ms: Optional[int] = None,
+    ) -> Optional[RundownReject]:
+        """替换运行中流程单的定义（直播中编辑写穿），尽量保留当前进度。
+
+        只更新"同一份流程单"的内容，换单走 :meth:`load`：
+
+        - 异 ``rundown_id`` 结构化拒绝（``rundown_id_mismatch``）。
+        - 游标按当前环节 id 对齐：id 存在于新定义 → ``index`` 对齐到新下标，
+          计时锚点与暂停状态原样保留（当前环节计时连续，超时提醒按新
+          ``expected_ms`` 重算）；id 不存在（或已 done 无当前环节）→ 游标
+          重置为未开始（``index=-1``），由 Agent 从情境中重新定位——推进权
+          归 Agent，本边界不替它挑环节。
+        - 已 done（``index >= total``）时保持结束事实：``index`` 对齐到新
+          总数，不因编辑把已结束的场次拉回进行中。
+
+        Returns:
+            ``None`` 表示接受；``RundownReject`` 表示拒绝（不变更、不发事件）。
+        """
+        if self.rundown is None:
+            return RundownReject(reason="no_rundown_loaded")
+        if self.rundown.rundown_id != rundown.rundown_id:
+            return RundownReject(reason="rundown_id_mismatch")
+
+        now = self._resolve_now(now_ms)
+        total = len(rundown.segments)
+        old_segment_id = self.current_segment_id
+
+        if self.index >= len(self.rundown.segments):
+            # 已 done：保持结束状态，游标对齐到新总数
+            self.rundown = rundown
+            self.index = total
+        elif old_segment_id:
+            new_index = next((i for i, seg in enumerate(rundown.segments) if seg.id == old_segment_id), -1)
+            self.rundown = rundown
+            if new_index >= 0:
+                self.index = new_index
+            else:
+                # 当前环节已被删除：回未开始，清计时锚点（含暂停冻结）
+                self.index = -1
+                self.segment_started_at_ms = 0
+                self.paused_at_ms = None
+                self._accumulated_pause_ms = 0
+        else:
+            self.rundown = rundown
+            self.index = -1
+
+        self._apply_change(
+            action="reload",
+            segment_id=self.current_segment_id,
+            segment_title=self.current_segment.title if self.current_segment else "",
+            by="human",
+            now_ms=now,
+        )
+        return None
+
     # ------------------------------------------------------------------
     # 统一变更收口
     # ------------------------------------------------------------------
