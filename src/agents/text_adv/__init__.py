@@ -8,14 +8,23 @@
 - :func:`build_text_adv_agent` — 便捷构造函数（依赖显式传参）
 - :class:`TextAdvConfig` — Agent 配置 Schema（Pydantic；包内单一权威）
 - :class:`TextAdvGameAgentState` — 游戏内部状态（内存态 + 环缓冲 + 快照导出）
+- :class:`TextAdvToolProvider` — 工具面 Provider（advance/choose/set_auto/get_state）
+- :func:`build_text_adv_visible_to` — 四工具的可见名单映射（全部仅主播）
 - :class:`Option` / :class:`ScreenReading` — 识别契约的数据模型（vlm 模块承载）
-
-工具面（``text_adv_*`` 系列）由同包 tools.py 承载，随工具重写任务恢复导出。
 """
 
 from src.agents.text_adv.agent import TextAdvGameAgent, build_text_adv_agent
 from src.agents.text_adv.config import TextAdvConfig
 from src.agents.text_adv.state import TextAdvGameAgentState
+from src.agents.text_adv.tools import (
+    MonitorGeometry,
+    TextAdvToolProvider,
+    build_advance_spec,
+    build_choose_spec,
+    build_get_state_spec,
+    build_set_auto_spec,
+    build_text_adv_visible_to,
+)
 from src.agents.text_adv.vlm import Option, ScreenReading
 
 __all__ = [
@@ -26,6 +35,14 @@ __all__ = [
     "TextAdvConfig",
     # 状态
     "TextAdvGameAgentState",
+    # 工具面
+    "MonitorGeometry",
+    "TextAdvToolProvider",
+    "build_advance_spec",
+    "build_choose_spec",
+    "build_set_auto_spec",
+    "build_get_state_spec",
+    "build_text_adv_visible_to",
     # 识别契约数据模型
     "Option",
     "ScreenReading",

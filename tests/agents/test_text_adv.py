@@ -370,3 +370,202 @@ async def test_look_at_screen_capture_failure_has_error_in_structured() -> None:
     assert res.structured_content is not None
     assert "capture_failed" in str(res.structured_content.get("error") or "")
     assert res.structured_content.get("text") == ""
+
+
+# =============================================================================
+# 工具面（text_adv_advance / choose / set_auto / get_state）
+# =============================================================================
+
+from src.agents.text_adv import (  # noqa: E402 - 工具面测试段统一引用
+    MonitorGeometry,
+    TextAdvToolProvider,
+    build_text_adv_visible_to,
+)
+from src.agents.text_adv.input import FakeInputBackend  # noqa: E402
+from src.modules.tools.models import ToolInvocation  # noqa: E402 - 工具面测试段统一引用
+from src.modules.tools.registry import ToolRegistry  # noqa: E402
+
+
+def geometry_resolver(geom: MonitorGeometry | None) -> Callable[[int], MonitorGeometry | None]:
+    """注入固定的监视器几何（None = 模拟查询失败）。"""
+
+    def _resolve(monitor_index: int) -> MonitorGeometry | None:
+        return geom
+
+    return _resolve
+
+
+def make_tools(
+    *,
+    reader: object | None = None,
+    window: FakeWindowBackend | None = None,
+    capture: object | None = None,
+    config: TextAdvConfig | None = None,
+    geom: MonitorGeometry | None = None,
+) -> Tuple[TextAdvGameAgent, TextAdvToolProvider, FakeInputBackend, Dict[str, List[GamePayload]]]:
+    """构造 Agent + 工具 Provider + 假键鼠后端 + 事件收集器（全假件，不触真机）。"""
+    agent, collected = make_agent(reader=reader, window=window, capture=capture, config=config)
+    input_backend = FakeInputBackend()
+    provider = TextAdvToolProvider(
+        agent=agent,
+        input_backend=input_backend,
+        monitor_resolver=geometry_resolver(geom if geom is not None else MonitorGeometry(0, 0, 1280, 720)),
+    )
+    return agent, provider, input_backend, collected
+
+
+def make_registry(provider: TextAdvToolProvider) -> ToolRegistry:
+    """按生产同构方式注册 provider（名单来自 build_text_adv_visible_to）。"""
+    registry = ToolRegistry()
+    registry.register_provider(provider, visible_to=build_text_adv_visible_to())
+    return registry
+
+
+def test_tools_visibility_streamer_only() -> None:
+    """名单隔离：主播可见且仅可见这 4 个 text_adv_*；minecraft 一个都看不到。"""
+    _agent, provider, _input, _collected = make_tools()
+    registry = make_registry(provider)
+
+    streamer_names = {spec.full_name for spec in registry.list_tools(for_agent="streamer")}
+    assert streamer_names == {
+        "text_adv_advance",
+        "text_adv_choose",
+        "text_adv_set_auto",
+        "text_adv_get_state",
+    }
+    minecraft_names = {spec.full_name for spec in registry.list_tools(for_agent="minecraft")}
+    assert not any(name.startswith("text_adv_") for name in minecraft_names)
+
+
+async def test_get_state_exact_keys_and_no_capture() -> None:
+    """get_state：键集精确为快照四键，且不触发截图、不消耗读屏。"""
+    reader = FakeVisionReader(REPLY_PLAIN)
+    capture = StaticCapture()
+    _agent, provider, _input, _collected = make_tools(reader=reader, capture=capture)
+    result = await provider.invoke(ToolInvocation(tool_name="text_adv_get_state", arguments={}, source="test"))
+    assert result.success is True
+    assert result.structured_content is not None
+    assert set(result.structured_content.keys()) == {"text", "options", "auto", "updated_at_ms"}
+    assert reader.calls == []
+    assert capture.calls == 0
+
+
+async def test_set_auto_clicks_button_once_and_is_idempotent() -> None:
+    """set_auto(True)：标定坐标时点一次 AUTO 按钮；连调两次只点一次；auto 立即为 True。"""
+    config = fast_config()
+    config.auto_button_xy = (640, 680)
+    agent, provider, input_backend, _collected = make_tools(config=config)
+    result = await provider.invoke(ToolInvocation(tool_name="text_adv_set_auto", arguments={"on": True}, source="test"))
+    assert result.success is True
+    assert input_backend.calls.count("click:640,680,left") == 1
+    assert agent.get_state_snapshot()["auto"] is True
+
+    # 幂等：重复 True 不再点按钮（AUTO 是切换按钮，二次点击会关掉）
+    result2 = await provider.invoke(
+        ToolInvocation(tool_name="text_adv_set_auto", arguments={"on": True}, source="test")
+    )
+    assert result2.success is True
+    assert input_backend.calls.count("click:640,680,left") == 1
+    await agent.set_auto(False)
+
+
+async def test_set_auto_uncalibrated_switches_flag_without_click() -> None:
+    """未标定 AUTO 按钮：不点击、给结构化说明，仅切换观察循环标志。"""
+    agent, provider, input_backend, _collected = make_tools()
+    result = await provider.invoke(ToolInvocation(tool_name="text_adv_set_auto", arguments={"on": True}, source="test"))
+    assert result.success is True
+    assert input_backend.calls == []
+    assert result.structured_content is not None
+    assert "未标定" in str(result.structured_content.get("notice") or "")
+    assert agent.get_state_snapshot()["auto"] is True
+    await agent.set_auto(False)
+
+
+async def test_choose_success_clicks_and_returns_new_snapshot() -> None:
+    """choose 命中：点击反算出的绝对坐标，重读返回新屏快照，绝不自持循环。"""
+    reader = FakeVisionReader(REPLY_PLAIN)
+    reader.queue_reply(REPLY_WITH_OPTIONS)  # 首次重读：选项屏
+    reader.queue_reply(REPLY_PLAIN)  # 点击后重读：选项屏消失
+    agent, provider, input_backend, collected = make_tools(reader=reader)
+    result = await provider.invoke(ToolInvocation(tool_name="text_adv_choose", arguments={"option": 1}, source="test"))
+    assert result.success is True
+    assert input_backend.calls == ["click:100,200,left"]
+    assert result.structured_content is not None
+    assert result.structured_content["text"] == "风静静地吹着。"
+    assert collected["error"] == []
+    assert agent.auto is False
+    await agent.set_auto(False)
+
+
+async def test_choose_rejections_no_options_and_invalid_index() -> None:
+    """choose 拒绝：当前屏无选项 / 序号不存在——失败可读且零 game.error。"""
+    agent, provider, input_backend, collected = make_tools(reader=FakeVisionReader(REPLY_PLAIN))
+
+    result = await provider.invoke(ToolInvocation(tool_name="text_adv_choose", arguments={"option": 1}, source="test"))
+    assert result.success is False
+    assert "无选项" in (result.error_message or "")
+    assert input_backend.calls == []
+
+    reader = FakeVisionReader(REPLY_WITH_OPTIONS)
+    _agent2, provider2, input2, collected2 = make_tools(reader=reader)
+    result2 = await provider2.invoke(
+        ToolInvocation(tool_name="text_adv_choose", arguments={"option": 3}, source="test")
+    )
+    assert result2.success is False
+    assert "不存在" in (result2.error_message or "")
+    assert input2.calls == []
+
+    await asyncio.sleep(0.05)
+    assert collected["error"] == []
+    assert collected2["error"] == []
+
+
+async def test_choose_rejection_not_clickable() -> None:
+    """choose 拒绝：选项无坐标（不可点）——失败原因含"不可点"，零 game.error。"""
+    reply = "正文：\n你面前出现两条路。\n选项：\n1. 继续前进\n2. 回头看看"
+    _agent, provider, input_backend, collected = make_tools(reader=FakeVisionReader(reply))
+    result = await provider.invoke(ToolInvocation(tool_name="text_adv_choose", arguments={"option": 1}, source="test"))
+    assert result.success is False
+    assert "不可点" in (result.error_message or "")
+    assert input_backend.calls == []
+    await asyncio.sleep(0.05)
+    assert collected["error"] == []
+
+
+async def test_choose_rejection_coords_out_of_bounds() -> None:
+    """choose 拒绝：坐标反算越出显示器范围——失败原因含"越界"，零 game.error。"""
+    config = fast_config()
+    config.region = [900, 0, 320, 240]  # 区域偏移使反算结果越出显示器矩形
+    _agent, provider, input_backend, collected = make_tools(reader=FakeVisionReader(REPLY_WITH_OPTIONS), config=config)
+    result = await provider.invoke(ToolInvocation(tool_name="text_adv_choose", arguments={"option": 1}, source="test"))
+    assert result.success is False
+    assert "越界" in (result.error_message or "")
+    assert input_backend.calls == []
+    await asyncio.sleep(0.05)
+    assert collected["error"] == []
+
+
+async def test_choose_verify_failure_no_second_click() -> None:
+    """点击后画面未变化：失败结果且只发生过一次点击（绝不二次盲点）。"""
+    reader = FakeVisionReader(REPLY_WITH_OPTIONS)  # 固定回复：重读仍是同一选项屏
+    _agent, provider, input_backend, collected = make_tools(reader=reader)
+    result = await provider.invoke(ToolInvocation(tool_name="text_adv_choose", arguments={"option": 1}, source="test"))
+    assert result.success is False
+    assert "画面未变化" in (result.error_message or "")
+    assert len([c for c in input_backend.calls if c.startswith("click:")]) == 1
+    await asyncio.sleep(0.05)
+    assert collected["error"] == []
+
+
+async def test_advance_perception_failure_quiet_capture_failed() -> None:
+    """advance 感知失败（读屏异常）：success=True + 结构化 capture_failed，零事件。"""
+    agent, provider, input_backend, collected = make_tools(reader=BoomReader())
+    result = await provider.invoke(ToolInvocation(tool_name="text_adv_advance", arguments={}, source="test"))
+    assert result.success is True
+    assert result.content == ""
+    assert result.structured_content is not None
+    assert "capture_failed" in str(result.structured_content.get("error") or "")
+    assert "press:space" in input_backend.calls
+    await asyncio.sleep(0.05)
+    assert collected["error"] == []
+    assert collected["milestone"] == []
