@@ -69,7 +69,7 @@ from src.modules.storage.storage_ledger import StorageLedger
 from src.modules.tools import TaskLedger, TaskTracker, ToolHealthMonitor, ToolRegistry
 from src.modules.tools.tasks import resolve_tasks_config
 from src.modules.tools.bootstrap import bind_core_tools
-from src.modules.vision.look_at_screen import LookAtScreenProvider
+from src.modules.vision.look_at_screen import LookAtScreenProvider, LlmVisionTextReader
 from src.modules.vision.mss_capture import MssScreenCapture
 
 logger = get_logger("Main")
@@ -580,9 +580,13 @@ async def create_app_components(
                 LookAtScreenProvider(
                     config=vision_config,
                     screen_capture=MssScreenCapture(),
+                    text_reader=LlmVisionTextReader(
+                        llm_manager=llm_service,
+                        prompt_manager=get_prompt_manager(),
+                    ),
                 )
             )
-            logger.info("look_at_screen 已注册（mss 截屏后端）")
+            logger.info("look_at_screen 已注册（mss 截屏后端 + VLM reader）")
 
         # --- 通用 MCP 外部工具源（[tools.mcp] 段驱动；可选能力，失败不阻断启动）---
         # 必须在 start_all() 之前装配：任何启动阶段查询工具清单的消费方
