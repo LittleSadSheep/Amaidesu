@@ -72,6 +72,7 @@ declare module 'vue' {
     RouterView: typeof import('vue-router')['RouterView']
     Sidebar: typeof import('./src/components/layout/Sidebar.vue')['default']
     SubFieldGroup: typeof import('./src/components/settings/SubFieldGroup.vue')['default']
+    VisionCapturePanel: typeof import('./src/components/vision/VisionCapturePanel.vue')['default']
   }
   export interface GlobalDirectives {
     vLoading: typeof import('element-plus/es')['ElLoadingDirective']

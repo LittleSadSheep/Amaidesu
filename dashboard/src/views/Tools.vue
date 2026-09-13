@@ -112,6 +112,9 @@
 
         <!-- 3. 提供者分组：THE MAIN SPACE -->
         <section class="provider-panel" aria-label="提供者列表">
+          <!-- 视觉分类专属：显示器选择 + 预览叠框 + 拖框落盘（独立组件） -->
+          <VisionCapturePanel v-if="activeCategory === 'vision'" class="vision-panel-mount" />
+
           <div v-if="(activeCategoryData?.providers ?? []).length === 0" class="detail-empty">
             <el-empty description="该分类下没有提供者" />
           </div>
@@ -335,6 +338,7 @@ import { ElMessage } from 'element-plus';
 import { Search } from '@element-plus/icons-vue';
 import { toolsApi } from '@/api';
 import { useWebSocketStore } from '@/stores/websocket';
+import VisionCapturePanel from '@/components/vision/VisionCapturePanel.vue';
 import type {
   ParameterSpec,
   ToolCategoryView,
@@ -1007,6 +1011,10 @@ onBeforeUnmount(() => {
   display: flex;
   flex-direction: column;
   gap: var(--spacing-sm);
+}
+
+.vision-panel-mount {
+  flex-shrink: 0;
 }
 
 .provider-panel::-webkit-scrollbar {

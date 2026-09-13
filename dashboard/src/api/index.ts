@@ -240,6 +240,17 @@ export const streamerApi = {
     api.post<TriggerProactiveResponse>('/streamer/trigger-proactive', request),
 };
 
+// ===== Vision（视觉捕获：显示器枚举 + 预览叠框） =====
+//
+// `GET /vision/monitors` 列显示器（mss 枚举；含 index/left/top/width/height/
+// is_primary）；`GET /vision/preview` 抓一帧并按 region 在图上叠红框。
+// 后端不调 VLM、不缓存、不轮询、不视频流——纯抓帧。
+export const visionApi = {
+  listMonitors: () => api.get<unknown>('/vision/monitors'),
+  preview: (params: { monitor_index: number; region?: string; max_width?: number }) =>
+    api.get<unknown>('/vision/preview', { params }),
+};
+
 // ===== Rundown（流程单编排页） =====
 //
 // `GET /agenda/state`：当前流程单运行时快照（available / snapshot / transitions /
