@@ -186,7 +186,7 @@ uv run python main.py --dry
 
 | 类型 | 职责 | 代码位置 | 配置入口 |
 |------|------|---------|---------|
-| **采集器（Collector）** | 世界→系统的入口：把弹幕、语音、控制台、屏幕变化等外部数据标准化、推事件 | `src/modules/collectors/` | `collectors.toml`（`enabled` 名单 + 同名子段） |
+| **采集器（Collector）** | 世界→系统的入口：把弹幕、语音、控制台等外部数据标准化、推事件 | `src/modules/collectors/` | `collectors.toml`（`enabled` 名单 + 同名子段） |
 | **业务 Agent（Agent）** | 拥有内部状态与工具的主循环体；订阅事件、决策、调用工具 | `src/agents/` | `[agents]` + `[agents.<name>]` |
 | **工具（Tool）** | 单一能力契约（ToolSpec + BaseToolProvider / as_tool_impl），由 Agent 在决策时按需调用 | `src/modules/tools/` | `tools.toml` 提供者开关与子配置 |
 
@@ -226,7 +226,8 @@ uv run python main.py --dry
 | 工具包（`[tools.<pack>]`） | 代表工具 | 说明 |
 |----------------------------|---------|------|
 | `vision` | `look_at_screen` | 屏幕感知（mss 多显示器抓屏 + 可选区域 + VLM 转文本） |
-| `output` | `push_subtitle` / `vts_trigger_hotkey` / `obs_switch_scene` | 渲染族：字幕 / 皮套控制 / OBS 场景切换（TTS 已提升为基础设施，迁至 `src/modules/tts/` 基础模块） |
+| `avatar.*`（vts / vrchat / warudo） | `vts_trigger_hotkey` / VRChat OSC 工具 / Warudo 工具 | 皮套控制族（由 `[tools.avatar.<key>].enabled` 分类开关装配） |
+| `studio.obs` | `obs_switch_scene` | 演播控制族（由 `[tools.studio.obs].enabled` 分类开关装配） |
 | Streamer 自带 | `streamer_reply` / `rundown_control` | 主播自有工具（开 `streamer` 即生效；`rundown_control` 随 rundown 注册项声明） |
 | `framework`（AgentControl） | `delegate` / `task_status` | 框架级委派与任务状态查询（随任一 Agent 启用生效） |
 | `memory` | `query_memory` | 记忆检索（`[tools.memory]` 开关，默认开启） |
@@ -380,7 +381,9 @@ vite_dev_port = 60315                               # Vite 开发服务器端口
 [Info] CollectorManager 已启动（N 个 Collector）
 [Info] 初始化 AgentManager（src/agents/）...
 [Info] AgentManager 已启动（N 个 Agent）
-[Info] ToolRegistry 已创建（AgentManager 构造时注入；9 个 output 包经 bind_core_tools 注册 M 个工具）
+[Info] bind_core_tools: 'vts' 已绑定，新增 N 个工具（VTubeStudio 控制）
+[Info] bind_core_tools: 'obs' 已绑定，新增 N 个工具（OBS Studio 控制）
+[Info] bind_core_tools: 'warudo' 未启用，跳过（Warudo 控制）
 [Info] bind_pending_tools 完成（flush L1 @tool pending N 个）
 [Info] AgentManager.audit_tools 完成；未实现声明：T（0 即通过）
 [Info] 核心事件注册完成，共 N 个事件
@@ -406,6 +409,6 @@ vite_dev_port = 60315                               # Vite 开发服务器端口
 
 ### 已知限制
 
-- **TTS 已基础模块化**（v2.0.12 §8 修正：TTS 提升为基础设施）：在 `config/infra.toml` 的 `[tts]` 段设 `enabled = true` 后，主播每句回复自动合成播出（引擎由 `provider` 选择，默认 `gptsovits` 需本地服务在跑；无本地服务可用 `edge_tts`，仅需网络）。字幕 / 皮套 / OBS 等渲染工具仍按 `[tools.output.config]` 的 `enabled` 列表勾选装配。
+- **TTS 已基础模块化**（v2.0.12 §8 修正：TTS 提升为基础设施）：在 `config/infra.toml` 的 `[tts]` 段设 `enabled = true` 后，主播每句回复自动合成播出（引擎由 `provider` 选择，默认 `gptsovits` 需本地服务在跑；无本地服务可用 `edge_tts`，仅需网络）。字幕 / 皮套 / OBS 等渲染工具走新分类开关：`[tools.avatar.<key>]` / `[tools.studio.<key>]` 控制皮套与演播装配，`[subtitle]`（infra 段）驱动字幕基础设施。
 - **控制台交互**已可用；弹幕采集、屏幕识别、语音转写需对应第三方凭据（id_code / appid / VLM API Key 等）。
 - 完整字段定义在 `src/modules/config/*_schemas.py`；本指南只覆盖"首次跑通"的最小集。

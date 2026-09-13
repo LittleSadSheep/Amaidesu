@@ -82,7 +82,7 @@ execute 受理 ≠ 完成：等待期 LLM 自由行动（推进其他 todo / 记
 | `game.attention_required` | 步数超上限挂起 |
 | `game.error` | 工具执行异常 / LLM 调用失败 / 无 LLM fail-fast |
 
-事件 payload 复用 `GamePayload`（`game="minecraft"`）；上报同时进内存 `recent_reports`（状态查询数据源，保留最近 10 条）。`game.milestone` 不再由本 Agent 发射（todo-diff 自动里程碑已移除，防主播叙事刷屏）——剧情推进语义留给 text_adv。
+事件 payload 复用 `GamePayload`（`game="minecraft"`）；上报同时进内存 `recent_reports`（状态查询数据源，保留最近 10 条）。`game.milestone` 不再由本 Agent 发射（todo-diff 自动里程碑已移除，防主播叙事刷屏）。
 
 ## 对话管理与压缩
 

@@ -27,7 +27,6 @@ flowchart TB
         Cons["控制台"]
         Sim["模拟输入<br/>(SimulatorService LLM 仿真 / generate / replay<br/>条件装配，仅开发期)"]
         Mic["麦克风 STT"]
-        Screen["屏幕变化"]
     end
 
     subgraph Collectors["采集器 src/modules/collectors/"]
@@ -35,9 +34,7 @@ flowchart TB
         C1["BiliDanmakuOfficial"]
         C2["BiliDanmakuLegacy"]
         C3["ConsoleInput"]
-        C4["Simulator"]
         C5["STT"]
-        C6["ScreenChange"]
     end
 
     subgraph Interceptors["[事件拦截器] EventBus 分发层 · 全局单点"]
@@ -138,7 +135,7 @@ v2 不再有"插件系统"。所有新功能通过 Agent 包内聚实现，框�
 - **Planner/Replyer 是 StreamerAgent 的内部内部工具，不得注册为工具**。它们是 Agent 的决策循环与表达引擎（`planner.py` / `replyer.py` 同处 `src/agents/streamer/`），内部直接 await，不经 ToolRegistry 中转。"把 Planner 注册成工具"就是插件换皮的典型形态——把 Agent 内部件拆出来假装是工具。
 - **内容特有逻辑全部内聚到 `src/agents/<name>/` 包内**（目录名 = Agent 注册名）。例：新增"MC Agent" → 在 `src/agents/minecraft/` 建包，内含 `agent.py`（继承 `BaseAgent`）、`tools.py`（自有工具 spec）、`state.py` 等；Agent 自有工具在 `_register_tools()` 中自己 `registry.register_provider(provider)`；avatar/studio 等公用域工具由装配根 `main.py` 的 `bind_core_tools(registry, tools_cfg)` 按域开关显式注册；启动结束 `audit_tools` 审计。
 - **加内容 = 加包 + 配置**，框架层零改动。**禁止**为新功能在 `src/modules/` 加新域；**禁止**通过 monkey-patching 或 import 副作用往框架注入行为。
-- **快照型能力是被调才干活的工具，持续流型才是采集器**。`look_at_screen`（截图感知，返回当前画面）是工具，因为它被 LLM 决策时才看一眼；屏幕持续变化检测（`ScreenChangeCollector`）才是采集器，因为它推"屏幕变了"事件流。判别口诀："谁驱动谁"——能自我维持状态/轮询/心跳的是 Agent，只在被调用时执行的是 Tool。
+- **快照型能力是被调才干活的工具，持续流型才是采集器**。`vision_look_at_screen`（截图感知，返回当前画面）是工具，因为它被 LLM 决策时才看一眼；弹幕持续进入（`bili_danmaku` 持续推 `room.message.danmaku`）才是采集器，因为它推"新消息"事件流。判别口诀："谁驱动谁"——能自我维持状态/轮询/心跳的是 Agent，只在被调用时执行的是 Tool。
 
 ---
 

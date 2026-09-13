@@ -93,7 +93,7 @@ Amaidesu 的业务层组织方式经历过四代。git 历史考实了这条演�
 ### 4.2 Agent 包边界硬规则
 
 - ✅ Agent 包**只内聚主体的自我**：决策循环、目标、该内容的专属玩法逻辑
-- ✅ 基础设施全部外借：感知用公用 `look_at_screen`、记忆用 storage/memory、表达走框架 reply 体系
+- ✅ 基础设施全部外借：感知用公用 `vision_look_at_screen`、记忆用 storage/memory、表达走框架 reply 体系
 - ❌ 红线（出现即等于插件换皮）：自备感知后端 / 自建缓存 / import 其他 Agent 的模块 / 包里塞配置读取逻辑 / 依赖服务注册
 
 **判别口诀**：插件是功能封闭自包含包（什么都自带、互相依赖）；Agent 包是主体开放内聚包（只带自我，能力全借框架，Agent 间零依赖）。
@@ -102,8 +102,8 @@ Amaidesu 的业务层组织方式经历过四代。git 历史考实了这条演�
 
 所有主体性设计最终落在两条可检验的约束上：
 
-1. **Planner 循环必须由自我意图（Agenda 节目单）驱动**，而非由"消息到达"驱动；
-2. **空房间里 Planner 必须能自主产生行动**（推进 Agenda、主动说话），而非空转等喂食。
+1. **Planner 循环必须由自我意图（Rundown 流程单）驱动**，而非由"消息到达"驱动；
+2. **空房间里 Planner 必须能自主产生行动**（推进 Rundown、主动说话），而非空转等喂食。
 
 > ⚠️ 若最终实现仍是"收到消息 → 调 LLM → 渲染"，只是包一层 `while` 循环改名 Agent——那就是真换皮。
 
@@ -119,28 +119,28 @@ flowchart TB
     end
     subgraph Tools["工具层（被动能力，ToolRegistry 注册）"]
         T1["output：字幕 / VTS / Warudo / OBS…<br/>（TTS 自 v2.0.12 §8 起迁至基础模块层）"]
-        T2["perception：look_at_screen"]
+        T2["perception：vision_look_at_screen"]
         T3["memory：query_memory"]
         T4["agent 控制 / streamer 自带 reply / minecraft 自有工具等"]
     end
     subgraph Infra["框架设施"]
-        COL["Collectors ×4<br/>bilibili/console/screen/stt"]
+        COL["Collectors<br/>bilibili / console / stt"]
         BUS["EventBus + 语义域事件 + 拦截器"]
-        STO["SQLite 11 表"]
+        STO["SQLite 存储<br/>（表结构以迁移为唯一事实源）"]
     end
     EXT["外部输入"] --> COL -->|"room.message.*"| BUS
     BUS --> SA
     GA -.->|"game.* / minecraft_send_prompt"| SA
-    SA -->|"invoke ~60 tools"| Tools
+    SA -->|"invoke tools"| Tools
     SA & GA --> STO
 ```
 
 各层要点：
 
-- **主播 Agent**：`src/agents/streamer/`——弹幕窗 MessageBuffer 聚合，Planner 以 ReAct 循环决策（工具列表 = 全局 ToolRegistry + reply 局部工具，`planner_llm` 默认 llm 高质量模型，`planner_max_steps=8` 防失控）：查信息（游戏状态/记忆）→ 调 `reply` 工具 → Replyer 表达引擎生成 speech/emotion/action（含敏感词净化）。**Planner 与 Replyer 都是内部件，两者都不注册为工具**（reply_tool 是 LLM 调用入口）。Agenda 子系统管理环节/冷场状态/轮转节奏/持久化队列中的"没有弹幕时说什么"，与后台弹幕机双轨互动。
-- **游戏代理**（`src/agents/<name>/`，如 minecraft / text_adv）：AI 玩家范式——感知（公用 look_at_screen 快照）、推进（专属工具如 text_adv_choose_option）、循环内聚于一个自包含包。加游戏 = 加包 + 配置，框架零改动。
-- **工具层**：约 60 个工具统一 ToolSpec 契约，三个来源——内置（进程内渲染/感知）、内容引擎（玩家引擎控制面）、MCP（外部扩展）。同步调用结果直返，异步工具经 `tool.result.<name>` 事件回传。
-- **存储层**：SQLite 11 表（场次/直播消息流/礼物/SC/话题/观众/Agenda 计划与运行时/游戏事件/时间线摘要/LLM 用量）+ schema_migrations 版本化迁移；模拟数据带 `simulated` 列，统计查询一律排除——模拟观众不是观众。
+- **主播 Agent**：`src/agents/streamer/`——弹幕窗 MessageBuffer 聚合，Planner 以 ReAct 循环决策（工具列表 = 全局 ToolRegistry + reply 局部工具，`planner_llm` 默认 llm 高质量模型，`planner_max_steps=8` 防失控）：查信息（游戏状态/记忆）→ 调 `reply` 工具 → Replyer 表达引擎生成 speech/emotion/action（含敏感词净化）。**Planner 与 Replyer 都是内部件，两者都不注册为工具**（reply_tool 是 LLM 调用入口）。Rundown 流程单子系统以"备忘录 + 闹钟"给环节方向，推进权归 Agent 自身。
+- **游戏代理**（`src/agents/<name>/`，如 minecraft / text_adv）：AI 玩家范式——感知（公用 `vision_look_at_screen` 快照）、推进（专属工具如 text_adv_choose_option）、循环内聚于一个自包含包。加游戏 = 加包 + 配置，框架零改动。
+- **工具层**：全部工具统一 ToolSpec 契约，三个来源——内置（进程内渲染/感知）、内容引擎（玩家引擎控制面）、MCP（外部扩展）。同步调用结果直返，异步工具经 `tool.result.<name>` 事件回传。
+- **存储层**：SQLite 存储（具体表与字段以 schema_migrations 为唯一事实源）+ schema_migrations 版本化迁移；模拟数据带 `simulated` 列，统计查询一律排除——模拟观众不是观众。
 
 ## 六、支撑系统的同步升级
 
@@ -186,7 +186,7 @@ v2 的依赖传递有且只有两条路径：
 | W2 | 配置改造 | 五文件 → 多文件域拆分 + 版本化迁移（终态六文件体系见 §6.2 与 ADR-014） |
 | W3 | 新框架组件 | storage / tools 契约 / memory / context / BaseAgent / CollectorManager |
 | W4/W5 | 业务组件迁移（并行） | 渲染工具族 → tools/output；采集器 ×6 → collectors |
-| W6 | 主播 Agent | planner/replyer 内核 + Agenda 子系统 |
+| W6 | 主播 Agent | planner/replyer 内核 + Agenda 子系统（Rundown 时代被流程单取代） |
 | W7 | 游戏范式 | text_adv 示例 + look_at_screen |
 | W8 | 组合根收官 | main.py 重写、删除 src/stages/ 全部、全量测试修绿 |
 | W9 | WebUI 适配 | 阶段视图 → Agent/工具/采集器工作台 |

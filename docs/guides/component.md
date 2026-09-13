@@ -53,7 +53,7 @@ Q3（数据源型并行判据）
 
 ### 适用场景
 
-需要把**外部世界**（B 站直播弹幕 / 控制台输入 / 屏幕变化 / 语音转文字 / JSONL 回放 / 第三方平台 webhook 等）转化为系统可消费的 `room.message.*` 语义事件时，新增一个采集器。
+需要把**外部世界**（B 站直播弹幕 / 控制台输入 / 语音转文字 / JSONL 回放 / 第三方平台 webhook 等）转化为系统可消费的 `room.message.*` 语义事件时，新增一个采集器。
 
 采集器是**流型感知者**——长驻后台、被动等待或主动抓取外部信号，直接构造 `RoomMessagePayload` 等事件载荷并 emit 到 EventBus（自产自发）。
 
@@ -292,7 +292,7 @@ async def asyncio_sleep_ms(ms: int) -> None:
 - **断言事件**：订阅 `room.message.danmaku` 等到 bus 后断言 `RoomMessagePayload` 字段
 - **状态机**：起停后断言 `collector.state == CollectorState.RUNNING / STOPPED`
 - **后台任务幂等**：重复 `start()` 不应产生多个后台任务（参考 `BaseCollector._start_collect_task` 的幂等设计）
-- **真实范例测试**：`tests/collectors/test_console_input_collector.py`、`tests/collectors/test_mock_collector.py`
+- **真实范例测试**：`tests/modules/collectors/test_console_collector.py`、`tests/modules/collectors/test_bilibili_collectors.py`
 
 ### 真实范例指引
 
@@ -427,7 +427,7 @@ registry.register_provider(
 - **`ToolRegistry.clear()`**：每个测试开头清空，避免污染
 - **永不抛异常**：构造故意抛异常的 impl，断言返回的是失败 result 而非异常
 - **`to_llm_definitions()` 形状**：断言包含 `name` / `description` / `parameters` 字段（OpenAI function calling 兼容）
-- **真实范例测试**：`tests/tools/test_look_at_screen_provider.py`、`tests/tools/test_text_adv_tools.py`
+- **真实范例测试**：`tests/modules/vision/test_look_at_screen.py`、`tests/agents/test_text_adv.py`
 
 ### 真实范例指引
 
@@ -801,7 +801,7 @@ class MyToolProvider(ToolProvider):
 - **后台循环**：起停后断言 `agent.state == AgentState.RUNNING / STOPPED`；重复 `start()` 幂等
 - **事件驱动**：手动 `event_bus.emit(ROOM_MESSAGE_DANMAKU, payload)` 后断言 Agent 内部状态变化（用 `note_heartbeat` + 自定义 counter）
 - **工具调用**：注入 Mock `ToolRegistry`，断言 Agent 通过 `tool_registry.invoke(...)` 调工具
-- **真实范例测试**：`tests/agents/test_streamer_agent.py`、`tests/agents/test_text_adv_game_agent.py`
+- **真实范例测试**：`tests/agents/streamer/test_streamer_agent_wiring.py`、`tests/agents/test_text_adv.py`
 
 ### 真实范例指引
 

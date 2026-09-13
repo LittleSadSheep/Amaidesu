@@ -31,7 +31,7 @@ Amaidesu!
 
 **Amaidesu 2.0.0 = Agent（自主主体）+ 工具（能力契约）+ 存储（状态/记忆）+ 编排（Rundown 流程单）**
 
-- **采集器（Collector）**：持续采集外部数据（B站弹幕、语音、屏幕变化、控制台），经 EventBus 以语义域事件（`room.message.*` 等）主动推送，事件拦截器做限流/相似过滤
+- **采集器（Collector）**：持续采集外部数据（B站弹幕、语音、控制台），经 EventBus 以语义域事件（`room.message.*` 等）主动推送，事件拦截器做限流/相似过滤
 - **业务 Agent**：主播 Agent 自主决策——MessageBuffer 聚合弹幕 → Planner 决策循环 → Replyer 表达引擎生成回复/情绪/动作；游戏代理（AI 玩家）为另一范式
 - **工具（Tool）**：被动能力契约，经 ToolRegistry 统一调度——字幕、VTS/Warudo 皮套、OBS、屏幕感知等（v2.0.12 起 TTS 已提升为基础设施，迁出 ToolRegistry）
 - **TTS 基础设施**：`src/modules/tts/` 包内自治（4 引擎 Provider：`EdgeTTSProvider` / `GPTSoVITSProvider` / `VoiceboxProvider` / `OmniTTSProvider`），由 `infra.toml [tts].provider` 装配期单选构造，注入 StreamerAgent 直接调用 `handle_speech`——不走 ToolRegistry
