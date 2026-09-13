@@ -17,7 +17,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import inspect
 from typing import Any, Dict, List, Optional
 
@@ -124,40 +123,36 @@ class ReplyToolProvider:
         """设置/清理本轮 replyer 阶段的思考流回调（Planner 每轮一次性注入）。"""
         self._thinking_callback = callback
 
-    def _emit_verdict(self, args: Dict[str, Any], round_id: str) -> None:
-        """发布 ``planner.verdict``（裁决时刻即时事实；观测旁路，失败不阻断）。"""
-        if self._event_bus is None:
+    async def _emit_verdict(self, args: Dict[str, Any], round_id: str) -> None:
+        """发布 ``planner.verdict``（裁决时刻即时事实；观测旁路，失败不阻断）。
+
+        直接 ``await event_bus.emit(...)`` —— emit 内部已把 handler 派发为受跟踪后台任务，
+        外层再包一层裸任务既多余又无持有（同 P1-2 缺口）；await 后即返回，
+        不阻塞 invoke 主路径（handler 在 emit 内部后台跑）。
+        """
+        event_bus = self._event_bus
+        if event_bus is None:
             return
-
-        async def _do_emit() -> None:
-            event_bus = self._event_bus
-            if event_bus is None:
-                return
-            try:
-                confidence_raw = args.get("confidence", 0.9)
-                try:
-                    confidence = float(confidence_raw) if confidence_raw is not None else 0.9
-                except (TypeError, ValueError):
-                    confidence = 0.9
-                target = args.get("target")
-                await event_bus.emit(
-                    CoreEvents.PLANNER_VERDICT,
-                    PlannerVerdictPayload(
-                        round_id=round_id,
-                        topic_summary=str(args.get("topic_summary", "") or ""),
-                        reply_guidance=str(args.get("reply_guidance", "") or ""),
-                        confidence=min(1.0, max(0.0, confidence)),
-                        target=target if isinstance(target, str) else None,
-                    ),
-                    source="reply_tool",
-                )
-            except Exception as exc:  # noqa: BLE001 - 观测旁路，不反噬调用方
-                self._logger.warning(f"planner.verdict 发布失败（已忽略）: {exc}")
-
         try:
-            asyncio.create_task(_do_emit())
-        except RuntimeError as exc:
-            self._logger.warning(f"planner.verdict 任务创建失败（已忽略）: {exc}")
+            confidence_raw = args.get("confidence", 0.9)
+            try:
+                confidence = float(confidence_raw) if confidence_raw is not None else 0.9
+            except (TypeError, ValueError):
+                confidence = 0.9
+            target = args.get("target")
+            await event_bus.emit(
+                CoreEvents.PLANNER_VERDICT,
+                PlannerVerdictPayload(
+                    round_id=round_id,
+                    topic_summary=str(args.get("topic_summary", "") or ""),
+                    reply_guidance=str(args.get("reply_guidance", "") or ""),
+                    confidence=min(1.0, max(0.0, confidence)),
+                    target=target if isinstance(target, str) else None,
+                ),
+                source="reply_tool",
+            )
+        except Exception as exc:  # noqa: BLE001 - 观测旁路，不反噬调用方
+            self._logger.warning(f"planner.verdict 发布失败（已忽略）: {exc}")
 
     @property
     def name(self) -> str:
@@ -209,7 +204,7 @@ class ReplyToolProvider:
         args = invocation.arguments or {}
 
         # 裁决时刻即时事实：reply 被调用即 Planner 已决定回应（表达生成之前）
-        self._emit_verdict(args, round_id=invocation.round_id)
+        await self._emit_verdict(args, round_id=invocation.round_id)
 
         topic_summary = str(args.get("topic_summary", "") or "")
         reply_guidance = str(args.get("reply_guidance", "") or "")

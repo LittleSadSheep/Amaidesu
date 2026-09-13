@@ -4,6 +4,7 @@
 - ThinkingStreamContext：reasoning 转发 + seq 递增 + content 丢弃 + 多阶段
 - Planner：thinking 透传到 generate 的 on_delta（每步/每阶段形态正确）
 - ReplyToolProvider：思考回调一次性槽位（设置 → invoke 消费 → 清理）
+- ReplyToolProvider：观测发射（planner.verdict）抛异常时不反噬 invoke（观测旁路）
 """
 
 from __future__ import annotations
@@ -167,3 +168,49 @@ async def test_provider_sets_and_clears_thinking_callback():
     assert any(c["text_delta"] == "表达侧思考" for c in sink.calls)
     # 一次性槽位：invoke 后清理
     assert provider._thinking_callback is None
+
+
+# ---------------------------------------------------------------------------
+# ReplyToolProvider：观测旁路（planner.verdict）异常隔离
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_provider_emit_verdict_failure_does_not_block_invoke():
+    """观测旁路失败不应反噬调用方：emit 抛异常时 invoke 仍正常返回结果。
+
+    锁定的行为：``_emit_verdict`` 把 ``event_bus.emit`` 放进 ``try/except``；
+    即便 ``emit`` 抛 ``RuntimeError``，``invoke`` 主路径（``Replyer.generate``
+    调用 + 返回 ``ToolExecutionResult(success=True, structured_content=...)``）
+    必须不受影响。覆盖同步转异步 + 删除 ``create_task`` 后的回归面。
+    """
+
+    class _Replyer:
+        async def generate(self, **kwargs):
+            return {"speech": "台词", "emotion": {"name": "neutral", "intensity": 0.5}, "actions": []}
+
+    # 假 event_bus：emit 永远抛 RuntimeError（模拟 emit 派发/订阅侧炸裂）
+    failing_bus = MagicMock()
+    failing_bus.emit = AsyncMock(side_effect=RuntimeError("emit downstream boom"))
+
+    provider = ReplyToolProvider(
+        replyer=cast(Replyer, _Replyer()),
+        event_bus=failing_bus,
+    )
+
+    result = await provider.invoke(
+        ToolInvocation(
+            tool_name="streamer_reply",
+            arguments={"topic_summary": "s"},
+            source="planner-react",
+        )
+    )
+
+    assert failing_bus.emit.await_count == 1
+    assert result.success is True
+    assert result.error_message == ""
+    assert result.structured_content == {
+        "speech": "台词",
+        "emotion": {"name": "neutral", "intensity": 0.5},
+        "actions": [],
+    }

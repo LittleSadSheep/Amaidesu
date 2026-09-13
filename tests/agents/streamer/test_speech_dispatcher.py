@@ -38,9 +38,7 @@ def _make_dispatcher(
 
 def _registry_with_vts_and_action() -> MagicMock:
     registry = MagicMock()
-    registry.invoke = AsyncMock(
-        return_value=ToolExecutionResult(tool_name="x", success=True, structured_content={})
-    )
+    registry.invoke = AsyncMock(return_value=ToolExecutionResult(tool_name="x", success=True, structured_content={}))
     return registry
 
 
@@ -135,9 +133,7 @@ async def test_dispatch_vts_follows_tts_gate_and_emits_emotion_source():
     assert dispatcher.tts_enabled is True
     assert dispatcher.utterance_queue is not None
 
-    result = dispatcher.dispatch(
-        {"speech": "你好", "emotion": {"name": "happy", "intensity": 0.8}, "actions": []}
-    )
+    result = dispatcher.dispatch({"speech": "你好", "emotion": {"name": "happy", "intensity": 0.8}, "actions": []})
     await asyncio.sleep(0.05)  # fire-and-forget 任务调度
 
     invocations = [c.args[0] for c in registry.invoke.await_args_list]
@@ -215,3 +211,147 @@ async def test_disabled_config_never_builds_queue():
     await dispatcher.start()
     assert dispatcher.tts_enabled is False
     assert dispatcher.utterance_queue is None
+
+
+# ---------------------------------------------------------------------------
+# 异步扇出持有 + 停止汇合（P1-2）
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_stop_drains_inflight_fanout_without_pending_warnings():
+    """dispatch 后立即 stop：在飞扇出任务被汇合，无 "Task was destroyed but it is pending"。
+
+    覆盖：业务事件 emit / 字幕 show / VTS 表情 / 动作工具四路。汇合点为
+    ``SpeechDispatcher.stop()``，限 2 秒；超时不抛（本用例不构造超时场景）。
+    """
+    bus = EventBus()
+    captured_event = asyncio.Event()
+
+    async def _capture(event_name, payload, source=None):
+        if isinstance(payload, StreamerSpeechPayload):
+            captured_event.set()
+
+    bus.on(CoreEvents.STREAMER_SPEECH, _capture, model_class=StreamerSpeechPayload)
+
+    subtitle = MagicMock()
+    subtitle.show = AsyncMock()
+    registry = _registry_with_vts_and_action()
+    engine = MagicMock()
+    engine.handle_speech = AsyncMock()
+
+    dispatcher = _make_dispatcher(
+        event_bus=bus,
+        subtitle_service=subtitle,
+        tool_registry=registry,
+        tts_engine=engine,
+        speech_config={"enabled": True, "max_queue": 3, "render_timeout_ms": 1000},
+    )
+    await dispatcher.start()
+    assert dispatcher.tts_enabled is True
+
+    # 五路扇出（speech/emotion/actions/业务事件/字幕）一次性触发，立即 stop 模拟"决策循环立刻回收"
+    dispatcher.dispatch(
+        {
+            "speech": "你好",
+            "emotion": {"name": "happy", "intensity": 0.8},
+            "actions": [{"name": "do_thing", "parameters": {"k": "v"}}],
+        },
+        round_id="rnd_drain",
+    )
+    await dispatcher.stop()
+
+    # 汇合完成意味着"无悬挂任务"——所有 task 必须 done；callback 的 discard
+    # 由 call_soon 排队，sleep(0) 让其执行一次；再断言集合清空。
+    assert all(t.done() for t in dispatcher._bg_tasks), (
+        f"stop 后仍有未完成的后台任务: {[t for t in dispatcher._bg_tasks if not t.done()]}"
+    )
+    await asyncio.sleep(0)
+    assert dispatcher._bg_tasks == set()
+
+
+@pytest.mark.asyncio
+async def test_dispatch_returns_synchronously_without_awaiting_slow_invoke():
+    """决策循环安全：dispatch 在慢 invoke 面前仍同步返回（fire-and-forget 语义保留）。
+
+    注入一个 1.0s 慢 invoke；dispatch 必须立即返回；stop 在 2 秒汇合窗口内完成。
+    """
+    import time
+
+    sleep_done = asyncio.Event()
+    invoke_started = asyncio.Event()
+
+    async def _slow_invoke(inv):
+        invoke_started.set()
+        await asyncio.sleep(1.0)
+        sleep_done.set()
+        return ToolExecutionResult(tool_name=inv.tool_name, success=True, structured_content={})
+
+    registry = MagicMock()
+    registry.invoke = AsyncMock(side_effect=_slow_invoke)
+
+    engine = MagicMock()
+    engine.handle_speech = AsyncMock()
+
+    dispatcher = _make_dispatcher(
+        tool_registry=registry,
+        tts_engine=engine,
+        speech_config={"enabled": True},
+    )
+    await dispatcher.start()
+
+    t0 = time.monotonic()
+    result = dispatcher.dispatch(
+        {"speech": "x", "emotion": {"name": "happy", "intensity": 0.8}, "actions": []},
+    )
+    elapsed = time.monotonic() - t0
+
+    # dispatch 必须几乎瞬时返回（远小于 1s 的 sleep）；扇出慢 invoke 不阻塞决策循环
+    assert elapsed < 0.1, f"dispatch 不应阻塞扇出，但耗时 {elapsed:.3f}s"
+    assert result is not None and result[0] == "x"
+
+    await asyncio.wait_for(invoke_started.wait(), timeout=1.0)
+
+    t1 = time.monotonic()
+    await dispatcher.stop()
+    stop_elapsed = time.monotonic() - t1
+    # 1.0s 慢 invoke + 余量，stop 必须在 2 秒汇合窗口内完成
+    assert stop_elapsed < 2.5, f"stop 应在 2 秒超时内完成，但耗时 {stop_elapsed:.3f}s"
+
+    await asyncio.sleep(0)
+    assert dispatcher._bg_tasks == set()
+
+
+@pytest.mark.asyncio
+async def test_stop_is_bounded_when_invoke_hangs_longer_than_timeout():
+    """汇合有界：invoke 永远不结束时 stop 不抛，仅 WARN，2 秒内返回。"""
+    started = asyncio.Event()
+
+    async def _hanging_invoke(inv):
+        started.set()
+        # 远超 2 秒 timeout；强制 stop 走 TimeoutError 路径
+        await asyncio.sleep(60)
+        return ToolExecutionResult(tool_name=inv.tool_name, success=True, structured_content={})
+
+    registry = MagicMock()
+    registry.invoke = AsyncMock(side_effect=_hanging_invoke)
+    engine = MagicMock()
+    engine.handle_speech = AsyncMock()
+
+    dispatcher = _make_dispatcher(
+        tool_registry=registry,
+        tts_engine=engine,
+        speech_config={"enabled": True},
+    )
+    await dispatcher.start()
+
+    dispatcher.dispatch({"speech": "y", "emotion": {"name": "happy", "intensity": 0.5}, "actions": []})
+    await asyncio.wait_for(started.wait(), timeout=1.0)
+
+    import time
+
+    t0 = time.monotonic()
+    await dispatcher.stop()
+    elapsed = time.monotonic() - t0
+    # 略大于 timeout 上限（2s）但在合理误差内——stop 主动放弃，不阻塞
+    assert 1.5 < elapsed < 3.0, f"stop 应在 ~2s 返回，实际 {elapsed:.3f}s"

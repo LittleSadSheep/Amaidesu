@@ -3,7 +3,11 @@
 决策循环消费 reply 结构化结果后的全部下游扇出收在这里：
 业务事件 ``streamer.speech``、TTS 编排队列、字幕推送、VTS 表情、
 动作类工具调用。TTS 队列生命周期由本组件自持（``start``/``stop``），
-失败一律降级不阻断决策循环（fire-and-forget）。
+失败一律降级不阻断决策循环。
+
+扇出策略：异步扇出不阻塞决策循环；任务强引用持有（``_bg_tasks`` 集合），
+``stop()`` 末尾限期 2 秒汇合，防止悬挂任务在进程退出/重启窗口继续调用
+ToolRegistry / 业务事件总线。对齐 ``EventBus._background_tasks`` 正典模式。
 """
 
 from __future__ import annotations
@@ -74,6 +78,35 @@ class SpeechDispatcher:
         self._utterance_queue: Optional[UtteranceQueue] = None
         # utterance_id 自增计数器（进程内单调；启动时复位为 0，首次自增到 1）
         self._utterance_seq: int = 0
+        # 异步扇出任务强引用集合（fire-and-forget 不阻塞决策循环；持有以避免
+        # 事件循环的弱引用导致任务被 GC；停止时限期汇合防止悬挂）。
+        self._bg_tasks: set = set()
+
+    def _spawn(self, coro, *, label: str) -> None:
+        """把后台 coroutine 创建并纳入强引用持有（决策循环同步返回，不等待）。
+
+        行为对齐 ``EventBus._background_tasks`` 正典模式：
+        - ``RuntimeError``（无事件循环等）→ WARN 返回，不抛
+        - 成功则 ``_bg_tasks.add(task)`` + ``add_done_callback`` 自动 ``discard``
+        - 非取消导致的未捕获异常 → WARN（异常已吞，不外传）
+        """
+        try:
+            task = asyncio.create_task(coro)
+        except RuntimeError as exc:
+            self._logger.warning(f"{label} 任务创建失败（已忽略）: err={exc}")
+            return
+
+        self._bg_tasks.add(task)
+
+        def _on_done(t: asyncio.Task) -> None:
+            self._bg_tasks.discard(t)
+            if t.cancelled():
+                return
+            exc = t.exception()
+            if exc is not None:
+                self._logger.warning(f"{label} 后台任务未捕获异常: err={exc}")
+
+        task.add_done_callback(_on_done)
 
     # -----只读状态（观察面 / 测试）-----
 
@@ -127,13 +160,29 @@ class SpeechDispatcher:
             self._tts_enabled = False
 
     async def stop(self) -> None:
-        """停止发言管线（TTS 队列先停，保证不遗留 invoke 在飞）；可重复调用。"""
+        """停止发言管线：先停 TTS 队列，再汇合在飞扇出任务；可重复调用。
+
+        顺序：``utterance_queue.stop()`` → ``wait_for(gather(_bg_tasks))``。
+        队列 worker 持有的 invoke 会先被取消，剩余扇出（业务事件 / 字幕 / VTS /
+        动作）在 2 秒内汇合；超时 WARN 不抛，避免阻塞停止流程。
+        """
         if self._utterance_queue is not None:
             try:
                 await self._utterance_queue.stop()
             except Exception as exc:
                 self._logger.warning(f"停止发言管线失败: {exc}")
             self._utterance_queue = None
+
+        if self._bg_tasks:
+            try:
+                await asyncio.wait_for(
+                    asyncio.gather(*self._bg_tasks, return_exceptions=True),
+                    timeout=2.0,
+                )
+            except asyncio.TimeoutError:
+                self._logger.warning(f"停止时仍有 {len(self._bg_tasks)} 个后台扇出任务未汇合（timeout=2.0s）")
+            except Exception as exc:
+                self._logger.warning(f"汇合后台扇出任务失败: {exc}")
 
     # ==================================================================
     # 派发入口
@@ -179,8 +228,8 @@ class SpeechDispatcher:
           （TTS 启用与否与主播发言业务事实正交；下游消费者仅依赖业务事件）
         - speech 非空 → 生成 utterance_id + 发布业务事件 + 写入历史；TTS 启用时
           复用同一 utterance_id 入 TTS 队列（与 ``tts.utterance.*`` 共用关联键）
-        - emotion 非空 → ``asyncio.create_task`` 调 VTS 表情工具（fire-and-forget）
-        - actions 非空 → 逐条 ``asyncio.create_task`` 调工具注册表（fire-and-forget）
+        - emotion 非空 → ``_spawn`` 派发 VTS 表情工具（异步扇出不阻塞决策循环）
+        - actions 非空 → 逐条 ``_spawn`` 派发工具注册表调用（异步扇出不阻塞）
         """
         if not isinstance(reply_payload, dict):
             self._logger.warning(f"reply structured_content 非 dict，跳过发言管线: {type(reply_payload).__name__}")
@@ -204,7 +253,7 @@ class SpeechDispatcher:
         else:
             cleaned_emotion = None
 
-        # 动作类工具调用（fire-and-forget；决策循环安全：失败仅记日志）
+        # 动作类工具调用（异步扇出不阻塞决策循环；任务强引用持有，停止时限期汇合）
         self._schedule_actions(actions)
 
         # emotion → VTS 表情调用跟随 TTS 启用门：TTS 关闭（无语音/无声卡场景）
@@ -227,16 +276,16 @@ class SpeechDispatcher:
             )
             self._schedule_subtitle_show(cleaned_speech, utterance_id)
             if self._tts_enabled and self._utterance_queue is not None:
-                try:
-                    asyncio.create_task(self._utterance_queue.enqueue(utterance_id, cleaned_speech))
-                except Exception as exc:
-                    self._logger.warning("utterance 入队失败（已忽略）: utterance_id={}, err={}", utterance_id, exc)
+                self._spawn(
+                    self._utterance_queue.enqueue(utterance_id, cleaned_speech),
+                    label="utterance 入队",
+                )
             return cleaned_speech, cleaned_emotion, utterance_id
 
         return None
 
     # ==================================================================
-    # 下游扇出（全部 fire-and-forget）
+    # 下游扇出（异步扇出不阻塞决策循环；任务强引用持有，停止时限期汇合）
     # ==================================================================
 
     def _emit_streamer_speech(
@@ -248,7 +297,7 @@ class SpeechDispatcher:
         reply_to_message_id: Optional[str] = None,
         round_id: str = "",
     ) -> None:
-        """发布 ``streamer.speech`` 业务事件（fire-and-forget；下游不得触发新决策）。"""
+        """发布 ``streamer.speech`` 业务事件（异步扇出不阻塞决策循环；任务强引用持有，停止时限期汇合）。"""
         event_bus = self._event_bus
         if event_bus is None:
             return
@@ -273,13 +322,10 @@ class SpeechDispatcher:
             except Exception as exc:  # noqa: BLE001 - 异步背景任务边界
                 self._logger.warning(f"streamer.speech 发布失败（已忽略）: utterance_id={utterance_id}, err={exc}")
 
-        try:
-            asyncio.create_task(_do_emit())
-        except RuntimeError as exc:
-            self._logger.warning(f"streamer.speech 任务创建失败（已忽略）: utterance_id={utterance_id}, err={exc}")
+        self._spawn(_do_emit(), label=f"streamer.speech emit (utt={utterance_id})")
 
     def _schedule_subtitle_show(self, text: str, utterance_id: str) -> None:
-        """异步触发字幕推送（fire-and-forget；缺字幕服务跳过，失败不抛异常）。
+        """异步触发字幕推送（异步扇出不阻塞决策循环；任务强引用持有，停止时限期汇合）。
 
         调用 ``SubtitleService.show(text, utterance_id)``：服务内部并行
         广播到所有已注册 Backend，单 Backend 故障隔离由服务负责，本方法
@@ -298,13 +344,10 @@ class SpeechDispatcher:
             except Exception as exc:  # noqa: BLE001 - 异步背景任务边界
                 self._logger.warning(f"字幕 show 异常（已忽略）: utterance_id={utterance_id}, err={exc}")
 
-        try:
-            asyncio.create_task(_do_show())
-        except RuntimeError as exc:
-            self._logger.warning(f"字幕 show 任务创建失败（已忽略）: utterance_id={utterance_id}, err={exc}")
+        self._spawn(_do_show(), label=f"subtitle show (utt={utterance_id})")
 
     def _schedule_vts_emotion(self, emotion: str, intensity: float = 0.5) -> None:
-        """异步触发 VTS 表情调用（fire-and-forget，失败不影响决策循环）。
+        """异步触发 VTS 表情调用（异步扇出不阻塞决策循环；任务强引用持有，停止时限期汇合）。
 
         VTS 工具契约（vts_set_expression）::
 
@@ -350,20 +393,17 @@ class SpeechDispatcher:
             except Exception as exc:  # noqa: BLE001 - 异步背景任务边界
                 self._logger.warning(f"VTS 表情调用异常（已忽略）: emotion={emotion}, err={exc}")
 
-        try:
-            asyncio.create_task(_invoke_vts())
-        except RuntimeError as exc:
-            self._logger.warning(f"VTS 表情任务创建失败（已忽略）: emotion={emotion}, err={exc}")
+        self._spawn(_invoke_vts(), label=f"VTS 表情 (emotion={emotion})")
 
     def _schedule_actions(self, actions: Any) -> None:
-        """异步触发动作类工具调用（fire-and-forget，失败不影响决策循环）。
+        """异步触发动作类工具调用（异步扇出不阻塞决策循环；任务强引用持有，停止时限期汇合）。
 
         ``actions`` 契约：``[{name: str, parameters: dict}, ...]``（来自
         Replyer 的 tool_calls 非 reply 部分；LLM 通过标准 function calling
         选择的动作类工具）。
 
         与 ``_schedule_vts_emotion`` 同模式：
-        - 每条动作独立 ``asyncio.create_task``（互不阻塞）
+        - 每条动作独立 ``_spawn`` 派发（互不阻塞，强引用持有）
         - 注册表缺失时静默跳过
         - 工具失败只记 WARN（注册表 invoke 本身不抛异常，双保险）
         """
@@ -400,7 +440,4 @@ class SpeechDispatcher:
                 except Exception as exc:  # noqa: BLE001 - 异步背景任务边界
                     self._logger.warning(f"动作类工具调用异常（已忽略）: tool={inv.tool_name}, err={exc}")
 
-            try:
-                asyncio.create_task(_invoke_action())
-            except RuntimeError as exc:
-                self._logger.warning(f"动作任务创建失败（已忽略）: tool={name}, err={exc}")
+            self._spawn(_invoke_action(), label=f"动作工具 (tool={name})")

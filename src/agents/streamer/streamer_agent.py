@@ -746,6 +746,11 @@ class StreamerAgent(BaseAgent):
 
     async def _maybe_flush(self) -> None:
         """判断是否应该取出一批并做两阶段决策。"""
+        # 下方 ``locked()`` + ``async with`` 是 check-then-act：单事件循环下
+        # ``locked()`` 与 ``async with`` 之间存在 TOCTOU 窗口，仅作尽力快路径。
+        # 真正的互斥闸门是紧随其后的 ``async with self._flush_lock``。
+        # 当前唯一调用方是 ``_flush_loop``（单点、串行 tick），故此快路径无害；
+        # 若新增并发调用方需重新评估。
         if self._flush_lock.locked():
             return
 
