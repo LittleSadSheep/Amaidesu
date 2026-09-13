@@ -61,6 +61,7 @@ from .planner import Planner
 from .proactive_trigger import ProactiveTrigger
 from .replyer import WordFilter, Replyer
 from .room_state import RoomState
+from .stats import StreamerStats
 from .thinking_stream import ThinkingStreamContext
 from .timing_gate import TimingGate
 from .tools.reply_tool import ReplyToolProvider
@@ -337,14 +338,8 @@ class StreamerAgent(BaseAgent):
         # 流程单环节切换触发 flag（RundownState 变更回调置位；装配接线）
         self._rundown_proactive_pending: bool = False
 
-        # 统计
-        self._total_messages = 0
-        self._total_batches = 0
-        self._total_replies = 0
-        self._total_no_action = 0
-        self._total_proactive = 0
-        self._planner_failures = 0
-        self._replyer_failures = 0
+        # 统计（决策循环各分支增量；对外经 get_statistics 导出）
+        self._stats = StreamerStats()
 
         # 游戏叙事摘要（订阅 game.* 收集，最多保留 N 条；进 Planner 上下文）
         self._game_narrative_blocks: List[str] = []
@@ -686,7 +681,7 @@ class StreamerAgent(BaseAgent):
         # 非命令按原路径继续（行为不变）
         if msg.message_type == "danmaku" and await self._try_dispatch_command(msg):
             return
-        self._total_messages += 1
+        self._stats.total_messages += 1
         # RoomState 热度信号
         self._room_state.update(msg, now_ms=now_ms())
         # TimingGate 强制判定
@@ -868,7 +863,7 @@ class StreamerAgent(BaseAgent):
                 )
                 self._external_proactive_pending = False
                 if reason is not None:
-                    self._total_proactive += 1
+                    self._stats.total_proactive += 1
                     self._logger.info(f"主动发言触发: {reason}")
                     await self._make_two_stage_decision(
                         [],
@@ -889,7 +884,7 @@ class StreamerAgent(BaseAgent):
             batch = self._buffer.drain()
             if not batch:
                 return
-            self._total_batches += 1
+            self._stats.total_batches += 1
 
             await self._make_two_stage_decision(batch, forced=forced, trigger_reason=flush_reason)
 
@@ -1051,8 +1046,8 @@ class StreamerAgent(BaseAgent):
         result["llm_request_id"] = getattr(self._planner, "last_request_id", None)
 
         if outcome is None:
-            self._planner_failures += 1
-            self._total_no_action += 1
+            self._stats.planner_failures += 1
+            self._stats.total_no_action += 1
             detail = getattr(self._planner, "last_failure", None)
             result["error"] = result["error"] or (
                 f"planner_failed: {detail}" if detail else "planner_failed: 决策循环异常"
@@ -1075,10 +1070,10 @@ class StreamerAgent(BaseAgent):
 
         # 未说话（自然终止/超步/LLM 失败/reply 工具失败）——静默收场
         if not outcome.get("replied"):
-            self._total_no_action += 1
-            self._replyer_failures += int(outcome.get("reply_failures", 0) or 0)
+            self._stats.total_no_action += 1
+            self._stats.replyer_failures += int(outcome.get("reply_failures", 0) or 0)
             if outcome.get("error"):
-                self._planner_failures += 1
+                self._stats.planner_failures += 1
                 result["error"] = f"planner_failed: {outcome['error']}"
             result["total_duration_ms"] = now_ms() - started_ms
             return result
@@ -1095,7 +1090,7 @@ class StreamerAgent(BaseAgent):
             result["speech"], result["emotion"], result["utterance_id"] = speech_info
 
         # 成功：保存上下文 + 记录发言时刻 + 频率限制
-        self._total_replies += 1
+        self._stats.total_replies += 1
         self._room_state.record_speech(now_ms())
         if proactive:
             # 决策循环内约定 proactive 原因带 "proactive:" 标记（debug/记账共用），此处取其后正文
@@ -1742,12 +1737,4 @@ class StreamerAgent(BaseAgent):
 
     def get_statistics(self) -> Dict[str, Any]:
         """获取运行时统计信息（结构向后兼容旧 get_statistics）。"""
-        return {
-            "total_messages": self._total_messages,
-            "total_batches": self._total_batches,
-            "total_replies": self._total_replies,
-            "total_no_action": self._total_no_action,
-            "total_proactive": self._total_proactive,
-            "planner_failures": self._planner_failures,
-            "replyer_failures": self._replyer_failures,
-        }
+        return self._stats.as_dict()

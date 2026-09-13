@@ -42,7 +42,6 @@ def _make_payload(text: str = "主播好可爱") -> RoomMessagePayload:
 # ---------------------------------------------------------------------------
 
 
-
 def _planner_tool_call(name: str, args: dict, call_id: str = "call_p1") -> PayloadToolCall:
     """构造 Planner 的中立 tool_call（arguments 为 dict）。"""
     return PayloadToolCall(id=call_id, name=name, arguments=args)
@@ -102,7 +101,6 @@ def _planner_calls(llm: MagicMock) -> list:
 def _replyer_calls(llm: MagicMock) -> list:
     """generate 调用中 profile=replyer 的子集（Replyer 触发断言用）。"""
     return [c for c in llm.generate.await_args_list if c.kwargs.get("profile") == "replyer"]
-
 
 
 # ---------------------------------------------------------------------------
@@ -272,7 +270,7 @@ async def test_decision_loop_proactive_gated_until_live_started():
         agent._rundown_proactive_pending = True
 
         await asyncio.sleep(0.2)
-        assert agent._total_proactive == 0, "未开播时主动发言应静默"
+        assert agent.get_statistics()["total_proactive"] == 0, "未开播时主动发言应静默"
         assert agent._rundown_proactive_pending is True, "pending 信号不应被消费"
 
         await bus.emit(
@@ -283,7 +281,7 @@ async def test_decision_loop_proactive_gated_until_live_started():
         await asyncio.sleep(0.2)
 
         assert agent._live_active is True
-        assert agent._total_proactive >= 1, "开播后首个 tick 应消费保留的 pending 触发主动发言"
+        assert agent.get_statistics()["total_proactive"] >= 1, "开播后首个 tick 应消费保留的 pending 触发主动发言"
         assert agent._rundown_proactive_pending is False
     finally:
         await agent.cleanup()
@@ -316,9 +314,9 @@ async def test_decision_loop_proactive_gated_after_live_ended():
         assert agent._live_active is False
 
         agent._rundown_proactive_pending = True
-        baseline = agent._total_proactive
+        baseline = agent.get_statistics()["total_proactive"]
         await asyncio.sleep(0.3)
-        assert agent._total_proactive == baseline, "下播后主动发言应静默（无新增触发）"
+        assert agent.get_statistics()["total_proactive"] == baseline, "下播后主动发言应静默（无新增触发）"
         assert agent._rundown_proactive_pending is True, "下播后的 pending 信号保留待下场"
     finally:
         await agent.cleanup()

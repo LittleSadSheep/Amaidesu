@@ -104,7 +104,7 @@ async def test_whitelisted_command_delegates(text: str, expected_instruction: st
     assert invocation.source == "streamer"
     # 命令被消费：不进决策缓冲、不进弹幕计数
     assert agent._buffer.size == 0
-    assert agent._total_messages == 0
+    assert agent.get_statistics()["total_messages"] == 0
 
 
 @pytest.mark.asyncio
@@ -115,7 +115,7 @@ async def test_non_command_message_keeps_original_path() -> None:
 
     registry.invoke.assert_not_awaited()
     assert agent._buffer.size == 1
-    assert agent._total_messages == 1
+    assert agent.get_statistics()["total_messages"] == 1
 
 
 @pytest.mark.asyncio
@@ -176,7 +176,7 @@ async def test_unwhitelisted_command_dropped_silently() -> None:
 
     registry.invoke.assert_not_awaited()
     assert agent._buffer.size == 0
-    assert agent._total_messages == 0
+    assert agent.get_statistics()["total_messages"] == 0
 
 
 @pytest.mark.asyncio
