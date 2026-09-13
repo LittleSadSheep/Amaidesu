@@ -72,9 +72,9 @@ class TestAgentsConfigSubConfigs:
         assert cfg.minecraft.max_steps == 80
 
     def test_text_adv_subconfig_self_contained(self):
-        cfg = AgentsConfig(text_adv={"decision_strategy": "llm"})
+        cfg = AgentsConfig(text_adv={"monitor_index": 0})
         assert isinstance(cfg.text_adv, TextAdvConfig)
-        assert cfg.text_adv.decision_strategy == "llm"
+        assert cfg.text_adv.monitor_index == 0
 
     def test_game_section_rejected(self):
         with pytest.raises(ValidationError):
@@ -136,13 +136,21 @@ class TestTextAdvPackageConfig:
 
     def test_defaults(self):
         cfg = AgentsConfig()
-        assert cfg.text_adv.engine_kind == "text_adv"
-        assert cfg.text_adv.decision_strategy == "first_option"
-        assert cfg.text_adv.enable_event_emission is True
+        assert cfg.text_adv.monitor_index == 1
+        assert cfg.text_adv.region is None
+        assert cfg.text_adv.keys == {"advance": "space", "skip": "ctrl", "menu": "backspace"}
+        assert cfg.text_adv.stability_sample_ms == 150
+        assert cfg.text_adv.stability_consecutive == 2
+        assert cfg.text_adv.stability_timeout_ms == 5_000
+        assert cfg.text_adv.no_change_limit == 20
+        assert cfg.text_adv.max_recent_screens == 10
+        assert cfg.text_adv.auto_button_xy is None
+        assert cfg.text_adv.game_window_title_keyword == ""
 
     def test_field_overrides(self):
-        cfg = AgentsConfig(text_adv={"enable_event_emission": False})
-        assert cfg.text_adv.enable_event_emission is False
+        cfg = AgentsConfig(text_adv={"auto_button_xy": [120, 240], "region": [0, 0, 1920, 1080]})
+        assert cfg.text_adv.auto_button_xy == (120, 240)
+        assert cfg.text_adv.region == [0, 0, 1920, 1080]
 
 
 class TestJsonSchemaExtra:

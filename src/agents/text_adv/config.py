@@ -6,29 +6,55 @@
 
 from __future__ import annotations
 
+from typing import Dict, List, Optional
+
 from pydantic import Field
 
 from src.modules.config.schemas.base import BaseConfig
+
+
+def _default_keys() -> Dict[str, str]:
+    """键位单表默认值（实测有效键；危险键 s/h/f 不绑）"""
+    return {"advance": "space", "skip": "ctrl", "menu": "backspace"}
 
 
 class TextAdvConfig(BaseConfig):
     """TextAdvGameAgent 运行时配置
 
     Attributes:
-        engine_kind: 内容引擎标识（默认 text_adv；用于多实例区分/日志）
-        decision_strategy: 推进策略（first_option=首选项；llm=LLM 选择——待实现）
-        enable_event_emission: 是否在感知/推进时 emit game.* 事件
+        monitor_index: 游戏窗口所在显示器编号（0 起）
+        region: 截图区域 [x, y, w, h]（相对所选显示器左上角，物理像素）；
+            None = 整个显示器。语义为整个游戏窗口，读什么交给识别问句引导
+        keys: 动作名 → 按键名的单表映射（advance/skip/menu 可按需覆盖）
+        stability_sample_ms: 画面稳定判定的采样间隔（毫秒）
+        stability_consecutive: 判定画面稳定所需的连续一致采样次数
+        stability_timeout_ms: 稳定判定的超时兜底（毫秒）——到点按当前画面放行
+        no_change_limit: 连续无变化采样次数上限——超过即判画面静止并触发兜底
+        max_recent_screens: 累积剧情环缓冲保留的最近屏数
+        auto_button_xy: AUTO 按钮标定坐标 [x, y]（显示器相对物理像素）；
+            None = 未标定，AUTO 模式走键盘键位
+        game_window_title_keyword: 游戏窗口标题关键词（空串 = 未指定，用于夺焦）
     """
 
-    engine_kind: str = Field(default="text_adv", description="内容引擎标识")
-    decision_strategy: str = Field(
-        default="first_option",
-        description="推进策略（first_option=首选项；llm=LLM 选择——待实现）",
+    monitor_index: int = Field(default=1, ge=0, description="游戏窗口所在显示器编号（0 起）")
+    region: Optional[List[int]] = Field(
+        default=None,
+        description="截图区域 [x, y, w, h]（相对所选显示器左上角，物理像素）；None = 整个显示器",
     )
-    enable_event_emission: bool = Field(
-        default=True,
-        description="是否在感知/推进时 emit game.* 事件",
+    keys: Dict[str, str] = Field(
+        default_factory=_default_keys,
+        description="动作名 → 按键名映射（advance=推进/skip=快进（按住）/menu=菜单）",
     )
+    stability_sample_ms: int = Field(default=150, ge=10, le=2000, description="画面稳定判定的采样间隔（毫秒）")
+    stability_consecutive: int = Field(default=2, ge=2, le=10, description="判定画面稳定所需的连续一致采样次数")
+    stability_timeout_ms: int = Field(default=5000, ge=100, le=60_000, description="稳定判定超时兜底（毫秒）")
+    no_change_limit: int = Field(default=20, ge=1, le=1000, description="连续无变化采样次数上限（超过判画面静止）")
+    max_recent_screens: int = Field(default=10, ge=1, le=100, description="累积剧情环缓冲保留的最近屏数")
+    auto_button_xy: Optional[tuple[int, int]] = Field(
+        default=None,
+        description="AUTO 按钮标定坐标 [x, y]（显示器相对物理像素）；None = 未标定",
+    )
+    game_window_title_keyword: str = Field(default="", description="游戏窗口标题关键词（空串 = 未指定）")
 
 
 __all__ = ["TextAdvConfig"]

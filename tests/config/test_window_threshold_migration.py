@@ -20,7 +20,7 @@ def _seed_old_window_threshold(config_dir: Path) -> None:
     path = config_dir / "agents.toml"
     content = path.read_text(encoding="utf-8-sig")
     marker = "[agents.streamer.background]\n"
-    old_block = marker + 'window_event_threshold = 200\n'
+    old_block = marker + "window_event_threshold = 200\n"
     assert marker in content
     content = content.replace(marker, old_block, 1)
     content = content.replace(f'version = "{CONFIG_BASELINE_VERSION}"', 'version = "2.0.32"', 1)
@@ -39,7 +39,7 @@ def test_window_threshold_dropped_and_written_back(tmp_path: Path):
     doc = tomlkit.parse((tmp_path / "agents.toml").read_text(encoding="utf-8-sig"))
     background = doc["agents"]["streamer"]["background"]
     assert "window_event_threshold" not in background
-    assert get_config_version(tmp_path, "agents.toml") == "2.0.33"
+    assert get_config_version(tmp_path, "agents.toml") == CONFIG_BASELINE_VERSION
 
 
 def test_migration_idempotent_on_second_load(tmp_path: Path):

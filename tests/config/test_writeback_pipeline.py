@@ -41,7 +41,15 @@ def temp_config_dir(tmp_path):
 
 def _append(config_dir, file_name: str, text: str) -> None:
     path = config_dir / file_name
-    path.write_text(path.read_text(encoding="utf-8-sig") + text, encoding="utf-8-sig")
+    content = path.read_text(encoding="utf-8-sig")
+    # 文件尾可能是叶子子表（如 [agents.text_adv.keys]），直接尾追会掉进子表
+    # 内部而非顶级段；改为插在首个 Agent 子段前，保证落在 [agents] 顶级段
+    marker = "\n[agents.streamer]"
+    if file_name == "agents.toml" and marker in content:
+        content = content.replace(marker, "\n" + text.strip("\n") + marker, 1)
+    else:
+        content = content + text
+    path.write_text(content, encoding="utf-8-sig")
 
 
 class TestWritebackShortCircuit:

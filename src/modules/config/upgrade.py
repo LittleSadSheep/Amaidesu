@@ -157,6 +157,29 @@ def _drop_window_event_threshold(data: Dict[str, Any]) -> List[str]:
 register_file_hook("agents.toml", "drop_window_event_threshold", "2.0.33", _drop_window_event_threshold)
 
 
+def _drop_text_adv_fake_knobs(data: Dict[str, Any]) -> List[str]:
+    """agents.toml v2.0.34：删 [agents.text_adv] 三个无消费者假旋钮。
+
+    ``engine_kind`` / ``decision_strategy`` / ``enable_event_emission`` 经核实
+    均无有效消费路径（Agent 行为不再由配置切换），一并删除。对已迁移数据
+    零变更（幂等）。
+    """
+    agents = data.get("agents")
+    text_adv = agents.get("text_adv") if isinstance(agents, dict) else None
+    if not isinstance(text_adv, dict):
+        return []
+    changed: List[str] = []
+    for key in ("engine_kind", "decision_strategy", "enable_event_emission"):
+        if key in text_adv:
+            del text_adv[key]
+            changed.append(f"agents.text_adv.{key}")
+    return changed
+
+
+# 生产钩子登记：agents.toml v2.0.34（text_adv 假旋钮删字段）
+register_file_hook("agents.toml", "drop_text_adv_fake_knobs", "2.0.34", _drop_text_adv_fake_knobs)
+
+
 def _version_tuple(version: str) -> tuple[int, ...]:
     """版本号 → 可比较元组（"2.0.31" → (2, 0, 31)）；解析失败按 0 处理"""
     try:
