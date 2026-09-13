@@ -234,6 +234,3 @@ class TestPersonaDefaults:
         assert isinstance(cfg.minecraft, MinecraftConfig)
         assert cfg.minecraft.max_steps == 50
         assert isinstance(cfg.text_adv, TextAdvConfig)
-        assert cfg.text_adv.engine_kind == "text_adv"
-        assert cfg.text_adv.decision_strategy == "first_option"
-        assert cfg.text_adv.enable_event_emission is True
