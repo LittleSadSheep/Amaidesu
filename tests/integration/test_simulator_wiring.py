@@ -29,7 +29,7 @@ def _minimal_config(simulator_enabled: bool = False) -> Dict[str, Any]:
     return {
         "general": {"platform_id": "test"},
         "context": {},
-        "events": {"history_size": 100, "persist": False},
+        "events": {"history_size": 100},
         "dashboard": {"enabled": False},  # 关闭 dashboard
         "logging": {"level": "WARNING"},
         "interceptors": {},  # 空拦截器
