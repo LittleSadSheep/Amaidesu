@@ -22,6 +22,7 @@ from src.modules.dashboard.api import (
     system,
     tools,
     viewers,
+    vision,
 )
 
 
@@ -63,6 +64,9 @@ def create_app() -> FastAPI:
 
     # Agent 控制面（运行态观测 + 框架级控制）
     app.include_router(agents.router, prefix="/api/v1/agents", tags=["Agents"])
+
+    # 视觉感知端点（mss 显示器枚举 + 预览抓帧），无 VLM / 不缓存
+    app.include_router(vision.router, prefix="/api/v1/vision", tags=["Vision"])
 
     return app
 
