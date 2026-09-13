@@ -24,9 +24,11 @@ from src.modules.events.names import CoreEvents
 from src.modules.events.payloads.game import GamePayload
 from src.modules.logging import get_logger
 from src.modules.tools import ToolSpec
+from src.modules.tools.registry import ToolRegistry
 from src.modules.vision.look_at_screen import ScreenCaptureResult
 
 from .config import TextAdvConfig
+from .input import InputBackend
 from .screen import StableFrameResult, frame_key, text_key, wait_stable
 from .state import TextAdvGameAgentState
 from .vlm import ScreenReading, VisionReader
@@ -84,6 +86,8 @@ class TextAdvGameAgent(BaseAgent):
         vision_reader: VisionReader,
         window_backend: WindowBackend,
         capture: FrameCapture,
+        input_backend: InputBackend,
+        tool_registry: Optional[ToolRegistry] = None,
         event_bus: Optional[EventBus] = None,
     ) -> None:
         """构造注入全部依赖。
@@ -93,6 +97,9 @@ class TextAdvGameAgent(BaseAgent):
             vision_reader: 读屏后端（读一屏返回结构化结果）
             window_backend: 窗口后端（查找/夺焦/前台/几何）
             capture: 帧采集后端（稳定判定与帧级去重的数据源）
+            input_backend: 键鼠注入后端（工具面动作出口的触达通道）
+            tool_registry: 可选 ToolRegistry（启动期注册工具面；
+                未注入时工具面不注册，调用期按注册缺失降级）
             event_bus: 可选 EventBus（game.* 事件发射）
         """
         super().__init__(event_bus=event_bus)
@@ -100,6 +107,11 @@ class TextAdvGameAgent(BaseAgent):
         self._vision_reader = vision_reader
         self._window_backend = window_backend
         self._capture = capture
+        self._tool_registry = tool_registry
+        # 函数内 import：tools 模块反向引用本模块的 TextAdvGameAgent（循环 import 规避）
+        from .tools import TextAdvToolProvider
+
+        self._tool_provider: TextAdvToolProvider = TextAdvToolProvider(agent=self, input_backend=input_backend)
 
         # 内容状态（避免与 BaseAgent.state 属性同名故用 _game_state）
         self._game_state = TextAdvGameAgentState(max_recent_screens=config.max_recent_screens)
@@ -333,20 +345,31 @@ class TextAdvGameAgent(BaseAgent):
     # ==================================================================
 
     def list_tools(self) -> List[ToolSpec]:
-        """本阶段不声明工具；text_adv 工具面由独立的工具重写任务接入。"""
-        return []
+        """声明工具面（provider="text_adv" 的四工具）。"""
+        return list(self._tool_provider.list_tools())
 
     # ==================================================================
     # 生命周期
     # ==================================================================
 
     async def _on_start(self) -> None:
-        """启动钩子：仅置位运行标记；观察循环由 set_auto 命令拉起（空闲零消耗）。"""
-        self._logger.info("TextAdvGameAgent 已启动（等待 set_auto 命令）")
+        """启动钩子：注册工具面并置位运行标记；观察循环由 set_auto 命令拉起（空闲零消耗）。"""
+        # 函数内 import：tools 模块反向引用本模块（循环 import 规避）
+        from .tools import build_text_adv_visible_to
+
+        count = self.register_tool_provider(
+            self._tool_provider,
+            registry=self._tool_registry,
+            visible_to=build_text_adv_visible_to(),
+        )
+        self._logger.info(f"TextAdvGameAgent 已启动（工具面注册 {count} 个；等待 set_auto 命令）")
 
     async def _on_stop(self) -> None:
-        """停止钩子：取消观察循环（若有）。"""
+        """停止钩子：取消观察循环（若有）并摘除本 Agent 注册的工具面。"""
         await self.set_auto(False)
+        removed = self.unregister_tool_providers()
+        if removed:
+            self._logger.info(f"TextAdvGameAgent 已停止（摘除 {removed} 个工具）")
 
     # ==================================================================
     # 状态导出
@@ -368,6 +391,8 @@ def build_text_adv_agent(
     vision_reader: VisionReader,
     window_backend: WindowBackend,
     capture: FrameCapture,
+    input_backend: InputBackend,
+    tool_registry: Optional[ToolRegistry] = None,
     event_bus: Optional[EventBus] = None,
 ) -> TextAdvGameAgent:
     """便捷构造函数（装配任务接线用；依赖显式传参，不隐式拉起任何后端）。
@@ -377,6 +402,8 @@ def build_text_adv_agent(
         vision_reader: 读屏后端（如 RegistryVisionReader）
         window_backend: 窗口后端（如 PyGetWindowBackend）
         capture: 帧采集后端（与屏幕线 ScreenCapture 协议同形）
+        input_backend: 键鼠注入后端（如 PyAutoGuiInputBackend）
+        tool_registry: 可选 ToolRegistry（启动期注册工具面）
         event_bus: 可选 EventBus（game.* 事件发射）
 
     Returns:
@@ -387,5 +414,7 @@ def build_text_adv_agent(
         vision_reader=vision_reader,
         window_backend=window_backend,
         capture=capture,
+        input_backend=input_backend,
+        tool_registry=tool_registry,
         event_bus=event_bus,
     )

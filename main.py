@@ -83,7 +83,7 @@ _AGENT_REGISTRATION_META: Dict[str, Tuple[str, str]] = {
         "直播主播决策主体：聚合弹幕 → Planner 决策 → Replyer 表达",
     ),
     "minecraft": ("minecraft", "游戏 AI 玩家代理（Minecraft / MaiCraftMod）"),
-    "text_adv": ("text_adv", "游戏 AI 玩家代理（text_adv 文字冒险引擎）"),
+    "text_adv": ("text_adv", "文字冒险游戏 Agent（视觉小说观察与上报）"),
 }
 
 
@@ -613,11 +613,17 @@ async def create_app_components(
             logger.warning("[tools.mcp].enabled=false 但配置了 servers —— MCP 工具未装配")
 
         agents_enabled = ((config.get("agents") or {}).get("enabled") or []) if isinstance(config, dict) else []
-        if "text_adv" in agents_enabled and "vision_look_at_screen" not in tool_registry:
-            logger.warning(
-                "文字冒险 Agent 已启用但 vision_look_at_screen 未注册"
-                "（[tools.vision].enabled=false？）——感知将走空快照降级路径"
-            )
+        if "text_adv" in agents_enabled:
+            # 感知能力装配检查：读屏依赖 vision_look_at_screen 注册，帧采集依赖 mss 可用；
+            # 缺任一环则观察循环与工具的感知都走空快照降级路径
+            if "vision_look_at_screen" not in tool_registry:
+                logger.warning(
+                    "文字冒险 Agent 已启用但感知读屏未装配"
+                    "（vision_look_at_screen 未注册，[tools.vision].enabled=false？）"
+                    "——读屏将走空快照降级路径"
+                )
+            if not MssScreenCapture().list_monitors():
+                logger.warning("文字冒险 Agent 已启用但帧采集未装配（mss 不可用）——帧采集将走空快照降级路径")
 
         # --- 工具级停用（[tools].disabled_tools 列表；在全部装配完成后应用）---
         # 停用的工具保留在注册表中（工具页可见全集），但对 LLM 不可见且调用被拒绝
@@ -868,7 +874,7 @@ async def _register_agents_from_config(
         enabled = ["streamer", "minecraft", "text_adv"]
         [agents.streamer]  = { 完整子树（persona / context / background / ...） }
         [agents.minecraft] = { max_steps = 50, mcp = {...} }
-        [agents.text_adv]  = { engine_kind = "text_adv", decision_strategy, enable_event_emission }
+        [agents.text_adv]  = { monitor_index, region, keys, stability_*, no_change_limit, auto_button_xy, game_window_title_keyword }
 
     memory 为 SimpleMemory 记忆后端，仅 streamer Agent 消费。
 

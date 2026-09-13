@@ -49,7 +49,8 @@ def instantiate_agent(
       subtitle_service / session_manager / context_assembler_config
     - minecraft：thinking_sink / task_tracker；llm_profile 使用 Agent
       类默认值（``[llm_profiles.minecraft]`` 段）
-    - text_adv：仅基础四件套
+    - text_adv：基础四件套 + 工厂内装配的感知/动作依赖（读屏 reader /
+      窗口后端 / 帧采集后端 / 键鼠后端）；tool_registry 供启动期自注册工具面
 
     ``thinking_sink`` 关键字参数透传给 StreamerAgent 与 MinecraftAgent
     （鸭子类型：任何带 ``on_thinking_delta`` 方法的对象）；缺省 None 时
@@ -110,18 +111,26 @@ def instantiate_agent(
 
     if name == "text_adv":
         from src.agents.text_adv import TextAdvConfig, TextAdvGameAgent
-        from src.agents.text_adv.content_engine import StubContentEngine
+        from src.agents.text_adv.input import PyAutoGuiInputBackend
+        from src.agents.text_adv.vlm import RegistryVisionReader
+        from src.agents.text_adv.window import PyGetWindowBackend
+        from src.modules.vision import MssScreenCapture
 
         try:
             text_adv_cfg = TextAdvConfig(**config) if config else TextAdvConfig()
         except Exception as exc:
             _logger.warning(f"解析 TextAdvConfig 失败: {exc}; 使用默认配置")
             text_adv_cfg = TextAdvConfig()
+        # 感知与动作依赖在工厂内装配（组合根认识所有层）：读屏走 ToolRegistry 的
+        # vision_look_at_screen（registry 未装配时调用期按感知失败降级）；
+        # tool_registry 同时传给 Agent 供启动期自注册工具面（与另两 Agent 同通道）
         return TextAdvGameAgent(
             config=text_adv_cfg,
-            content_engine=StubContentEngine(engine_kind="text_adv"),
-            llm_manager=llm_manager,
-            prompt_manager=prompt_manager,
+            vision_reader=RegistryVisionReader(tool_registry, source=name),
+            window_backend=PyGetWindowBackend(),
+            capture=MssScreenCapture(),
+            input_backend=PyAutoGuiInputBackend(),
+            tool_registry=tool_registry,
             event_bus=event_bus,
         )
 

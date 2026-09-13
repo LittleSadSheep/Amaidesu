@@ -19,6 +19,7 @@ import time
 from typing import Callable, Dict, List, Optional, Tuple
 
 from src.agents.text_adv import TextAdvConfig, TextAdvGameAgent, build_text_adv_agent
+from src.agents.text_adv.input import FakeInputBackend
 from src.agents.text_adv.vlm import FakeVisionReader, ScreenReading
 from src.agents.text_adv.window import FakeWindowBackend
 from src.modules.events.event_bus import EventBus
@@ -137,6 +138,7 @@ def make_agent(
         vision_reader=reader or FakeVisionReader(REPLY_PLAIN),  # type: ignore[arg-type]
         window_backend=window or FakeWindowBackend(),
         capture=capture or StaticCapture(),  # type: ignore[arg-type]
+        input_backend=FakeInputBackend(),
         event_bus=bus,
     )
     return agent, collected
@@ -167,10 +169,40 @@ def test_build_text_adv_agent_returns_agent() -> None:
         vision_reader=FakeVisionReader(REPLY_PLAIN),
         window_backend=FakeWindowBackend(),
         capture=StaticCapture(),
+        input_backend=FakeInputBackend(),
     )
     assert isinstance(agent, TextAdvGameAgent)
     assert agent.name == "text_adv"
     assert agent.auto is False
+
+
+def test_factory_enables_tools_for_streamer_and_stop_removes() -> None:
+    """工厂装配接线：注册进 registry 的 Agent 启动后主播可见四工具；stop 后摘除。"""
+    import asyncio
+
+    from src.modules.agents.factory import instantiate_agent
+    from src.modules.tools.registry import ToolRegistry
+
+    registry = ToolRegistry()
+    agent = instantiate_agent(
+        "text_adv",
+        {"stability_sample_ms": 10, "stability_consecutive": 2, "stability_timeout_ms": 120},
+        llm_manager=object(),
+        prompt_manager=object(),
+        tool_registry=registry,
+    )
+    assert agent is not None
+
+    async def _run() -> list[str]:
+        await agent.start()
+        names = {spec.full_name for spec in registry.list_tools(for_agent="streamer")}
+        await agent.stop()
+        return sorted(names)  # type: ignore[arg-type]
+
+    after_start = asyncio.run(_run())
+    assert after_start == ["text_adv_advance", "text_adv_choose", "text_adv_get_state", "text_adv_set_auto"]
+    after_stop = {spec.full_name for spec in registry.list_tools(for_agent="streamer")}
+    assert not any(name.startswith("text_adv_") for name in after_stop)
 
 
 # =============================================================================
@@ -381,7 +413,6 @@ from src.agents.text_adv import (  # noqa: E402 - 工具面测试段统一引用
     TextAdvToolProvider,
     build_text_adv_visible_to,
 )
-from src.agents.text_adv.input import FakeInputBackend  # noqa: E402
 from src.modules.tools.models import ToolInvocation  # noqa: E402 - 工具面测试段统一引用
 from src.modules.tools.registry import ToolRegistry  # noqa: E402
 
