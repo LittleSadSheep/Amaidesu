@@ -129,7 +129,6 @@ enabled = ["streamer", "text_adv"]
 enabled = ["console_input"]          # 仅启用控制台输入
 # enabled = ["console_input", "bili_danmaku"]  # B 站 legacy 弹幕（需填 room_id）
 # enabled = ["console_input", "bili_danmaku_official"]  # B 站官方弹幕（需填 id_code/app_id/access_key）
-# enabled = ["console_input", "screen"]  # 屏幕变化检测（需 VLM profile）
 # enabled = ["console_input", "stt"]     # 语音转写（需 iflytek 配置）
 
 # 各采集器的具体配置 = 同名子段（由该采集器包内 ConfigSchema 校验，缺键自动补默认）
@@ -206,7 +205,6 @@ uv run python main.py --dry
 | `console_input` | 控制台输入（开发测试，零依赖） | `user_id` / `user_nickname` |
 | `bili_danmaku` | B 站 legacy 弹幕（轮询） | `room_id` / `poll_interval` |
 | `bili_danmaku_official` | B 站官方长连弹幕 | `id_code` / `app_id` / `access_key(_secret)` / `api_host` |
-| `screen` | 屏幕变化检测（VLM） | 包内 ConfigSchema（VLM 走 `model.toml` vision profile） |
 | `stt` | 语音转文字（讯飞 ASR + VAD） | 包内 ConfigSchema（iflytek_asr / vad / audio） |
 
 
@@ -227,7 +225,7 @@ uv run python main.py --dry
 
 | 工具包（`[tools.<pack>]`） | 代表工具 | 说明 |
 |----------------------------|---------|------|
-| `perception` | `look_at_screen` | 屏幕感知（VLM 调用） |
+| `vision` | `look_at_screen` | 屏幕感知（mss 多显示器抓屏 + 可选区域 + VLM 转文本） |
 | `output` | `push_subtitle` / `vts_trigger_hotkey` / `obs_switch_scene` | 渲染族：字幕 / 皮套控制 / OBS 场景切换（TTS 已提升为基础设施，迁至 `src/modules/tts/` 基础模块） |
 | Streamer 自带 | `streamer_reply` / `rundown_control` | 主播自有工具（开 `streamer` 即生效；`rundown_control` 随 rundown 注册项声明） |
 | `framework`（AgentControl） | `delegate` / `task_status` | 框架级委派与任务状态查询（随任一 Agent 启用生效） |
@@ -396,7 +394,7 @@ vite_dev_port = 60315                               # Vite 开发服务器端口
 1. **API Key 没填**：`config/model.toml` 里 `[[llm_providers]].api_key` 是否仍是 `sk-dummy` 或占位符
 2. **网络问题**：是否能直连 `base_url`；需要代理的话配环境变量 `HTTP_PROXY` / `HTTPS_PROXY`
 3. **配置文件格式错误**：检查 `config/*.toml` 里是否有未配对的引号、缩进是否合法
-4. **采集器缺失依赖**：启用 `stt` / `bili_danmaku_official` / `read_pingmu` 前请先填好对应子配置（id_code / appid / api_key 等）
+4. **采集器缺失依赖**：启用 `stt` / `bili_danmaku_official` 前请先填好对应子配置（id_code / appid / api_key 等）
 
 ## 6. 下一步
 

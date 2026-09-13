@@ -24,7 +24,7 @@
 
 | 部分 | 必填 | 说明 | 示例 |
 |---|---|---|---|
-| `域` | ✅ | **拥有这个事实的来源子系统**（见 §2）：core/live/room/game/perception/rundown/planner/streamer/tts/task | `room` |
+| `域` | ✅ | **拥有这个事实的来源子系统**（见 §2）：core/live/room/game/rundown/planner/streamer/tts/task | `room` |
 | `子类` | 可选 | 该域内的**子层**：`message`（行为流）/ `state`（状态快照）/ `result`（工具结果）/ `command`（命令下发） | `message` |
 | `动作` | ✅ | **已发生的事实**（过去时语义）：具体、单一、无歧义 | `danmaku` |
 
@@ -51,7 +51,6 @@
 | **live** | 直播场次生命周期（开播 / 下播）。**唯一含时间窗锚点**的域，所有 room/game 事件均需携带 `live_session_id` | `live.started` / `live.ended` |
 | **room** | 直播间行为流 / 状态。**子层强制**：行为流走 `.message.*`（已发生事实），状态走 `.state.*`（当前属性快照，预留层） | `room.message.danmaku` / `room.message.gift` / `room.message.super_chat` / `room.message.guard` / `room.message.enter` / `room.message.partner_speech` |
 | **game** | 游戏里程碑 / 异常 / 上报。**低频**，只发重大变化（挖到钻石 / 通关章节 / 安全阀偏差 / 交付总结）。`live_session_id` 为 int 场次主键：发布方不填，由场次盖章拦截器注入 | `game.milestone` / `game.attention_required` / `game.error` / `game.report` |
-| **perception** | 主播感知流（对直播内容的感知：画面描述等）。**不是观众行为、不是房间消息**——不落 `live_chat`，经决策上下文的环境参考进 Planner | `perception.screen` |
 | **rundown** | 流程单（Rundown）状态变更（加载 / 跳转 / 推进 / 暂停 / 恢复）。**单事件 + payload 判别，仅变更即发**，不是周期性状态广播 | `rundown.changed` |
 | **planner** | 主播决策轮记录：轮末一条 `planner.decision`（决策卡数据源）；裁决时刻即时一条 `planner.verdict`（reply 被调用时、表达生成之前） | `planner.decision` / `planner.verdict` |
 | **streamer** | 主播 Agent 管线阶段与发言业务事实：`streamer.stage`（决策管线阶段变化）/ `streamer.speech`（一条发言已生成，与 TTS 启用与否正交） | `streamer.stage` / `streamer.speech` |
@@ -93,7 +92,6 @@
 **当前实现状态**：
 
 - ✅ `room.message.*`（行为流，6 类已实现：danmaku / gift / super_chat / guard / enter / partner_speech）
-- ✅ `perception.screen`（主播视觉感知；不落 live_chat，进决策环境参考）
 - ⏳ `room.state.*`（预留层，当前不实现任何事件；将来若需主动广播订阅的状态变更才会启用，不与行为流平铺同层）
 
 ---
@@ -233,9 +231,6 @@ class CoreEvents:
     GAME_ERROR = "game.error"
     GAME_REPORT = "game.report"
 
-    # Perception 主播感知流
-    PERCEPTION_SCREEN = "perception.screen"
-
     # Rundown 流程单变更（单事件，payload 判别）
     RUNDOWN_CHANGED = "rundown.changed"
 
@@ -261,7 +256,7 @@ class CoreEvents:
     ROOM_MESSAGE_WILDCARD = "room.message.#"
 ```
 
-完整事件清单（25 个具名常量 + 3 个通配占位符）见 [事件系统 - 事件事实表](event-system.md#事件事实表)。
+完整事件清单（24 个具名常量 + 3 个通配占位符）见 [事件系统 - 事件事实表](event-system.md#事件事实表)。
 
 ---
 
@@ -313,7 +308,7 @@ class CoreEvents:
 | 项 | v1 旧规范（阶段化） | v2 新规范（语义域） |
 |---|---|---|
 | 格式 | `{domain}.{entity}.{verb}` | `{域}.{子类(可选)}.{动作}` |
-| 首段 | 阶段（`input` / `decision` / `output` / `core`） | 拥有事实的来源子系统（`core` / `live` / `room` / `game` / `perception` / `rundown` / `planner` / `streamer` / `tts` / `task` + `tool` 通配前缀） |
+| 首段 | 阶段（`input` / `decision` / `output` / `core`） | 拥有事实的来源子系统（`core` / `live` / `room` / `game` / `rundown` / `planner` / `streamer` / `tts` / `task` + `tool` 通配前缀） |
 | 动词链 | `received → generated → dispatched → finished` | **取消**（无阶段流转，用已发生事实） |
 | 层数 | 最多 3 | 最多 4（子类存在时） |
 | 动词 | 带方向性（进 / 决策 / 出） | 已发生事实（完成态、过去时） |

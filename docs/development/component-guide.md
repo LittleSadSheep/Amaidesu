@@ -74,7 +74,7 @@ from src.modules.time_utils import now_ms
 
 
 class MyCollector(BaseCollector):
-    name = "my_collector"  # 与 [tools.perception.config.my_collector] 段名一致
+    name = "my_collector"  # 与 config/collectors.toml 顶层 enabled 列表项 + 子段 [my_collector] 同名
     description = "示例采集器：从外部源 X 采集并 emit room.message.danmaku"
 
     class ConfigSchema(BaseConfig):
@@ -250,11 +250,11 @@ async def asyncio_sleep_ms(ms: int) -> None:
 |------|------|------|
 | ① 放代码 | `src/modules/collectors/<your_name>/<your_name>_collector.py` | 类名 `XxxCollector`，`name = "<注册名>"` |
 | ② 注册工厂 | `src/modules/collectors/factory.py` | 加一行 `if name == "<注册名>":` → `return XxxCollector(config, event_bus)`；同时把 `<注册名>` 加进 `SUPPORTED_COLLECTORS` 元组 |
-| ③ 写配置 | `config/tools.toml` 的 `[tools.perception.config]` | `enabled = ["<注册名>"]` + `[tools.perception.config.<注册名>]` 子段放具体参数 |
+| ③ 写配置 | `config/collectors.toml` | 顶层 `enabled` 加 `"<注册名>"`；同名子段 `[<注册名>]` 放具体参数（由该采集器包内 ConfigSchema 校验） |
 | ④ 启停接口 | 自动接入 | `CollectorManager.enable_collector(name, config, event_bus)` 会走工厂 `instantiate_collector` 实例化；`disable_collector` 停止+移除 |
 | ⑤ Dashboard | 自动可见 | 组件管理页从 `SUPPORTED_COLLECTORS` 拉清单；通过 `src/modules/dashboard/api/components.py` 的 `_sync_enabled_config` 写回 `enabled` 列表 |
 
-**谁调用注册？** `main.py` 的 `_register_collectors_from_config` 在启动装配时遍历 `[tools.perception.config].enabled` 列表逐个 `instantiate_collector` → `CollectorManager.register` → `CollectorManager.start_all`。
+**谁调用注册？** `main.py` 的 `_register_collectors_from_config` 在启动装配时遍历 `collectors.toml` 顶层 `enabled` 列表逐个 `instantiate_collector` → `CollectorManager.register` → `CollectorManager.start_all`；未知名走 warn + 跳过，不 raise。
 
 ### 测试要点
 
@@ -270,7 +270,6 @@ async def asyncio_sleep_ms(ms: int) -> None:
 |------|------|------|
 | ConsoleInputCollector（控制台输入） | `src/modules/collectors/console/console_input_collector.py` | A（子类自开 `_run_input_loop`） |
 | MockCollector（JSONL/Simulator） | `src/modules/collectors/mock/mock_collector.py` | B（走基类 `_start_collect_task`） |
-| ScreenChangeCollector（屏幕变化检测） | `src/modules/collectors/screen/screen_change_collector.py` | A（子类自管后台循环） |
 | STTCollector（语音转文字） | `src/modules/collectors/stt/stt_collector.py` | A |
 | BiliDanmakuCollector（官方/legacy） | `src/modules/collectors/bilibili/{official,legacy}/` | A |
 
@@ -284,7 +283,7 @@ async def asyncio_sleep_ms(ms: int) -> None:
 
 工具的典型形态：
 
-- **公用感知**（如 `look_at_screen`）——任何 Agent 都可能需要，放 `src/modules/tools/<domain>/`
+- **公用感知**（如 `look_at_screen`）——任何 Agent 都可能需要，放 `src/modules/vision/`
 - **Agent 专属推进**（如 `text_adv_choose_option`）——只服务于某个游戏 Agent，放该 Agent 自家包内 `src/agents/<name>/tools.py`
 
 ### 数据契约与协议速览
@@ -388,7 +387,7 @@ registry.register_provider(
 **谁调用注册？**
 
 - **Agent 专属工具**：Agent 子类 `_register_tools()` 方法（参考 `StreamerAgent._register_tools`、`TextAdvGameAgent._register_tools`）。在 Agent `_on_start` 阶段调用。
-- **公用域工具**：装配根按域装配——avatar/studio 分类经 `bind_core_tools(registry, tools_cfg)` 按开关注册，memory 经 `bind_memory_tools`，vision（`look_at_screen`）由组合根注入截图依赖后注册。
+- **公用域工具**：装配根按域装配——avatar/studio 分类经 `bind_core_tools(registry, tools_cfg)` 按开关注册，memory 经 `bind_memory_tools`，vision（`look_at_screen`）由组合根注入 mss 抓屏 + VLM 文本读取后端后注册。
 - **工具注册聚合**：生产路径下不存在任何 manager 级聚合函数——Agent 子类在 `_register_tools()` 中自己 `registry.register_provider(provider, visible_to=...)`；avatar/studio 分类工具由 `main.py` 的 `bind_core_tools(registry, tools_cfg)` 按域开关装配；启动结束后 `audit_tools(registry)` 只做只读审计（声明与注册按派生全名对账），不参与注入。
 
 ### 测试要点
@@ -405,7 +404,7 @@ registry.register_provider(
 | 范例 | 文件 | 形态 |
 |------|------|------|
 | `memory_query_memory`（公用查询，正典样板） | `src/modules/memory/query_tool.py` | 正典路径（`as_tool_impl` + `make_provider_from_specs`） |
-| `vision_look_at_screen`（公用感知） | `src/modules/vision/look_at_screen.py` | 手写 Provider（DI 后端） |
+| `vision_look_at_screen`（公用感知） | `src/modules/vision/look_at_screen.py` | 手写 Provider（DI `ScreenCapture` + `TextReader` 后端；多显示器 + 可选区域 + VLM 转文本；失败降级 success=True + error） |
 | `text_adv_choose_option` / `text_adv_get_story`（Agent 专属） | `src/agents/text_adv/tools.py` | 手写 Provider（`provider="text_adv"`） |
 | `streamer_reply`（主播发言出口，注册 + 名单 `["streamer"]`） | `src/agents/streamer/tools/reply_tool.py` | 手写 Provider（thinking 槽位） |
 | `rundown_control`（动态工具，条件追加例外） | `src/agents/streamer/tools/rundown_tool.py` | 正典路径包装直连执行器 |

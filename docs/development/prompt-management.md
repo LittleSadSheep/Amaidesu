@@ -46,8 +46,8 @@ pm.load_all()
 | `amaidesu_replyer` | `src/agents/streamer/prompts/` | Replyer 回复生成模板（人设注入 + reply 工具调用契约） |
 | `summary_system` | `src/agents/streamer/prompts/` | 后台维护者话题摘要的系统提示词 |
 | `amaidesu_minecraft_agent` | `src/agents/minecraft/prompts/` | MinecraftAgent 系统提示词（事件驱动 ReAct AI 玩家） |
-| `screen_vlm_system` | `src/modules/collectors/screen/prompts/` | 屏幕感知 VLM 的 system message |
-| `screen_vlm_prompt` | `src/modules/collectors/screen/prompts/` | 屏幕感知 VLM 的用户 prompt |
+| `screen_vlm_system` | `src/modules/vision/prompts/` | 屏幕感知 VLM 的 system message |
+| `screen_vlm_prompt` | `src/modules/vision/prompts/` | 屏幕感知 VLM 的用户 prompt |
 | `viewer_message` | `src/modules/simulator/prompts/` | 模拟观众发言生成（常驻人设） |
 | `sc_message` | `src/modules/simulator/prompts/` | SuperChat 付费留言生成 |
 | `passerby_message` | `src/modules/simulator/prompts/` | 路人观众随机弹幕生成（无固定人设） |
@@ -191,11 +191,17 @@ input_config = config_service.get_config_with_defaults(
 ```toml
 # config/agents.toml —— Agent 启用
 [agents]
-enabled = ["streamer"]        # 可选: streamer / game / custom
+enabled = ["streamer"]        # 可选: streamer / minecraft / text_adv
 
-# config/tools.toml —— 工具包启用
-[tools]
-enabled = ["perception", "output"]
+# config/tools.toml —— 工具包启用（按域独立 enabled；如下所示）
+[tools.avatar.vts]
+enabled = false               # 单域提供者开关
+
+[tools.vision]
+enabled = true                # vision_look_at_screen（mss 抓屏 + VLM 转文本）
+
+[tools.memory]
+enabled = true                # memory_query_memory
 ```
 
 每个组件的独立配置节位于对应工具包/Agent 段内（Schema 权威定义见 `src/modules/config/*_schemas.py`，Pydantic Schema 驱动生成/校验/迁移）。

@@ -31,7 +31,7 @@ Amaidesu 采用**发布-订阅（Pub/Sub）模式**构建事件驱动架构，Ev
 ```mermaid
 flowchart LR
     subgraph 世界接入
-        IC[采集器<br/>bilibili / console / screen / stt]
+        IC[采集器<br/>bilibili / console / stt]
     end
 
     subgraph EventBus
@@ -47,7 +47,7 @@ flowchart LR
         OB[EventRecorder（订阅 #） / Broadcaster / Widget]
     end
 
-    IC -->|emit room.message.* / perception.screen| PIPE
+    IC -->|emit room.message.*| PIPE
     PIPE --> FAN
     FAN -->|精确订阅| AG
     FAN -->|订阅 # 全部| OB
@@ -64,7 +64,7 @@ flowchart LR
 |------|----------|------|
 | **EventBus** | `src/modules/events/event_bus.py` | 事件总线核心：emit / on / off、精确 + 通配匹配、拦截器链、统计 |
 | **EventRegistry** | `src/modules/events/registry.py` | `@register_event` 装饰器 + `EVENT_REGISTRY` + 启动一致性硬检查 |
-| **CoreEvents** | `src/modules/events/names.py` | 事件名常量（25 个具名 + 3 个通配占位符） |
+| **CoreEvents** | `src/modules/events/names.py` | 事件名常量（24 个具名 + 3 个通配占位符） |
 | **Payloads** | `src/modules/events/payloads/*.py` | 事件载荷类型（Pydantic，按语义域分包） |
 | **EventInterceptor** | `src/modules/events/interceptors/*.py` | 拦截管道（限流 / 相似过滤 / 场次盖章） |
 | **EventHistoryRecorder** | `src/modules/events/event_recorder.py` | 事件记录器：订阅 `#`（全部事件）写内存环形缓冲 |
@@ -79,7 +79,7 @@ src/modules/events/
 ├── event_history.py      # EventHistoryService（纯内存环形缓冲，运行周期观察窗）
 ├── event_recorder.py     # EventHistoryRecorder（订阅 # 全部事件 → 记录）
 ├── event_type_map.py     # WS 类型名（room.message 折叠例外，唯一非直通映射）
-├── names.py              # CoreEvents 常量（25 具名 + 3 通配占位符）
+├── names.py              # CoreEvents 常量（24 具名 + 3 通配占位符）
 ├── registry.py           # @register_event + EVENT_REGISTRY + ensure_registry_consistency
 ├── interceptors/
 │   ├── base.py           # EventInterceptor 基类（scope_prefixes / priority / intercept）
@@ -95,7 +95,6 @@ src/modules/events/
     ├── live.py           # live.* Payload（LiveStartedPayload / LiveEndedPayload 两类）
     ├── room.py           # room.message.* Payload（一类六注册）
     ├── game.py           # game.* Payload（一类四注册）
-    ├── perception.py     # perception.screen Payload
     ├── rundown.py        # rundown.changed Payload
     ├── tasks.py          # task.changed Payload
     ├── planner.py        # planner.decision / planner.verdict / streamer.stage Payload
@@ -183,7 +182,7 @@ event_bus.reset_stats(event_name=None)
 
 ## 事件事实表与拓扑
 
-> **单一事实源**：本表是 Amaidesu 当前全部 **25 个具名事件 + 3 个通配占位符**的权威定义（与 `CoreEvents` 一致，启动硬检查 `ensure_registry_consistency()` 守护）。任何新增/删除/重命名事件，**必须先修改本表再写代码**。"发布者 / 订阅者"两列即事件拓扑事实；订阅者均含事件记录器（catch-all），表中不再重复标注。
+> **单一事实源**：本表是 Amaidesu 当前全部 **24 个具名事件 + 3 个通配占位符**的权威定义（与 `CoreEvents` 一致，启动硬检查 `ensure_registry_consistency()` 守护）。任何新增/删除/重命名事件，**必须先修改本表再写代码**。"发布者 / 订阅者"两列即事件拓扑事实；订阅者均含事件记录器（catch-all），表中不再重复标注。
 
 | 事件名 | Payload 类 | 发布者 | 订阅者（记录器除外） | 说明 |
 |--------|-----------|--------|--------|------|
@@ -198,7 +197,6 @@ event_bus.reset_stats(event_name=None)
 | `room.message.guard` | `RoomMessagePayload` | bilibili official 采集器（GuardMessage 分支）；console `/guard` 命令 | `StreamerAgent`（付费消息强制进决策轮）；`StorageLedger`（通配 → live_chat，`sender_role="guard"`） | 上舰（舰长/提督/总督，付费消息）；`content` 填人读描述，供下游优先回应 |
 | `room.message.enter` | `RoomMessagePayload` | bilibili 采集器；console 输入；兜底转发 | `DanmakuWidgetService`；`StorageLedger`（enter 行 debug 丢弃，不落库） | 进房；`message_type="enter"`。决策侧不消费 |
 | `room.message.partner_speech` | `RoomMessagePayload` | STT 采集器（联动对象发言） | `StorageLedger`（通配 → live_chat，`sender_role="partner"`，不计观众统计） | 房间里第三个说话者（非弹幕、非主播） |
-| `perception.screen` | `ScreenDescriptionPayload` | 屏幕变化采集器（screen） | `StreamerAgent`（画面描述进 RoomState，经环境参考进决策上下文） | 主播视觉感知；不落 live_chat（避免"屏幕内容当弹幕"污染） |
 | `game.milestone` | `GamePayload` | 游戏 Agent（BaseAgent 事件上报面） | `StreamerAgent`（叙事收集进 Planner 上下文）；`StorageLedger`（订 `game.*` → `game_events` 表） | 游戏重大进展（挖到钻石 / 通关章节）；`event_type="milestone"` |
 | `game.attention_required` | `GamePayload` | 游戏 Agent | 同上 | 安全阀偏差报告（"我先回血再去挖钻石"）；`event_type="attention_required"` |
 | `game.error` | `GamePayload` | 游戏 Agent | 同上 | 游戏异常（主播由此得知命令失败等原因）；`event_type="error"` |
@@ -233,7 +231,7 @@ Dashboard WebSocket 的 `type` 字段 = **事件名直通**；唯一例外是 `r
 | 一类多注册 + 判别字段 | `RoomMessagePayload`（`_DISCRIMINANT_FIELD="message_type"`） | `room.message.*` 六事件 |
 | 一类多注册 + 判别字段 | `GamePayload`（`_DISCRIMINANT_FIELD="event_type"`） | `game.*` 四事件 |
 | 一事件一个类 | `LiveStartedPayload` / `LiveEndedPayload`（字段本就不同） | `live.started` / `live.ended` |
-| 一事件一个类 | `CoreStartupPayload` / `CoreShutdownPayload` / `CoreErrorPayload` / `ScreenDescriptionPayload` / `RundownChangedPayload` / `TaskChangedPayload` / `PlannerDecisionPayload` / `PlannerVerdictPayload` / `StreamerStagePayload` / `StreamerSpeechPayload` | 各自对应 |
+| 一事件一个类 | `CoreStartupPayload` / `CoreShutdownPayload` / `CoreErrorPayload` / `RundownChangedPayload` / `TaskChangedPayload` / `PlannerDecisionPayload` / `PlannerVerdictPayload` / `StreamerStagePayload` / `StreamerSpeechPayload` | 各自对应 |
 | 一事件一个类（形状不同） | `UtteranceStartedPayload` / `UtteranceFinishedPayload` / `UtteranceFailedPayload` | `tts.utterance.*` 三事件 |
 | 不绑定具体名（动态族） | `ToolResultPayload` / `ToolHealthPayload` | `tool.result.<name>` / `tool.health.<name>` |
 | 开放载荷 | `OpenPayload`（`extra="allow"`，保留任意字段） | 无绑定事件；通用消费者（记录器）的 model_class |
@@ -315,7 +313,7 @@ event_bus.get_interceptor_names()            # 已挂载拦截器（按执行顺
 
 **谁可以发布**
 
-- 采集器只发布数据事件（`room.message.*` / `perception.screen`）；下游结果的查询诉求走工具实现——"能挥手吗"可问，"刚才挥手成功了吗"不可问
+- 采集器只发布数据事件（`room.message.*`）；下游结果的查询诉求走工具实现——"能挥手吗"可问，"刚才挥手成功了吗"不可问
 - 工具是被动调用方：执行完成后由 `ToolRegistry` 统一发布 `tool.result.<name>`，工具本体不发布其他事件
 - TTS 引擎是基础模块：只发 `tts.utterance.*`、不订阅任何事件（发布-only）
 - 快照型能力（被调才看）实现为工具，持续流型实现为采集器

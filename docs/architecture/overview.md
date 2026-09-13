@@ -12,7 +12,6 @@ flowchart TB
     subgraph Ext["外部输入"]
         Bili["B 站弹幕<br/>(official WebSocket / legacy)"]
         Cons["控制台"]
-        Screen["屏幕变化"]
         Mic["麦克风 STT"]
     end
 
@@ -21,7 +20,6 @@ flowchart TB
         CBili["BiliOfficial / BiliLegacy"]
         CCons["ConsoleInput"]
         CMic["STT"]
-        CScreen["ScreenChange"]
     end
 
     subgraph Interceptors["[拦截器] 房间消息净化（§1.46.1）"]
@@ -47,7 +45,7 @@ flowchart TB
 
     subgraph Registry["ToolRegistry (src/modules/tools/)"]
         Out["avatar 分类（modules/avatar/）<br/>vts×12 / vrchat×3 / warudo×13<br/>studio 分类（modules/studio/obs/）obs×4"]
-        Per["vision 分类（modules/vision/）<br/>vision_look_at_screen"]
+        Per["vision 分类（modules/vision/）<br/>vision_look_at_screen<br/>(mss 抓屏 + VLM 转文本)"]
         CE["text_adv 动作工具<br/>（agents/text_adv/ 内聚）"]
         Mem["memory 分类<br/>memory_query_memory"]
         Ctrl["framework 分类<br/>framework_delegate / framework_task_status"]
@@ -98,12 +96,11 @@ Amaidesu/
 │       ├── collectors/          # 输入采集域（BaseCollector + CollectorManager + 各域 Collector）
 │       │   ├── bilibili/        #   B 站弹幕（legacy 第三方 / official WebSocket）
 │       │   ├── console/         #   控制台输入
-│       │   ├── screen/          #   屏幕变化
 │       │   └── stt/             #   语音识别
 │       ├── tools/               # 工具语法层（ToolRegistry / ToolSpec / BaseToolProvider / as_tool_impl / bootstrap；零领域知识）
 │       ├── avatar/              # avatar 分类：vts/（VTSProvider + 引擎子件）、vrchat/（OSC 桥接）、warudo/（每形象 = 一 Provider 实例 = 一开关单元）
 │       ├── studio/              # studio 分类：obs/
-│       ├── vision/              # vision 分类：vision_look_at_screen（同步快照工具）+ 屏幕捕获设施
+│       ├── vision/              # vision 分类：vision_look_at_screen（mss 多显示器抓屏 + 可选区域 + VLM 转文本；prompts/ 内聚模板）+ Dashboard 预览端点 + 拖框组件
 │       ├── mcp/                 # MCP 基础模块（外部工具源通道）
 │       ├── events/              # EventBus + 事件拦截器（session_stamp 场次盖章 / rate_limit / similar_filter）
 │       │   ├── interceptors/    #   EventInterceptor 协议 + InterceptorChain
@@ -201,17 +198,16 @@ sequenceDiagram
 
 ## 组件清单
 
-### ① 采集器（5 类）
+### ① 采集器（4 类）
 
 | 名称 | 实现位置 | 模式 | 说明 |
 |------|---------|------|------|
 | `bili_danmaku_official` | `src/modules/collectors/bilibili/official/` | v2 主动推（`_emit_semantic_events=True`，collect 内自行 emit `room.message.*`） | B 站官方 WebSocket 弹幕；含 `client/proto.py` + `client/websocket_client.py` |
 | `bili_danmaku` | `src/modules/collectors/bilibili/legacy/` | v2 主动推（`_emit_semantic_events=True`） | B 站第三方 HTTP API 弹幕 |
 | `console_input` | `src/modules/collectors/console/` | 兜底转发（基类 `_emit_normalized_message` 把 `data_type` 映射为 `room.message.danmaku/gift/super_chat/enter`） | 控制台输入 |
-| `screen_change` | `src/modules/collectors/screen/` | 兜底转发 | 屏幕变化检测（`screen_change_collector.py`）；同目录另有 `screen_reader.py`（v2.0.9 起 VLM 走 LLMManager.chat_vision 收编）+ `screen_analyzer.py` 辅助 |
 | `stt` | `src/modules/collectors/stt/` | 兜底转发 | 语音识别（`stt_collector.py` + `config.py`） |
 
-注：列表实际为 6 条，"5 类"指 5 个采集域（bilibili 拆为 official/legacy）。**采集配置位置在 `tools.toml` 的 `[tools.perception.config]`**——旧版放在独立的采集配置段，已迁移至此。`_register_collectors_from_config` 读 `enabled` 子段逐项 `instantiate_collector` 并注册到 `CollectorManager`。
+注：列表实际为 4 条，"4 类"指 4 个采集域实现（含 bilibili 拆为 official/legacy 两路）。**采集配置位置在 `collectors.toml` 的顶层 `enabled` 列表**，`_register_collectors_from_config` 读 `enabled` 逐项 `instantiate_collector` 并注册到 `CollectorManager`；未知名 collector 走 warn + 跳过（不 raise），已退役采集器对应的历史配置段由 `CollectorsRootConfig.extra="allow"` 容忍加载。
 
 ### ② Agent
 
@@ -258,7 +254,7 @@ sequenceDiagram
 | avatar | `vrchat` | 3 | `vrchat_set_expression` / `vrchat_trigger_gesture` / `vrchat_get_stats` |
 | avatar | `warudo` | 13 | `warudo_set_expression` / `warudo_trigger_hotkey` / `warudo_trigger_body` / `warudo_trigger_head` / `warudo_trigger_action` / `warudo_set_subtitle` / `warudo_throw_fish` / `warudo_set_sight` / `warudo_set_eyebrow` / `warudo_set_eye` / `warudo_set_pupil` / `warudo_set_mouth` / `warudo_get_stats`（动作类工具描述动态携带 `[tools.avatar.warudo.config].action_catalog` 预声明清单） |
 | studio | `obs` | 4 | `obs_send_text` / `obs_switch_scene` / `obs_set_source_visibility` / `obs_send_test` |
-| vision | `vision` | 1 | `vision_look_at_screen`（同步快照工具，注入 `ScreenCapture`/`TextReader` 后端；无后端时返回成功 + 空文本，不抛异常） |
+| vision | `vision` | 1 | `vision_look_at_screen`（多显示器抓屏 + 可选区域 + VLM 转文本 + 失败降级为 success=True + error；mss 后端 + LlmVisionTextReader 异步；Dashboard `/api/v1/vision/monitors` + `/api/v1/vision/preview` 配套预览/拖框） |
 | game | `text_adv` | 2 | `text_adv_choose_option` / `text_adv_get_story`（游戏侧 dispatch，`agents/text_adv/` 内聚） |
 | game | `minecraft` | 4 | `minecraft_todo` / `minecraft_notebook` / `minecraft_get_work_log` / `minecraft_report`（`agents/minecraft/` 内聚；maicraft_* MCP 工具另见 mcp 行） |
 | memory | `memory` | 1 | `memory_query_memory`（绑定 `MemoryProvider` 后才可用） |
