@@ -1,106 +1,86 @@
-"""文字冒险游戏内部状态（内容状态内部自由）
+"""文字冒险游戏 Agent 的内部状态（内存态，不持久化）
 
 状态归属约定：
-- 内容特有状态（剧情节点 / 选项列表 / 历史栈）= Agent 包内部自由
-- 框架**不**为内容状态提供 ORM / 数据库表（仅按 Agent 名字空间隔离状态写入口）
-- 其它 Agent（包括主播 Agent）通过 ``game.*`` 事件或主动 query 工具读
+- 内容特有状态（当前屏文本 / 累积剧情环缓冲 / 最近选项）= Agent 包内部自由
+- 框架不为此提供任何存储表；其它 Agent 经 ``game.*`` 事件或 ``text_adv_get_state``
+  工具读快照，快照形状由 :meth:`TextAdvGameAgentState.to_dict` 唯一定义
 
-本模块实现文字冒险游戏所需的最小状态机：
-- 剧情段（``scene_id`` / ``scene_text``）
-- 选项列表（``options``：id → label）
-- 历史（最近 N 步选择）
-- 上次感知哈希（去重）
+识别文本的重复去重不在这里做——由同包 screen.py 的 text_key（文本指纹）承担，
+状态只负责忠实地记录新屏。
 """
 
 from __future__ import annotations
 
-import hashlib
-from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+import time
+from collections import deque
+from dataclasses import InitVar, dataclass, field
+from typing import Any, Deque, Dict, List, Optional
 
+from src.agents.text_adv.vlm import Option
 
-@dataclass(slots=True)
-class TextAdvOption:
-    """文字冒险游戏的一个可选选项"""
-
-    option_id: str
-    label: str
-    # 选项触发的内容引擎输入（kind + payload）
-    # 简化示例：默认 kind="key" key="enter"（推进剧情）；具体游戏可扩展
-    advance_kind: str = "key"
-    advance_key: str = "enter"
-    advance_payload: Dict[str, Any] = field(default_factory=dict)
+# 环缓冲默认保留屏数（与 agents.toml 的 max_recent_screens 默认一致）
+DEFAULT_MAX_RECENT_SCREENS = 10
 
 
 @dataclass(slots=True)
 class TextAdvGameAgentState:
-    """文字冒险游戏 Agent 内部状态（内容状态内部自由）
+    """文字冒险游戏 Agent 内部状态。
 
     Attributes:
-        scene_id: 当前剧情段 ID
-        scene_text: 当前剧情文本
-        options: 当前可选列表
-        history: 已选历史（每条 = option_id）
-        last_screen_hash: 上次感知到的屏幕文本哈希（去重）
-        last_decision: 上次决策（测试可断言）
+        current_text: 最近一屏识别出的正文文本
+        recent_screens: 累积剧情环缓冲（最近 N 屏文本，超限丢最旧）
+        last_options: 最近一屏识别出的选项列表（复用 vlm.Option）
+        updated_at_ms: 最近一次状态更新的 Unix epoch 毫秒时刻
     """
 
-    scene_id: str = "start"
-    scene_text: str = ""
-    options: List[TextAdvOption] = field(default_factory=list)
-    history: List[str] = field(default_factory=list)
-    last_screen_hash: str = ""
-    last_decision: str = ""
+    # 构造参数：环缓冲容量；InitVar 只进构造，不落为实例字段
+    max_recent_screens: InitVar[int] = DEFAULT_MAX_RECENT_SCREENS
+    current_text: str = ""
+    recent_screens: Deque[str] = field(init=False)
+    last_options: List[Option] = field(default_factory=list)
+    updated_at_ms: int = 0
 
-    # ---- 操作 ----
+    def __post_init__(self, max_recent_screens: int) -> None:
+        self.recent_screens = deque(maxlen=max_recent_screens)
 
-    def apply_screen_text(self, text: str) -> bool:
-        """应用新感知到的屏幕文本；返回是否真有变化（False = 重复跳过）。"""
-        h = hashlib.sha256(text.encode("utf-8")).hexdigest()
-        if h == self.last_screen_hash:
-            return False
-        self.last_screen_hash = h
-        self.scene_text = text
-        return True
+    def record_screen(self, text: str, options: Optional[List[Option]] = None) -> None:
+        """记录一屏新内容：更新当前文本、追加环缓冲、刷新选项与时间戳。
 
-    def set_options(self, options: List[TextAdvOption]) -> None:
-        """更新当前选项（去重保留 id）。"""
-        # 简化：直接替换；生产可保留旧选项 id 映射
-        self.options = list(options)
+        Args:
+            text: 该屏识别出的正文文本
+            options: 该屏识别出的选项列表；None 或空表示无选项屏
+        """
+        self.current_text = text
+        self.recent_screens.append(text)
+        self.last_options = list(options) if options else []
+        self.updated_at_ms = time.time_ns() // 1_000_000
 
-    def pick_default_option(self) -> Optional[TextAdvOption]:
-        """选默认选项（简化策略 = 第一个）。
+    def to_dict(self, *, auto: bool) -> Dict[str, Any]:
+        """导出状态快照，键集恰为 ``{text, options, auto, updated_at_ms}``。
 
-        真实游戏 Agent 可用 LLM 做更聪明选择；本示例使用确定性策略以保证
-        "perception → advance → loop" 在测试环境可断言。
+        ``auto`` 由调用方（Agent）注入——该标志由 Agent 持有，状态对象不自持。
+        options 的 ``index`` 从 1 起编号，与 ``text_adv_choose`` 工具的 1-based
+        序号语义一致。
+
+        Args:
+            auto: Agent 当前是否处于自动观察模式
 
         Returns:
-            选中的选项；无选项时返回 None
+            供 get_state 工具返回的快照字典
         """
-        if not self.options:
-            return None
-        chosen = self.options[0]
-        self.last_decision = chosen.option_id
-        self.history.append(chosen.option_id)
-        return chosen
-
-    def to_dict(self) -> Dict[str, Any]:
-        """导出（测试 / 状态查询）。"""
         return {
-            "scene_id": self.scene_id,
-            "scene_text": self.scene_text,
+            "text": self.current_text,
             "options": [
                 {
-                    "option_id": o.option_id,
-                    "label": o.label,
-                    "advance_kind": o.advance_kind,
-                    "advance_key": o.advance_key,
+                    "index": i + 1,
+                    "label": option.label,
+                    "clickable": option.clickable,
                 }
-                for o in self.options
+                for i, option in enumerate(self.last_options)
             ],
-            "history": list(self.history),
-            "last_decision": self.last_decision,
+            "auto": auto,
+            "updated_at_ms": self.updated_at_ms,
         }
 
 
-__all__ = ["TextAdvOption", "TextAdvGameAgentState"]
+__all__ = ["DEFAULT_MAX_RECENT_SCREENS", "TextAdvGameAgentState"]
