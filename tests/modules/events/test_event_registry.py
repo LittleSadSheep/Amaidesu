@@ -149,5 +149,10 @@ def test_list_all_events_returns_copy():
     assert EventRegistry.is_registered("__test_dummy__") is False
 
 
+# 启动一致性硬检查的测试见 test_registry_consistency.py
+# （EVENT_REGISTRY 填充依赖 payload 模块首次 import 的装饰器执行，
+# 不能与本文件的清空式 fixture 混用）
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v", "-s"])

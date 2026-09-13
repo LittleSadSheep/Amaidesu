@@ -47,6 +47,7 @@ from .live import (
     LiveEndedPayload,
     LiveStartedPayload,
 )
+from .perception import ScreenDescriptionPayload
 from .planner import (
     PlannerBatchItem,
     PlannerDecisionPayload,

@@ -31,6 +31,7 @@ from typing import Callable, Dict, FrozenSet, Optional, Type, TypeVar
 
 from pydantic import BaseModel
 
+from src.modules.events.names import CoreEvents
 from src.modules.logging import get_logger
 
 T = TypeVar("T", bound=Type[BaseModel])
@@ -86,6 +87,28 @@ class _MultiName:
 # 由 @register_event 装饰器填充。
 # Key 是事件名（如 "room.message.danmaku"），Value 是 Pydantic Model 类型。
 EVENT_REGISTRY: Dict[str, Type[BaseModel]] = {}
+
+# 动态事件族登记表：族前缀 → payload 类型。
+# 族内具体事件名（如 "tool.result.<工具名>"）由发布方在 emit 时即时构造，
+# 不进 EVENT_REGISTRY；登记条目供一致性检查（族成员不算多余注册）与文档使用。
+DYNAMIC_EVENT_FAMILIES: Dict[str, Type[BaseModel]] = {}
+
+
+def register_event_family(prefix: str, model_class: Type[BaseModel]) -> None:
+    """
+    登记一个动态事件族（族前缀 + payload 类型）
+
+    动态族的事件名在 emit 时由发布方拼接（如 ``tool.result.<name>``），
+    无法用 ``@register_event`` 逐一注册；此处登记"前缀 → payload 类型"
+    供启动一致性检查与文档检索。
+
+    Args:
+        prefix: 族前缀（以点号结尾，如 ``"tool.result."``）
+        model_class: 该族事件统一使用的 payload 类型
+    """
+    if not prefix.endswith("."):
+        raise ValueError(f"动态族前缀必须以点号结尾: '{prefix}'")
+    DYNAMIC_EVENT_FAMILIES[prefix] = model_class
 
 
 # ==================== 装饰器 API ====================
@@ -222,15 +245,16 @@ def register_core_events() -> None:
     该函数本身不维护任何事件→Payload 映射。Payload 模块一旦被 import，
     其内部的 ``@register_event`` 装饰器即把对应类登记到 :data:`EVENT_REGISTRY`。
 
-    触发各语义域 Payload 模块（live/room/game/rundown/planner 等）的导入，
-    让 ``@register_event`` 装饰器执行；``tool_result`` 模块即使无具体
-    ``@register_event`` 装饰器调用也一并 import 以触发模块级代码。
+    触发各语义域 Payload 模块（live/room/game/perception/rundown/planner 等）
+    的导入，让 ``@register_event`` 装饰器执行；同时登记动态事件族
+    （``tool.result.*`` / ``tool.health.*``）。
     """
     # noqa: F401 —— 仅为触发模块级 @register_event 执行
     from src.modules.events.payloads import (  # noqa: F401
         core as _core_payloads,  # noqa: F401
         game as _game_payloads,  # noqa: F401
         live as _live_payloads,  # noqa: F401
+        perception as _perception_payloads,  # noqa: F401
         planner as _planner_payloads,  # noqa: F401
         room as _room_payloads,  # noqa: F401
         rundown as _rundown_payloads,  # noqa: F401
@@ -240,3 +264,53 @@ def register_core_events() -> None:
         tool_result as _tool_result_payloads,  # noqa: F401
         utterance as _utterance_payloads,  # noqa: F401
     )
+
+    # 动态事件族登记（函数内 import 规避循环：payloads 子模块依赖本模块的
+    # register_event 装饰器）
+    from src.modules.events.payloads.tool_health import ToolHealthPayload
+    from src.modules.events.payloads.tool_result import ToolResultPayload
+
+    register_event_family("tool.result.", ToolResultPayload)
+    register_event_family("tool.health.", ToolHealthPayload)
+
+
+def _named_core_events() -> FrozenSet[str]:
+    """
+    ``CoreEvents`` 定义的具名事件集合（剔除 ``*`` / ``#`` 通配占位符）
+
+    通配占位符（如 ``tool.result.#``）是订阅模式标识，不是被 emit 的具体
+    事件名，不参与注册一致性比对。
+    """
+    return frozenset(name for name in CoreEvents.get_all_events() if "*" not in name and "#" not in name)
+
+
+def ensure_registry_consistency() -> None:
+    """
+    启动硬检查：已注册事件集合必须与 ``CoreEvents`` 定义完全一致
+
+    比对三方集合：
+    - 期望：``CoreEvents`` 定义的具名事件
+    - 已注册：``EVENT_REGISTRY``（由 ``@register_event`` 装饰器填充）
+    - 动态族：``DYNAMIC_EVENT_FAMILIES`` 前缀下的注册名不视为多余
+
+    缺失（定义了事件但没注册 payload）或多余（注册了 CoreEvents 未定义的
+    事件）都视为契约漂移，直接抛错阻止启动。
+
+    Raises:
+        RuntimeError: 集合不一致，消息中列出全部缺失与多余事件名
+    """
+    expected = _named_core_events()
+    registered = set(EVENT_REGISTRY.keys())
+
+    missing = sorted(expected - registered)
+    extra = sorted(
+        name for name in registered - expected if not any(name.startswith(prefix) for prefix in DYNAMIC_EVENT_FAMILIES)
+    )
+
+    if missing or extra:
+        lines = ["事件注册表与 CoreEvents 定义不一致:"]
+        if missing:
+            lines.append(f"  缺失注册: {', '.join(missing)}")
+        if extra:
+            lines.append(f"  多余注册: {', '.join(extra)}")
+        raise RuntimeError("\n".join(lines))
