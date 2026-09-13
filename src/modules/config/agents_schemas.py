@@ -22,7 +22,7 @@
 
 from __future__ import annotations
 
-from typing import List, Literal, Optional
+from typing import List, Literal, Optional, get_args
 
 from pydantic import ConfigDict, Field
 
@@ -38,7 +38,8 @@ from src.modules.config.schemas.base import BaseConfig
 # ---------------------------------------------------------------------------
 
 
-# 顶级 Agent 注册名（与 SUPPORTED_AGENTS 同步；变更时一起改）。
+# 顶级 Agent 注册名（enabled 取值空间与 WebUI 候选名单的唯一来源；
+# 与 factory.SUPPORTED_AGENTS 的一致性由 tests/config/test_agents_schema.py 守住）。
 AgentType = Literal[
     "streamer",  # 主播 Agent（Planner+Replyer）
     "minecraft",  # Minecraft 游戏 Agent
@@ -70,7 +71,8 @@ class AgentsConfig(BaseConfig):
         default_factory=lambda: ["streamer"],
         description="启用的 Agent 列表",
         json_schema_extra={
-            "x-options": ["streamer", "minecraft", "text_adv"],
+            # WebUI 下拉候选从 AgentType 派生，与取值空间同源不漂移
+            "x-options": list(get_args(AgentType)),
         },
     )
 

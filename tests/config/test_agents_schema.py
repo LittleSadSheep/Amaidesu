@@ -151,7 +151,7 @@ class TestJsonSchemaExtra:
         field_info = AgentsConfig.model_fields["enabled"]
         extra = field_info.json_schema_extra or {}
         assert "x-ui-type" not in extra  # 非规范 ui-type 标记已清（T28）
-        assert set(extra.get("x-options", [])) == {"streamer", "minecraft", "text_adv"}
+        assert extra.get("x-options") == list(get_args(AgentType))
 
 
 class TestAgentsConfigRoundTrip:
@@ -169,6 +169,12 @@ class TestAgentsConfigRoundTrip:
 
 
 class TestAgentTypeLiteral:
+    def test_agent_type_matches_supported_agents(self):
+        """双源对齐：AgentType 字面量全集与 factory.SUPPORTED_AGENTS 必须一致。"""
+        from src.modules.agents.factory import SUPPORTED_AGENTS
+
+        assert set(get_args(AgentType)) == set(SUPPORTED_AGENTS)
+
     def test_agent_type_values_flat(self):
         """无分类层：AgentType 即顶级注册名全集，game/custom 已移除。"""
         values = get_args(AgentType)
