@@ -16,9 +16,9 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from src.modules.config.model_schemas import ModelRootConfig, REQUIRED_PROFILE_NAMES
+from src.modules.config.model_schemas import LLMProfilesConfig, ModelRootConfig
 from src.modules.config.multi_file_loader import generate_default_configs, load_config_dir
-from src.modules.llm.client import _client_impls
+from src.modules.llm.clients import _CLIENT_DISPATCH
 from src.modules.llm.manager import LLMManager
 
 
@@ -39,8 +39,8 @@ def loaded_model_config(tmp_path: Path) -> Dict[str, Any]:
 
 class TestScenarioAConfigRetainsSummary:
     def test_model_root_config_requires_summary_profile(self):
-        """ModelRootConfig 必须声明 summary 用途 profile（必填 6 成员之一）。"""
-        assert "summary" in REQUIRED_PROFILE_NAMES
+        """ModelRootConfig 必须声明 summary 用途 profile（封闭集合成员之一）。"""
+        assert "summary" in LLMProfilesConfig.model_fields
         # 模型 schema 中 llm_profiles 字段声明存在
         assert "llm_profiles" in ModelRootConfig.model_fields
 
@@ -107,7 +107,7 @@ class TestScenarioBLLMManagerParsesSummary:
         mock_backend_class = MagicMock(side_effect=_make_instance)
         manager = LLMManager()
 
-        with patch.dict(_client_impls, {"openai": mock_backend_class}):
+        with patch.dict(_CLIENT_DISPATCH, {"openai": mock_backend_class}):
             with patch("src.modules.llm.clients.token_usage_manager.TokenUsageManager"):
                 await manager.setup(loaded_model_config)
                 yield manager, created_instances, mock_backend_class

@@ -42,7 +42,7 @@ from src.modules.config.agents_schemas import AgentsRootConfig
 from src.modules.config.collectors_schemas import CollectorsRootConfig
 from src.modules.config.tools_schemas import ToolsRootConfig
 from src.modules.config.errors import ConfigValidationError
-from src.modules.config.model_schemas import REQUIRED_PROFILE_NAMES, ModelConfig, ModelRootConfig
+from src.modules.config.model_schemas import LLMProfilesConfig, ModelConfig, ModelRootConfig
 from src.modules.config.storage_schemas import StorageRootConfig
 from src.modules.config.infra_schemas import InfraRootConfig
 from src.modules.config.self_write_guard import mark_self_write
@@ -476,25 +476,30 @@ def _validate_collectors_sections(
         root_instance.__pydantic_extra__[name] = sub_instance.model_dump()
 
 
-def _validate_required_llm_profiles(instance: BaseConfig) -> None:
-    """``[llm_profiles]`` 必填 6 成员校验（加载期，缺失即硬错）"""
-    profiles = getattr(instance, "llm_profiles", None)
-    if not isinstance(profiles, dict):
+def _validate_llm_profiles_closed_set(raw_data: dict[str, Any]) -> None:
+    """``[llm_profiles]`` 封闭集合校验（加载期，未知用途即硬错）。
+
+    成员清单的权威源是 ``LLMProfilesConfig`` 的显式字段集合；"缺"由字段
+    缺省种子保证（漂移写回自动补齐），无需显式必填清单。未知键在漂移
+    剥离之前先于原始数据上检查，保证硬错并指出未知键。
+    """
+    raw_profiles = raw_data.get("llm_profiles")
+    if raw_profiles is None:
         return
-    missing = [name for name in REQUIRED_PROFILE_NAMES if name not in profiles]
-    if missing:
+    if not isinstance(raw_profiles, dict):
         raise ConfigValidationError(
             "model.toml",
             "llm_profiles",
-            f"缺少必填用途 profile：{missing}（必填 6 成员：{list(REQUIRED_PROFILE_NAMES)}）",
+            f"期望 TOML 表（dict），实际 {type(raw_profiles).__name__}",
         )
-    for name in REQUIRED_PROFILE_NAMES:
-        if not profiles[name].model_list:
-            raise ConfigValidationError(
-                "model.toml",
-                f"llm_profiles.{name}.model_list",
-                "model_list 为空（至少引用 1 个模型名）",
-            )
+    known = set(LLMProfilesConfig.model_fields)
+    unknown = sorted(set(raw_profiles) - known)
+    if unknown:
+        raise ConfigValidationError(
+            "model.toml",
+            "llm_profiles",
+            f"未知用途 profile：{unknown}（封闭集合：{sorted(known)}）",
+        )
 
 
 def _validate_file(file_name: str, raw_data: dict[str, Any]) -> tuple[BaseConfig, DriftReport]:
@@ -518,7 +523,7 @@ def _validate_file(file_name: str, raw_data: dict[str, Any]) -> tuple[BaseConfig
     if isinstance(instance, CollectorsRootConfig):
         _validate_collectors_sections(instance, report)
     if isinstance(instance, ModelRootConfig):
-        _validate_required_llm_profiles(instance)
+        _validate_llm_profiles_closed_set(raw_data)
     return instance, report
 
 

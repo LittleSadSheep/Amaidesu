@@ -18,9 +18,10 @@ from json_repair import repair_json
 from openai import AsyncOpenAI
 from PIL import Image
 
-from src.modules.llm.client import BaseLLMClient, LLMResponse, register_client
+from src.modules.llm.client import BaseLLMClient, LLMResponse
 from src.modules.llm.clients.openai.compat import build_openai_compatible_client_config
 from src.modules.llm.interrupt import await_with_timeout_and_interrupt
+from src.modules.llm.payload import GenerateRequest, ImagePart, Message, Response, TextPart, ToolCall, ToolSpec, Usage
 from src.modules.llm.reasoning import ReasoningParseMode, parse_reasoning
 from src.modules.logging import get_logger
 
@@ -49,10 +50,6 @@ class OpenAIClient(BaseLLMClient):
         self.max_tokens = config.get("max_tokens")
         self.temperature = config.get("temperature", 0.2)
         self.logger.info(f"OpenAI 客户端初始化完成 (端点: {client_config.base_url})")
-
-    @classmethod
-    def client_type_name(cls) -> str:
-        return "openai"
 
     def _infer_mime_from_bytes(self, data: bytes) -> str:
         """根据图片字节推断 MIME 类型，默认 image/png"""
@@ -125,6 +122,124 @@ class OpenAIClient(BaseLLMClient):
                     }
                 )
         return normalized
+
+    # === 中立 payload 契约（Engine 入口）：payload ↔ OpenAI 协议形状的双向翻译 ===
+
+    @staticmethod
+    def _part_to_openai(part: Any) -> Dict[str, Any]:
+        """单个中立片段 → OpenAI content 片段（文本直出，图像转 image_url）"""
+        if isinstance(part, TextPart) or (isinstance(part, dict) and part.get("type") == "text"):
+            text = part.text if isinstance(part, TextPart) else part.get("text", "")
+            return {"type": "text", "text": text}
+        if isinstance(part, ImagePart):
+            return {"type": "image_url", "image_url": {"url": part.image}}
+        raise TypeError(f"未知的消息片段类型: {type(part).__name__}")
+
+    @classmethod
+    def _message_to_openai(cls, message: Message) -> Dict[str, Any]:
+        """中立 Message → OpenAI 消息 dict（纯文本折叠为字符串 content）"""
+        contents = [cls._part_to_openai(p) for p in message.parts]
+        if contents and all(c["type"] == "text" for c in contents):
+            content: Any = "".join(c["text"] for c in contents)
+        else:
+            content = contents
+        return {"role": message.role, "content": content}
+
+    @classmethod
+    def _request_to_openai_messages(cls, request: GenerateRequest) -> List[Dict[str, Any]]:
+        """GenerateRequest → OpenAI messages 列表（system 置于首条）"""
+        messages: List[Dict[str, Any]] = []
+        if request.system:
+            messages.append({"role": "system", "content": request.system})
+        messages.extend(cls._message_to_openai(m) for m in request.messages)
+        return messages
+
+    @staticmethod
+    def _tool_spec_to_openai(spec: ToolSpec) -> Dict[str, Any]:
+        """中立 ToolSpec → 项目内扁平工具定义（chat 内再做 OpenAI 协议包装）"""
+        return {"name": spec.name, "description": spec.description, "parameters": spec.parameters}
+
+    @staticmethod
+    def _usage_to_payload(usage: Optional[Dict[str, int]]) -> Optional[Usage]:
+        """遗留 usage dict → 中立 Usage（缓存键缺省视为未上报）"""
+        if usage is None:
+            return None
+        return Usage(
+            prompt_tokens=usage.get("prompt_tokens", 0),
+            completion_tokens=usage.get("completion_tokens", 0),
+            total_tokens=usage.get("total_tokens", 0),
+            cache_hit_tokens=usage.get("cache_hit_tokens"),
+            cache_miss_tokens=usage.get("cache_miss_tokens"),
+        )
+
+    @classmethod
+    def _to_payload_response(cls, result: LLMResponse) -> Response:
+        """遗留 LLMResponse → 中立 payload.Response（含 tool_calls 形状转换）"""
+        tool_calls = [
+            ToolCall(
+                id=tc.get("id", ""),
+                name=tc.get("function", {}).get("name", ""),
+                arguments=tc.get("function", {}).get("arguments", {}),
+            )
+            for tc in (result.tool_calls or [])
+            if isinstance(tc, dict)
+        ]
+        return Response(
+            success=result.success,
+            content=result.content,
+            tool_calls=tool_calls,
+            usage=cls._usage_to_payload(result.usage),
+            model=result.model,
+            reasoning_content=result.reasoning_content,
+            error=result.error,
+            request_id=result.request_id,
+        )
+
+    async def generate(
+        self,
+        request: GenerateRequest,
+        *,
+        model: str,
+        temperature: Optional[float] = None,
+        max_tokens: Optional[int] = None,
+        on_delta: Optional[Callable[[str, str], None]] = None,
+        interrupt_flag: Optional[asyncio.Event] = None,
+    ) -> Response:
+        """中立契约聊天请求：payload → OpenAI 协议翻译后复用既有 chat 能力。
+
+        生成参数以 Engine 传入的 profile 档位优先，请求内字段兜底。
+        """
+        tools = [self._tool_spec_to_openai(t) for t in request.tools] or None
+        result = await self.chat(
+            self._request_to_openai_messages(request),
+            model=model,
+            temperature=temperature if temperature is not None else request.temperature,
+            max_tokens=max_tokens if max_tokens is not None else request.max_tokens,
+            tools=tools,
+            interrupt_flag=interrupt_flag,
+            on_delta=on_delta,
+        )
+        return self._to_payload_response(result)
+
+    async def generate_vision(
+        self,
+        request: GenerateRequest,
+        images: List[Union[str, bytes]],
+        *,
+        model: str,
+        temperature: Optional[float] = None,
+        max_tokens: Optional[int] = None,
+        interrupt_flag: Optional[asyncio.Event] = None,
+    ) -> Response:
+        """中立契约视觉请求：payload → OpenAI 协议翻译后复用既有 vision 能力。"""
+        result = await self.vision(
+            self._request_to_openai_messages(request),
+            images,
+            model=model,
+            temperature=temperature if temperature is not None else request.temperature,
+            max_tokens=max_tokens if max_tokens is not None else request.max_tokens,
+        )
+        return self._to_payload_response(result)
 
     async def chat(
         self,
@@ -428,6 +543,3 @@ class OpenAIClient(BaseLLMClient):
             "model": self.config.get("model"),
             "base_url": self.config.get("base_url"),
         }
-
-
-register_client("openai", OpenAIClient)

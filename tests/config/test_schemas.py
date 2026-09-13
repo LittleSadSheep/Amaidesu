@@ -17,7 +17,7 @@ TestCoreConfig 类已删除——旧断言所依赖的 CoreConfig 聚合形态�
 本文件保留 TestModelConfig 与新 TestStreamerPersonaConfig 等迁移后的断言。
 """
 
-from src.modules.config.model_schemas import REQUIRED_PROFILE_NAMES, ModelConfig
+from src.modules.config.model_schemas import LLMProfilesConfig, ModelConfig
 from src.agents.streamer.config import StreamerPersonaConfig
 from src.agents.streamer.config import StreamerContextConfig
 
@@ -34,9 +34,7 @@ class TestStreamerPersonaConfig:
         assert p.bot_name == "麦麦"
         assert p.personality == "活泼开朗，有些调皮，喜欢和观众互动"
         assert p.style_constraints == "口语化，使用网络流行语，避免机械式回复，适当使用emoji"
-        assert p.behavior_style.startswith("积极与观众互动"), (
-            "behavior_style 默认文本与权威定义漂移，请回归草稿 §11"
-        )
+        assert p.behavior_style.startswith("积极与观众互动"), "behavior_style 默认文本与权威定义漂移，请回归草稿 §11"
         assert p.audience_salutation == "大家"
 
     def test_behavior_style_non_empty(self):
@@ -77,12 +75,12 @@ class TestModelConfig:
         assert len(m.llm_providers) >= 1
         assert len(m.llm_models) == 1
         assert m.llm_models[0].name == "default"
-        assert set(m.llm_profiles.keys()) == set(REQUIRED_PROFILE_NAMES)
-        for profile in m.llm_profiles.values():
-            assert profile.model_list == ["default"]
+        assert set(m.llm_profiles.model_dump().keys()) == set(LLMProfilesConfig.model_fields)
+        for profile in m.llm_profiles.model_dump().values():
+            assert profile["model_list"] == ["default"]
         # 用途档位抽样：planner 决策稳（0.7），simulator 表达活（0.9）
-        assert m.llm_profiles["planner"].temperature == 0.7
-        assert m.llm_profiles["simulator"].temperature == 0.9
+        assert m.llm_profiles.planner.temperature == 0.7
+        assert m.llm_profiles.simulator.temperature == 0.9
 
     def test_no_hardcoded_real_keys(self):
         """provider.api_key 默认空字符串（无硬编码真实密钥）"""
@@ -91,7 +89,14 @@ class TestModelConfig:
         assert provider.api_key == "", "provider.api_key should be empty string by default"
 
     def test_required_profile_names_exposed(self):
-        """必填 profile 成员清单常量暴露，供加载期校验调用"""
-        from src.modules.config.model_schemas import REQUIRED_PROFILE_NAMES
+        """llm_profiles 封闭集合：显式字段成员固定为六用途"""
+        from src.modules.config.model_schemas import LLMProfilesConfig
 
-        assert REQUIRED_PROFILE_NAMES == ("planner", "replyer", "summary", "minecraft", "vision", "simulator")
+        assert tuple(LLMProfilesConfig.model_fields) == (
+            "planner",
+            "replyer",
+            "summary",
+            "minecraft",
+            "vision",
+            "simulator",
+        )

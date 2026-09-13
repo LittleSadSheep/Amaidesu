@@ -26,17 +26,6 @@ from src.modules.config.file_meta import FileMetaConfig
 from src.modules.config.schemas.base import BaseConfig
 
 
-# 必填 profile 成员清单（供 T18 加载期校验调用）
-REQUIRED_PROFILE_NAMES: tuple[str, ...] = (
-    "planner",
-    "replyer",
-    "summary",
-    "minecraft",
-    "vision",
-    "simulator",
-)
-
-
 class LLMProviderConfig(BaseConfig):
     """API 提供商配置（``[[llm_providers]]`` 表条目）
 
@@ -176,22 +165,53 @@ class LLMProfileConfig(BaseConfig):
     )
 
 
-def _default_llm_profiles() -> dict[str, "LLMProfileConfig"]:
-    """六用途 profile 的缺省种子（用途名 → 用途化默认参数）。
+_PROFILE_PRESETS: dict[str, dict[str, Any]] = {
+    "planner": {"hard_timeout_ms": 90_000, "slow_threshold_ms": 15_000, "temperature": 0.7, "max_tokens": 4096},
+    "replyer": {"hard_timeout_ms": 60_000, "slow_threshold_ms": 8_000, "temperature": 0.2, "max_tokens": 2048},
+    "summary": {"hard_timeout_ms": 180_000, "slow_threshold_ms": 30_000, "temperature": 0.3, "max_tokens": 2048},
+    "minecraft": {"hard_timeout_ms": 180_000, "slow_threshold_ms": 15_000, "temperature": 0.2, "max_tokens": 4096},
+    "vision": {"hard_timeout_ms": 60_000, "slow_threshold_ms": 10_000, "temperature": 0.3, "max_tokens": 1024},
+    "simulator": {"hard_timeout_ms": 60_000, "slow_threshold_ms": 15_000, "temperature": 0.9, "max_tokens": 1024},
+}
 
-    用途档位在全新安装即可用：每个 profile 缺省引用模型注册表的
-    ``default`` 条目；温度/超时按用途取值（决策稳、表达活、摘要缓、
-    游戏稳、视觉快、模拟活）。
+
+def _seed_profile(name: str) -> LLMProfileConfig:
+    """按用途档位构造 profile 缺省种子（缺省引用模型注册表的 default 条目）"""
+    return LLMProfileConfig(model_list=["default"], **_PROFILE_PRESETS[name])
+
+
+class LLMProfilesConfig(BaseConfig):
+    """``[llm_profiles]`` 封闭用途集合
+
+    用途集合是显式封闭的：成员由本模型的六个字段定义，``extra="forbid"``
+    拒绝未知键（配置加载期硬错）；"缺"由字段缺省种子保证（全新安装
+    六用途即可用），不依赖加载期的显式必填清单校验。
     """
-    presets: dict[str, dict[str, Any]] = {
-        "planner": {"hard_timeout_ms": 90_000, "slow_threshold_ms": 15_000, "temperature": 0.7, "max_tokens": 4096},
-        "replyer": {"hard_timeout_ms": 60_000, "slow_threshold_ms": 8_000, "temperature": 0.2, "max_tokens": 2048},
-        "summary": {"hard_timeout_ms": 180_000, "slow_threshold_ms": 30_000, "temperature": 0.3, "max_tokens": 2048},
-        "minecraft": {"hard_timeout_ms": 180_000, "slow_threshold_ms": 15_000, "temperature": 0.2, "max_tokens": 4096},
-        "vision": {"hard_timeout_ms": 60_000, "slow_threshold_ms": 10_000, "temperature": 0.3, "max_tokens": 1024},
-        "simulator": {"hard_timeout_ms": 60_000, "slow_threshold_ms": 15_000, "temperature": 0.9, "max_tokens": 1024},
-    }
-    return {name: LLMProfileConfig(model_list=["default"], **override) for name, override in presets.items()}
+
+    planner: LLMProfileConfig = Field(
+        default_factory=lambda: _seed_profile("planner"),
+        description="决策 profile（思考与工具编排，温度偏高）",
+    )
+    replyer: LLMProfileConfig = Field(
+        default_factory=lambda: _seed_profile("replyer"),
+        description="表达 profile（主播回复生成，低温稳定）",
+    )
+    summary: LLMProfileConfig = Field(
+        default_factory=lambda: _seed_profile("summary"),
+        description="摘要 profile（话题总结，长超时）",
+    )
+    minecraft: LLMProfileConfig = Field(
+        default_factory=lambda: _seed_profile("minecraft"),
+        description="游戏 Agent profile（Minecraft 决策循环）",
+    )
+    vision: LLMProfileConfig = Field(
+        default_factory=lambda: _seed_profile("vision"),
+        description="视觉 profile（屏幕/图像理解，少 token）",
+    )
+    simulator: LLMProfileConfig = Field(
+        default_factory=lambda: _seed_profile("simulator"),
+        description="模拟 profile（虚拟用户消息生成，高温活跃）",
+    )
 
 
 class ModelRootConfig(BaseConfig):
@@ -216,9 +236,9 @@ class ModelRootConfig(BaseConfig):
         default_factory=lambda: [LLMModelConfig()],
         description="模型注册表（被 llm_profiles.model_list 引用）",
     )
-    llm_profiles: dict[str, LLMProfileConfig] = Field(
-        default_factory=_default_llm_profiles,
-        description=("用途 profile 字典（必填 6 成员：planner / replyer / summary / minecraft / vision / simulator）"),
+    llm_profiles: LLMProfilesConfig = Field(
+        default_factory=LLMProfilesConfig,
+        description=("用途 profile 封闭集合（planner / replyer / summary / minecraft / vision / simulator）"),
         json_schema_extra={"x-ui-type": "object"},
     )
 
@@ -246,9 +266,9 @@ class ModelRootConfig(BaseConfig):
                     f"未在 llm_providers 中找到（可用：{sorted(valid_provider_names)}）"
                 )
 
-        # profile.model_list 引用校验
-        for profile_name, profile_cfg in self.llm_profiles.items():
-            for model_name in profile_cfg.model_list:
+        # profile.model_list 引用校验（封闭集合容器 dump 为 用途名 → profile 配置 dict）
+        for profile_name, profile_cfg in self.llm_profiles.model_dump().items():
+            for model_name in profile_cfg["model_list"]:
                 if model_name not in valid_model_names:
                     raise ValueError(
                         f"llm_profiles[{profile_name!r}].model_list 含未知模型 "
@@ -259,11 +279,11 @@ class ModelRootConfig(BaseConfig):
 
 
 __all__ = [
-    "REQUIRED_PROFILE_NAMES",
     "LLMProviderConfig",
     "LLMModelConfig",
     "LLMSelectionStrategy",
     "LLMProfileConfig",
+    "LLMProfilesConfig",
     "ModelRootConfig",
     # 向后兼容别名：旧测试 / 旧引用仍可访问 ModelConfig
     "ModelConfig",

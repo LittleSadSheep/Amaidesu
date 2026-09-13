@@ -18,28 +18,30 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from pydantic import BaseModel, Field
 
+from src.modules.config.model_schemas import LLMProfilesConfig
 from src.modules.llm.clients import get_client_impl
 from src.modules.logging import get_logger
 
 __all__ = [
     "ClientType",
     "ProfileNames",
+    "KNOWN_PROFILE_NAMES",
     "_ResolvedModel",
     "_ResolvedProfile",
     "build_resolved_profile",
     "index_models",
     "register_providers",
     "resolve_profile_name",
+    "validate_profile_binding",
 ]
 
 
 class ProfileNames:
     """用途 profile 命名常量（与 ``model.toml`` 中 ``[llm_profiles.<name>]`` 一一对应）。
 
-    旧版 client_type 命名（llm / llm_fast / vlm / llm_local / llm_summary /
-    llm_agenda）已废弃——新结构按"用途"分（planner / replyer / summary /
-    minecraft / vision / simulator），由装配层在 setup 期从
-    ``config["llm_profiles"]`` 读取实例化清单，本常量仅作字面量共享。
+    profile 集合是封闭集合：权威成员清单由配置 schema 的
+    ``LLMProfilesConfig`` 显式字段定义（见 :data:`KNOWN_PROFILE_NAMES`），
+    未知用途在配置加载与装配期一律硬错。本常量仅作字面量共享。
     """
 
     PLANNER = "planner"
@@ -49,14 +51,22 @@ class ProfileNames:
     VISION = "vision"
     SIMULATOR = "simulator"
 
-    ALL: Tuple[str, ...] = (PLANNER, REPLYER, SUMMARY, MINECRAFT, VISION, SIMULATOR)
-
     # 默认 profile（向后兼容调用方未显式指定 client_type 场景）
     DEFAULT = PLANNER
 
-    @classmethod
-    def is_valid(cls, name: str) -> bool:
-        return name in cls.ALL
+
+# 封闭 profile 集合的运行期权威源 = 配置 schema 容器的显式字段名集合。
+KNOWN_PROFILE_NAMES: frozenset[str] = frozenset(LLMProfilesConfig.model_fields)
+
+
+def validate_profile_binding(profile_name: str) -> None:
+    """校验组件声明的 profile 存在于封闭集合；未知 profile 硬错。
+
+    消费方（planner / replyer 等）声明自己绑定的 profile 时调用本函数，
+    声明错误在装配期暴露，不允许静默兜底。
+    """
+    if profile_name not in KNOWN_PROFILE_NAMES:
+        raise ValueError(f"未知的 LLM 用途 profile: {profile_name!r}（封闭集合：{sorted(KNOWN_PROFILE_NAMES)}）")
 
 
 # 向后兼容别名：旧测试 / 旧代码可能引用 ``ClientType``；语义已收敛到 ProfileNames

@@ -121,7 +121,9 @@ async def test_stream_chat_interrupt():
     stream.__aiter__.side_effect = chunks
     sdk_client.chat.completions.create.return_value = stream
 
-    pieces = [piece async for piece in client.stream_chat(MESSAGES, model="test-model", max_tokens=88, stop_event=stop_event)]
+    pieces = [
+        piece async for piece in client.stream_chat(MESSAGES, model="test-model", max_tokens=88, stop_event=stop_event)
+    ]
 
     assert pieces == ["first"]
     assert sdk_client.chat.completions.create.await_args.kwargs["max_tokens"] == 88
@@ -158,7 +160,9 @@ async def test_tool_calls():
     )
     sdk_client.chat.completions.create.return_value = _response(tool_calls=[tool_call])
 
-    result = await client.chat(MESSAGES, model="test-model", tools=[{"type": "function", "function": {"name": "weather"}}])
+    result = await client.chat(
+        MESSAGES, model="test-model", tools=[{"type": "function", "function": {"name": "weather"}}]
+    )
 
     assert result.tool_calls == [
         {
@@ -291,7 +295,6 @@ def test_base_url_normalization():
         client = OpenAIClient({"api_key": "secret", "base_url": "localhost:8080/v1///", "model": "info-model"})
 
     assert openai_class.call_args.kwargs["base_url"] == "http://localhost:8080/v1"
-    assert client.client_type_name() == "openai"
     assert client.get_info() == {
         "name": "OpenAIClient",
         "model": "info-model",

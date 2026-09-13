@@ -23,7 +23,7 @@ import asyncio
 import random
 import time
 import uuid
-from typing import Any, AsyncIterator, Callable, Dict, List, Optional, Tuple
+from typing import Any, AsyncIterator, Callable, Dict, List, Optional, Tuple, Union
 
 from pydantic import BaseModel
 
@@ -34,9 +34,11 @@ from src.modules.llm.bootstrap import (
     index_models,
     register_providers,
     resolve_profile_name,
+    validate_profile_binding,
 )
 from src.modules.llm.client import LLMResponse
 from src.modules.llm.clients import resolve_client_method
+from src.modules.llm.payload import GenerateRequest, ImagePart, Message, Response, TextPart, ToolCall, ToolSpec, Usage
 from src.modules.logging import get_logger
 from src.modules.storage.repos import LLMRepo
 
@@ -49,6 +51,157 @@ class RetryConfig(BaseModel):
     max_retries: int = 3
     base_delay: float = 1.0
     max_delay: float = 10.0
+
+
+# === 契约归一化与新旧响应适配（Engine 的固定职责：消费方输入 → payload → Client）===
+
+_PAYLOAD_METHODS = frozenset({"generate", "generate_vision"})
+"""走中立 payload 契约的客户端能力名（Client 返回 payload.Response）。"""
+
+
+def _content_to_parts(content: Any) -> List[Any]:
+    """OpenAI 风格 content（str / 分段列表）→ 中立 parts 列表"""
+    if isinstance(content, str):
+        return [content]
+    if not isinstance(content, list):
+        raise TypeError(f"不支持的消息 content 类型: {type(content).__name__}")
+    parts: List[Any] = []
+    for piece in content:
+        if isinstance(piece, str):
+            parts.append(piece)
+        elif isinstance(piece, dict) and piece.get("type") == "text":
+            parts.append(TextPart(text=str(piece.get("text", ""))))
+        elif isinstance(piece, dict) and piece.get("type") == "image_url":
+            image_url = piece.get("image_url")
+            url = image_url.get("url", "") if isinstance(image_url, dict) else str(image_url or "")
+            parts.append(ImagePart(image=url))
+        else:
+            raise TypeError(f"不支持的消息 content 片段: {type(piece).__name__}")
+    return parts
+
+
+def _normalize_generate_input(
+    input: Any,
+    *,
+    system: Optional[str],
+    tools: Optional[List[Any]],
+    temperature: Optional[float],
+    max_tokens: Optional[int],
+) -> GenerateRequest:
+    """消费方输入（str 或 OpenAI 风格 dict 列表或 Message 列表）→ 中立请求。
+
+    dict 列表里的 system 消息折叠进请求的独立 system 参数（各厂商对
+    system 的承载位置不同，由适配端翻译）。
+    """
+    messages: List[Message] = []
+    system_texts: List[str] = []
+    if isinstance(input, str):
+        messages.append(Message(role="user", parts=[input]))
+    elif isinstance(input, list):
+        for item in input:
+            if isinstance(item, Message):
+                messages.append(item)
+            elif isinstance(item, dict):
+                role = str(item.get("role", "user"))
+                content = item.get("content", "")
+                if role == "system":
+                    parts = _content_to_parts(content)
+                    system_texts.append("".join(p if isinstance(p, str) else (p.text or "") for p in parts))
+                    continue
+                if role not in ("user", "assistant", "tool"):
+                    raise ValueError(f"不支持的消息 role: {role!r}")
+                messages.append(Message(role=role, parts=_content_to_parts(content)))
+            else:
+                raise TypeError(f"不支持的消息类型: {type(item).__name__}")
+    else:
+        raise TypeError(f"不支持的输入类型: {type(input).__name__}")
+
+    merged_system = "\n\n".join(([system] if system else []) + system_texts) or None
+    tool_specs: List[ToolSpec] = []
+    for tool in tools or []:
+        if isinstance(tool, ToolSpec):
+            tool_specs.append(tool)
+        elif isinstance(tool, dict):
+            tool_specs.append(
+                ToolSpec(
+                    name=str(tool.get("name", "")),
+                    description=str(tool.get("description", "")),
+                    parameters=tool.get("parameters") or {},
+                )
+            )
+        else:
+            raise TypeError(f"不支持的 tools 元素类型: {type(tool).__name__}")
+
+    return GenerateRequest(
+        messages=messages,
+        system=merged_system,
+        tools=tool_specs,
+        temperature=temperature,
+        max_tokens=max_tokens,
+    )
+
+
+def _payload_response_to_legacy(resp: Response) -> LLMResponse:
+    """payload.Response → 遗留 LLMResponse（记账/请求历史链路仍消费遗留形状）"""
+    return LLMResponse(
+        success=resp.success,
+        content=resp.content,
+        model=resp.model,
+        usage=(
+            {
+                k: v
+                for k, v in {
+                    "prompt_tokens": resp.usage.prompt_tokens,
+                    "completion_tokens": resp.usage.completion_tokens,
+                    "total_tokens": resp.usage.total_tokens,
+                    "cache_hit_tokens": resp.usage.cache_hit_tokens,
+                    "cache_miss_tokens": resp.usage.cache_miss_tokens,
+                }.items()
+                if v is not None
+            }
+            if resp.usage is not None
+            else None
+        ),
+        tool_calls=[
+            {"id": tc.id, "type": "function", "function": {"name": tc.name, "arguments": tc.arguments}}
+            for tc in resp.tool_calls
+        ],
+        reasoning_content=resp.reasoning_content,
+        error=resp.error,
+        request_id=resp.request_id,
+    )
+
+
+def _legacy_response_to_payload(result: LLMResponse) -> Response:
+    """遗留 LLMResponse → payload.Response（Engine 对外统一返回中立形状）"""
+    tool_calls = [
+        ToolCall(
+            id=tc.get("id", ""),
+            name=tc.get("function", {}).get("name", ""),
+            arguments=tc.get("function", {}).get("arguments", {}),
+        )
+        for tc in (result.tool_calls or [])
+        if isinstance(tc, dict)
+    ]
+    usage = None
+    if result.usage is not None:
+        usage = Usage(
+            prompt_tokens=result.usage.get("prompt_tokens", 0),
+            completion_tokens=result.usage.get("completion_tokens", 0),
+            total_tokens=result.usage.get("total_tokens", 0),
+            cache_hit_tokens=result.usage.get("cache_hit_tokens"),
+            cache_miss_tokens=result.usage.get("cache_miss_tokens"),
+        )
+    return Response(
+        success=result.success,
+        content=result.content,
+        tool_calls=tool_calls,
+        usage=usage,
+        model=result.model,
+        reasoning_content=result.reasoning_content,
+        error=result.error,
+        request_id=result.request_id,
+    )
 
 
 class LLMManager:
@@ -149,9 +302,10 @@ class LLMManager:
         self._providers, self._provider_clients = register_providers(provider_configs, self.logger)
         self._models = index_models(config.get("llm_models") or [], self._providers)
 
-        # 解析 llm_profiles 快照
+        # 解析 llm_profiles 快照（封闭集合校验：未知用途在装配期硬错）
         profile_configs = config.get("llm_profiles") or {}
         for pname, pcfg in profile_configs.items():
+            validate_profile_binding(pname)
             self._profiles[pname] = build_resolved_profile(pname, pcfg, self._models)
             self._profile_call_counts[pname] = 0
             self._model_call_counts[pname] = {}
@@ -181,7 +335,70 @@ class LLMManager:
             f"LLMManager 初始化完成，providers: {list(self._providers.keys())}, profiles: {list(self._profiles.keys())}"
         )
 
-    # === 公共 API：chat / chat_messages / chat_vision / stream_chat / call_tools / simple_*
+    # === 公共 API：generate / generate_vision（冻结的两个对外入口）
+
+    async def generate(
+        self,
+        input: Union[str, List[Union[Message, Dict[str, Any]]]],
+        *,
+        profile: Optional[str] = None,
+        system: Optional[str] = None,
+        tools: Optional[List[Union[ToolSpec, Dict[str, Any]]]] = None,
+        temperature: Optional[float] = None,
+        max_tokens: Optional[int] = None,
+        on_delta: Optional[Callable[[str, str], None]] = None,
+        interrupt: Optional[asyncio.Event] = None,
+    ) -> Response:
+        """执行一次 LLM 调用（对外唯一文本入口，返回中立 payload.Response）。
+
+        签名宽是刻意的容错设计：``input`` 接受裸字符串（单轮用户消息）、
+        中立 ``Message`` 列表或 OpenAI 风格 dict 列表——Engine 统一归一化
+        到 payload 再调度，消费方不必为迁就契约改自己的输入形状。
+        ``temperature`` / ``max_tokens`` 缺省时回退 profile 档位。
+        """
+        profile_name = self._resolve_profile_name(profile)
+        request = _normalize_generate_input(
+            input, system=system, tools=tools, temperature=temperature, max_tokens=max_tokens
+        )
+        result = await self._call_with_failover(
+            profile_name,
+            method="generate",
+            request=request,
+            on_delta=on_delta,
+            interrupt_flag=interrupt,
+        )
+        return _legacy_response_to_payload(result)
+
+    async def generate_vision(
+        self,
+        prompt: str,
+        images: List[Any],
+        *,
+        profile: Optional[str] = None,
+        system: Optional[str] = None,
+        interrupt: Optional[asyncio.Event] = None,
+    ) -> Response:
+        """执行一次视觉调用（对外唯一视觉入口，返回中立 payload.Response）。
+
+        签名宽是刻意的容错设计：``images`` 接受路径 / URL / 原始字节的
+        混合列表，具体编码方式由适配端按厂商协议翻译。
+        ``profile`` 缺省走 vision 档位。
+        """
+        if profile is None:
+            profile_name = ProfileNames.VISION
+        else:
+            profile_name = self._resolve_profile_name(profile)
+        request = _normalize_generate_input(prompt, system=system, tools=None, temperature=None, max_tokens=None)
+        result = await self._call_with_failover(
+            profile_name,
+            method="generate_vision",
+            request=request,
+            images=images,
+            interrupt_flag=interrupt,
+        )
+        return _legacy_response_to_payload(result)
+
+    # === 公共 API（遗留，过渡期保留）：chat / chat_messages / chat_vision / stream_chat / call_tools / simple_*
 
     async def chat(
         self,
@@ -584,6 +801,10 @@ class LLMManager:
                 # 能力解析走 clients 调度表，不在引擎层对客户端做 getattr 动态分派
                 method_func = resolve_client_method(client, method)
                 response = await method_func(**call_kwargs)
+                if method in _PAYLOAD_METHODS:
+                    # 中立 payload 契约路径：Client 返回 payload.Response，
+                    # 记账/请求历史链路仍消费遗留形状，此处统一适配
+                    response = _payload_response_to_legacy(response)
                 attempt_elapsed_ms = int((time.time() - attempt_start) * 1000)
                 if attempt_elapsed_ms >= slow_threshold_ms:
                     self.logger.warning(
@@ -718,11 +939,15 @@ class LLMManager:
             model_name = result.model or "unknown"
 
             request_params = {
-                "messages": kwargs.get("messages", []),
+                "messages": kwargs.get("messages"),
                 "temperature": kwargs.get("temperature"),
                 "max_tokens": kwargs.get("max_tokens"),
                 "tools": kwargs.get("tools"),
             }
+            if request_params["messages"] is None and kwargs.get("request") is not None:
+                # 中立 payload 契约路径：消息以 GenerateRequest 承载
+                request_params["messages"] = [m.model_dump() for m in kwargs["request"].messages]
+                request_params["tools"] = [t.model_dump() for t in kwargs["request"].tools] or None
             request_params = {k: v for k, v in request_params.items() if v is not None}
 
             usage = None

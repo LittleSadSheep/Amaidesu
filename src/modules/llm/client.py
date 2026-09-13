@@ -1,24 +1,33 @@
-"""LLM 客户端抽象、共享响应模型与客户端注册表。
+"""LLM 客户端抽象与遗留共享响应模型。
 
-引擎与各厂商适配端共同依赖的最小接口面放在这里，使两端可以互不 import。
-响应模型 ``LLMResponse`` 暂居此处（引擎与客户端共享的契约类型），
-中立 payload 模块就位后迁往 ``payload.py``。
+Client 接口（Engine↔Client 契约）采用中立 payload：客户端接受
+``GenerateRequest``、返回 ``payload.Response``。实现类在
+``clients/<vendor>/`` 中注册到 ``clients`` 包的调度表（显式字典），
+本模块不再承载任何注册表机制。
+
+``LLMResponse`` 是遗留响应形状（消费方与既有测试尚未迁移），由
+Engine 在新旧契约之间做双向适配；其退役随消费方迁移逐步完成。
 """
 
 from __future__ import annotations
 
 import abc
-import asyncio
-from typing import Any, AsyncIterator, Callable, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
-OnDeltaCallback = Callable[[str, str], None]
+from src.modules.llm.payload import GenerateRequest, Response
+
+OnDeltaCallback = Any
 """流式增量回调：(kind, text_delta)，kind ∈ {"reasoning", "content"}。"""
 
 
 class LLMResponse(BaseModel):
-    """LLM 响应结果"""
+    """LLM 响应结果（遗留形状）
+
+    旧入口（``chat`` / ``chat_messages`` 等）与既有消费方仍依赖此形状；
+    新入口统一返回 ``payload.Response``。两者之间的转换由 Engine 负责。
+    """
 
     success: bool
     content: Optional[str] = None
@@ -33,14 +42,14 @@ class LLMResponse(BaseModel):
 
 
 class BaseLLMClient(abc.ABC):
-    """LLM 客户端的最小统一接口。
-
-    新的实现只需继承此类，实现必要的抽象方法后调用
-    :func:`register_client` 完成注册即可。
+    """LLM 客户端的最小统一接口（中立 payload 契约）。
 
     设计约定：客户端按 provider 维度共享（一个 provider 一个连接实例），
-    model 由调用方每次请求显式传入——LLMManager 按 ``llm_profiles.<name>``
+    model 由调用方每次请求显式传入——Engine 按 ``llm_profiles.<name>``
     的 ``model_list`` 做选择与故障切换。
+
+    实现类经 ``clients`` 包的显式调度表接入（新增厂商 = 新增
+    ``clients/<vendor>/`` 目录 + 调度表追加一行），本模块不做注册。
     """
 
     def __init__(self, config: Dict[str, Any]):
@@ -48,71 +57,39 @@ class BaseLLMClient(abc.ABC):
         self.config = config
 
     @abc.abstractmethod
-    async def chat(
+    async def generate(
         self,
-        messages: List[Dict[str, Any]],
+        request: GenerateRequest,
         *,
         model: str,
         temperature: Optional[float] = None,
         max_tokens: Optional[int] = None,
-        tools: Optional[List[Dict[str, Any]]] = None,
-        interrupt_flag: Optional[asyncio.Event] = None,
         on_delta: Optional[OnDeltaCallback] = None,
-    ) -> LLMResponse:
-        """执行一次聊天请求。
+        interrupt_flag: Optional[Any] = None,
+    ) -> Response:
+        """执行一次聊天请求（中立契约）。
 
-        ``model`` 必填：客户端不持有默认模型，由 LLMManager 按 profile 选定后传入。
+        ``model`` 必填：客户端不持有默认模型，由 Engine 按 profile 选定后传入。
+        ``temperature`` / ``max_tokens`` 为 Engine 按 profile 档位填充的生成参数，
+        请求内同名字段缺省时生效。
         ``on_delta`` 非 None 时实现方应走流式传输并逐帧回调增量，
-        最终仍返回完整 LLMResponse（传输层流式、语义层整段）。
+        最终仍返回完整 Response（传输层流式、语义层整段）。
         """
         raise NotImplementedError
 
-    @abc.abstractmethod
-    async def stream_chat(
+    async def generate_vision(
         self,
-        messages: List[Dict[str, Any]],
+        request: GenerateRequest,
+        images: List[Any],
         *,
         model: str,
         temperature: Optional[float] = None,
         max_tokens: Optional[int] = None,
-        stop_event: Optional[asyncio.Event] = None,
-        interrupt_flag: Optional[asyncio.Event] = None,
-    ) -> AsyncIterator[str]:
-        """执行一次流式聊天（model 必填）。"""
-        raise NotImplementedError
-
-    async def vision(
-        self,
-        messages: List[Dict[str, Any]],
-        images: List[Union[str, bytes]],
-        *,
-        model: str,
-        temperature: Optional[float] = None,
-        max_tokens: Optional[int] = None,
-    ) -> LLMResponse:
-        """执行视觉请求；不支持时由默认实现明确报告。model 必填。"""
-        raise NotImplementedError
+        interrupt_flag: Optional[Any] = None,
+    ) -> Response:
+        """执行视觉请求（中立契约）；不支持时由默认实现明确报告。model 必填。"""
+        raise NotImplementedError("该客户端不支持视觉请求")
 
     async def cleanup(self) -> None:
         """释放客户端资源；默认无需执行任何操作。"""
         return None
-
-    @classmethod
-    def client_type_name(cls) -> str:
-        """返回客户端实现的注册标识。"""
-        return "unknown"
-
-
-_client_impls: dict[str, type[BaseLLMClient]] = {}
-
-
-def register_client(client_type: str, impl: type[BaseLLMClient]) -> None:
-    """注册客户端实现。"""
-    _client_impls[client_type] = impl
-
-
-def get_client_impl(client_type: str) -> type[BaseLLMClient]:
-    """按类型获取已注册的客户端实现。"""
-    if client_type not in _client_impls:
-        raise ValueError(f"未注册的客户端类型: {client_type}")
-    return _client_impls[client_type]

@@ -62,12 +62,12 @@ class TestSchemaFormat:
         assert parsed["className"] == "ModelRootConfig"
 
     def test_nested_drilldown_present(self):
-        """嵌套 BaseConfig 字段展开进 nested（如 llm_providers 列表的元素类型）；
-        dict[str, 子模型] 容器字段不展开（生成器契约：自由键容器按 object 下发）"""
+        """嵌套 BaseConfig 字段展开进 nested（llm_providers 列表元素与
+        llm_profiles 封闭集合容器均为具型子模型）"""
         schema = _generate(ModelRootConfig)
         assert "nested" in schema
         assert "llm_providers" in schema["nested"]
-        assert "llm_profiles" not in schema["nested"]
+        assert "llm_profiles" in schema["nested"]
 
 
 # ===========================================================================

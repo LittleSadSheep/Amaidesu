@@ -28,15 +28,14 @@
 
 === Mock 策略 ===
 
-client 实现通过 src.modules.llm.clients.base.register_client() 在模块导入
-时注册到 _client_impls 字典，注册时存的是原始类对象的引用，
-不是通过模块属性查找。
+client 实现在 src.modules.llm.clients._CLIENT_DISPATCH 显式调度表中登记，
+调度表持有的是类对象引用，不是通过模块属性查找。
 
-因此 `patch("src.modules.llm.clients.openai_client.OpenAIClient")` 不能拦截
+因此 `patch("src.modules.llm.clients.openai.client.OpenAIClient")` 不能拦截
 manager 内部 `get_client_impl("openai")` 的查询——它会拿到未 patch 的原类。
 
-正确的 mock 方式是 patch 注册表：
-    with patch.dict(_client_impls, {"openai": mock_class}):
+正确的 mock 方式是 patch 调度表：
+    with patch.dict(_CLIENT_DISPATCH, {"openai": mock_class}):
         ...
 """
 
@@ -46,7 +45,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from src.modules.llm.client import _client_impls
+from src.modules.llm.clients import _CLIENT_DISPATCH as _CLIENT_DISPATCH
 from src.modules.llm.manager import (
     ClientType,  # 向后兼容别名
     LLMManager,
@@ -172,7 +171,7 @@ async def setup_llm_manager(llm_manager: LLMManager, mock_config: Dict[str, Any]
     mock_backend = _make_mock_backend()
     mock_backend_class = MagicMock(return_value=mock_backend)
 
-    with patch.dict(_client_impls, {"openai": mock_backend_class}):
+    with patch.dict(_CLIENT_DISPATCH, {"openai": mock_backend_class}):
         with patch("src.modules.llm.clients.token_usage_manager.TokenUsageManager") as mock_token_manager:
             await llm_manager.setup(mock_config)
             yield llm_manager, mock_backend, mock_token_manager
@@ -184,13 +183,11 @@ async def setup_llm_manager(llm_manager: LLMManager, mock_config: Dict[str, Any]
 
 
 @pytest.mark.asyncio
-async def test_setup_initializes_providers_and_profiles(
-    llm_manager: LLMManager, mock_config: Dict[str, Any]
-):
+async def test_setup_initializes_providers_and_profiles(llm_manager: LLMManager, mock_config: Dict[str, Any]):
     """测试 setup 初始化 providers / models / profiles"""
     mock_backend_class = MagicMock(return_value=_make_mock_backend())
 
-    with patch.dict(_client_impls, {"openai": mock_backend_class}):
+    with patch.dict(_CLIENT_DISPATCH, {"openai": mock_backend_class}):
         with patch("src.modules.llm.clients.token_usage_manager.TokenUsageManager"):
             await llm_manager.setup(mock_config)
 
@@ -205,13 +202,11 @@ async def test_setup_initializes_providers_and_profiles(
 
 
 @pytest.mark.asyncio
-async def test_setup_initializes_token_manager(
-    llm_manager: LLMManager, mock_config: Dict[str, Any]
-):
+async def test_setup_initializes_token_manager(llm_manager: LLMManager, mock_config: Dict[str, Any]):
     """测试 setup 初始化 TokenUsageManager"""
     mock_backend_class = MagicMock(return_value=_make_mock_backend())
 
-    with patch.dict(_client_impls, {"openai": mock_backend_class}):
+    with patch.dict(_CLIENT_DISPATCH, {"openai": mock_backend_class}):
         with patch("src.modules.llm.clients.token_usage_manager.TokenUsageManager") as mock_token_manager:
             await llm_manager.setup(mock_config)
 
@@ -239,7 +234,7 @@ async def test_setup_with_custom_config(llm_manager: LLMManager):
     }
 
     mock_backend_class = MagicMock(return_value=MagicMock())
-    with patch.dict(_client_impls, {"openai": mock_backend_class}):
+    with patch.dict(_CLIENT_DISPATCH, {"openai": mock_backend_class}):
         with patch("src.modules.llm.clients.token_usage_manager.TokenUsageManager"):
             await llm_manager.setup(config)
 
@@ -279,7 +274,7 @@ async def test_setup_unknown_provider_in_model_raises_error(llm_manager: LLMMana
         "llm_profiles": {"planner": {"model_list": ["m1"]}},
     }
 
-    with patch.dict(_client_impls, {"openai": mock_backend_class}):
+    with patch.dict(_CLIENT_DISPATCH, {"openai": mock_backend_class}):
         with pytest.raises(ValueError, match="llm_models"):
             await llm_manager.setup(config)
 
@@ -299,7 +294,7 @@ async def test_setup_duplicate_provider_name_raises_error(llm_manager: LLMManage
         "llm_profiles": {"planner": {"model_list": ["m1"]}},
     }
 
-    with patch.dict(_client_impls, {"openai": mock_backend_class}):
+    with patch.dict(_CLIENT_DISPATCH, {"openai": mock_backend_class}):
         with pytest.raises(ValueError, match="重复的 provider name"):
             await llm_manager.setup(config)
 
@@ -326,7 +321,7 @@ async def test_setup_profile_references_unknown_model_raises_error(llm_manager: 
         "llm_profiles": {"planner": {"model_list": ["nonexistent"]}},
     }
 
-    with patch.dict(_client_impls, {"openai": mock_backend_class}):
+    with patch.dict(_CLIENT_DISPATCH, {"openai": mock_backend_class}):
         with pytest.raises(ValueError, match="引用未知 model"):
             await llm_manager.setup(config)
 
@@ -341,7 +336,7 @@ async def test_setup_profile_empty_model_list_raises_error(llm_manager: LLMManag
         "llm_profiles": {"planner": {"model_list": []}},
     }
 
-    with patch.dict(_client_impls, {"openai": mock_backend_class}):
+    with patch.dict(_CLIENT_DISPATCH, {"openai": mock_backend_class}):
         with pytest.raises(ValueError, match="model_list 为空"):
             await llm_manager.setup(config)
 
@@ -464,7 +459,7 @@ async def test_stream_chat_basic(llm_manager: LLMManager, mock_config: Dict[str,
     mock_backend.stream_chat = mock_stream
     mock_backend.get_info.return_value = {"name": "OpenAIClient"}
 
-    with patch.dict(_client_impls, {"openai": MagicMock(return_value=mock_backend)}):
+    with patch.dict(_CLIENT_DISPATCH, {"openai": MagicMock(return_value=mock_backend)}):
         with patch("src.modules.llm.clients.token_usage_manager.TokenUsageManager"):
             await llm_manager.setup(mock_config)
 
@@ -487,7 +482,7 @@ async def test_stream_chat_with_stop_event(llm_manager: LLMManager, mock_config:
     mock_backend = MagicMock()
     mock_backend.stream_chat = mock_stream
 
-    with patch.dict(_client_impls, {"openai": MagicMock(return_value=mock_backend)}):
+    with patch.dict(_CLIENT_DISPATCH, {"openai": MagicMock(return_value=mock_backend)}):
         with patch("src.modules.llm.clients.token_usage_manager.TokenUsageManager"):
             await llm_manager.setup(mock_config)
 
@@ -689,7 +684,7 @@ async def test_retry_on_failure(llm_manager: LLMManager, mock_config: Dict[str, 
     mock_backend.chat = failing_chat
     mock_backend.get_info.return_value = {"name": "OpenAIClient"}
 
-    with patch.dict(_client_impls, {"openai": MagicMock(return_value=mock_backend)}):
+    with patch.dict(_CLIENT_DISPATCH, {"openai": MagicMock(return_value=mock_backend)}):
         with patch("src.modules.llm.clients.token_usage_manager.TokenUsageManager"):
             await llm_manager.setup(mock_config)
 
@@ -710,7 +705,7 @@ async def test_retry_exhaustion(llm_manager: LLMManager, mock_config: Dict[str, 
     mock_backend.chat = always_failing_chat
     mock_backend.get_info.return_value = {"name": "OpenAIBackend"}
 
-    with patch.dict(_client_impls, {"openai": MagicMock(return_value=mock_backend)}):
+    with patch.dict(_CLIENT_DISPATCH, {"openai": MagicMock(return_value=mock_backend)}):
         with patch("src.modules.llm.clients.token_usage_manager.TokenUsageManager"):
             await llm_manager.setup(mock_config)
 
@@ -736,7 +731,7 @@ async def test_retry_with_custom_config(llm_manager: LLMManager, mock_config: Di
     mock_backend.chat = failing_chat
     mock_backend.get_info.return_value = {"name": "OpenAIClient"}
 
-    with patch.dict(_client_impls, {"openai": MagicMock(return_value=mock_backend)}):
+    with patch.dict(_CLIENT_DISPATCH, {"openai": MagicMock(return_value=mock_backend)}):
         with patch("src.modules.llm.clients.token_usage_manager.TokenUsageManager"):
             await llm_manager.setup(mock_config)
 
@@ -773,7 +768,7 @@ async def test_sequential_strategy_uses_first_model(llm_manager: LLMManager):
         },
     }
     mock_backend = _make_mock_backend()
-    with patch.dict(_client_impls, {"openai": MagicMock(return_value=mock_backend)}):
+    with patch.dict(_CLIENT_DISPATCH, {"openai": MagicMock(return_value=mock_backend)}):
         with patch("src.modules.llm.clients.token_usage_manager.TokenUsageManager"):
             await llm_manager.setup(config)
 
@@ -802,7 +797,7 @@ async def test_balance_strategy_picks_least_used(llm_manager: LLMManager):
         },
     }
     mock_backend = _make_mock_backend()
-    with patch.dict(_client_impls, {"openai": MagicMock(return_value=mock_backend)}):
+    with patch.dict(_CLIENT_DISPATCH, {"openai": MagicMock(return_value=mock_backend)}):
         with patch("src.modules.llm.clients.token_usage_manager.TokenUsageManager"):
             await llm_manager.setup(config)
 
@@ -838,13 +833,13 @@ async def test_random_strategy_with_seed(llm_manager: LLMManager):
     }
     mock_backend1 = _make_mock_backend()
     mock_backend2 = _make_mock_backend()
-    with patch.dict(_client_impls, {"openai": MagicMock(return_value=mock_backend1)}):
+    with patch.dict(_CLIENT_DISPATCH, {"openai": MagicMock(return_value=mock_backend1)}):
         with patch("src.modules.llm.clients.token_usage_manager.TokenUsageManager"):
             await llm_manager.setup(config)
             await llm_manager.chat("Test", client_type="planner")
             chosen_1 = mock_backend1.chat.call_args[1]["model"]
 
-    with patch.dict(_client_impls, {"openai": MagicMock(return_value=mock_backend2)}):
+    with patch.dict(_CLIENT_DISPATCH, {"openai": MagicMock(return_value=mock_backend2)}):
         with patch("src.modules.llm.clients.token_usage_manager.TokenUsageManager"):
             await llm_manager.setup(config)
             await llm_manager.chat("Test", client_type="planner")
@@ -914,7 +909,7 @@ async def test_failover_advances_to_second_model_on_timeout(llm_manager: LLMMana
     mock_backend.chat = flaky_chat
     mock_backend.get_info.return_value = {"name": "OpenAIClient"}
 
-    with patch.dict(_client_impls, {"openai": MagicMock(return_value=mock_backend)}):
+    with patch.dict(_CLIENT_DISPATCH, {"openai": MagicMock(return_value=mock_backend)}):
         with patch("src.modules.llm.clients.token_usage_manager.TokenUsageManager"):
             await llm_manager.setup(config)
 
@@ -951,7 +946,7 @@ async def test_failover_all_models_fail_returns_error_listing_all(llm_manager: L
     mock_backend.chat = always_fail
     mock_backend.get_info.return_value = {"name": "OpenAIClient"}
 
-    with patch.dict(_client_impls, {"openai": MagicMock(return_value=mock_backend)}):
+    with patch.dict(_CLIENT_DISPATCH, {"openai": MagicMock(return_value=mock_backend)}):
         with patch("src.modules.llm.clients.token_usage_manager.TokenUsageManager"):
             await llm_manager.setup(config)
 
@@ -1000,7 +995,7 @@ async def test_slow_threshold_warns_but_does_not_switch(llm_manager: LLMManager)
     mock_backend.chat = AsyncMock(side_effect=slow_but_succeed)
     mock_backend.get_info.return_value = {"name": "OpenAIClient"}
 
-    with patch.dict(_client_impls, {"openai": MagicMock(return_value=mock_backend)}):
+    with patch.dict(_CLIENT_DISPATCH, {"openai": MagicMock(return_value=mock_backend)}):
         with patch("src.modules.llm.clients.token_usage_manager.TokenUsageManager"):
             await llm_manager.setup(config)
             response = await llm_manager.chat("Test", client_type="planner")
@@ -1058,7 +1053,7 @@ async def test_get_client_info(setup_llm_manager):
 async def test_get_client_config_returns_profile_runtime(llm_manager: LLMManager, mock_config: Dict[str, Any]):
     """测试 get_client_config 返回 profile 运行时视图"""
     mock_backend = _make_mock_backend()
-    with patch.dict(_client_impls, {"openai": MagicMock(return_value=mock_backend)}):
+    with patch.dict(_CLIENT_DISPATCH, {"openai": MagicMock(return_value=mock_backend)}):
         with patch("src.modules.llm.clients.token_usage_manager.TokenUsageManager"):
             await llm_manager.setup(mock_config)
 
@@ -1140,7 +1135,7 @@ async def test_cleanup_all_providers(llm_manager: LLMManager):
         mb.get_info.return_value = {"name": "OpenAIClient"}
         mock_backends.append(mb)
 
-    with patch.dict(_client_impls, {"openai": MagicMock(side_effect=mock_backends)}):
+    with patch.dict(_CLIENT_DISPATCH, {"openai": MagicMock(side_effect=mock_backends)}):
         with patch("src.modules.llm.clients.token_usage_manager.TokenUsageManager"):
             await llm_manager.setup(config)
             assert len(llm_manager._provider_clients) == 3
@@ -1183,7 +1178,7 @@ async def test_cleanup_handles_provider_errors(llm_manager: LLMManager):
         },
     }
 
-    with patch.dict(_client_impls, {"openai": MagicMock(side_effect=[mock_backend1, mock_backend2])}):
+    with patch.dict(_CLIENT_DISPATCH, {"openai": MagicMock(side_effect=[mock_backend1, mock_backend2])}):
         with patch("src.modules.llm.clients.token_usage_manager.TokenUsageManager"):
             await llm_manager.setup(config)
 
@@ -1200,7 +1195,7 @@ async def test_cleanup_dedups_shared_provider(llm_manager: LLMManager, mock_conf
     mock_backend.cleanup = AsyncMock()
     mock_backend.get_info.return_value = {"name": "OpenAIClient"}
 
-    with patch.dict(_client_impls, {"openai": MagicMock(return_value=mock_backend)}):
+    with patch.dict(_CLIENT_DISPATCH, {"openai": MagicMock(return_value=mock_backend)}):
         with patch("src.modules.llm.clients.token_usage_manager.TokenUsageManager"):
             await llm_manager.setup(mock_config)
             # 3 个 profile 共享同一 provider 客户端
@@ -1246,12 +1241,10 @@ async def test_build_messages_with_system(setup_llm_manager):
 
 
 @pytest.mark.asyncio
-async def test_multiple_profiles_share_same_provider_client(
-    llm_manager: LLMManager, mock_config: Dict[str, Any]
-):
+async def test_multiple_profiles_share_same_provider_client(llm_manager: LLMManager, mock_config: Dict[str, Any]):
     """3 个 profile 共享同一 provider 客户端实例"""
     mock_backend = _make_mock_backend()
-    with patch.dict(_client_impls, {"openai": MagicMock(return_value=mock_backend)}):
+    with patch.dict(_CLIENT_DISPATCH, {"openai": MagicMock(return_value=mock_backend)}):
         with patch("src.modules.llm.clients.token_usage_manager.TokenUsageManager"):
             await llm_manager.setup(mock_config)
 
@@ -1281,7 +1274,7 @@ async def test_multiple_independent_providers_create_separate_clients(llm_manage
     mock_backend2 = _make_mock_backend()
 
     with patch.dict(
-        _client_impls,
+        _CLIENT_DISPATCH,
         {"openai": MagicMock(side_effect=[mock_backend1, mock_backend2])},
     ):
         with patch("src.modules.llm.clients.token_usage_manager.TokenUsageManager"):
@@ -1362,18 +1355,27 @@ def test_llm_response_error_case():
 
 
 def test_profile_names_includes_all_six_purposes():
-    assert "planner" in ProfileNames.ALL
-    assert "replyer" in ProfileNames.ALL
-    assert "summary" in ProfileNames.ALL
-    assert "minecraft" in ProfileNames.ALL
-    assert "vision" in ProfileNames.ALL
-    assert "simulator" in ProfileNames.ALL
+    """六个用途命名常量与封闭集合权威源（配置 schema 字段）一致"""
+    from src.modules.llm.bootstrap import KNOWN_PROFILE_NAMES
+
+    assert KNOWN_PROFILE_NAMES == {
+        ProfileNames.PLANNER,
+        ProfileNames.REPLYER,
+        ProfileNames.SUMMARY,
+        ProfileNames.MINECRAFT,
+        ProfileNames.VISION,
+        ProfileNames.SIMULATOR,
+    }
 
 
-def test_profile_names_is_valid():
-    assert ProfileNames.is_valid("planner") is True
-    assert ProfileNames.is_valid("vision") is True
-    assert ProfileNames.is_valid("unknown") is False
+def test_validate_profile_binding_rejects_unknown():
+    """封闭集合校验：未知 profile 声明在装配期硬错"""
+    from src.modules.llm.bootstrap import validate_profile_binding
+
+    assert validate_profile_binding("planner") is None
+    assert validate_profile_binding("vision") is None
+    with pytest.raises(ValueError, match="unknown"):
+        validate_profile_binding("unknown")
 
 
 def test_client_type_alias_points_to_profile_names():
