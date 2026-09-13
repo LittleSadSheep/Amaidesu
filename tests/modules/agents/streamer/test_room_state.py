@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
 
 from src.agents.streamer.room_state import (
     HEAT_HIGH_THRESHOLD_MPS,
@@ -49,7 +48,12 @@ class TestRoomStateUpdate:
         assert rs.last_speech_ms is None
         rs.record_speech(now_ms=5_000)
         assert rs.last_speech_ms == 5_000
-        assert rs.speech_count == 1
+
+    def test_total_message_count_accumulates_across_trim(self) -> None:
+        rs = RoomState()
+        rs.update(_FakeMsg("hi"), now_ms=1_000)
+        rs.update(_FakeMsg("hi again"), now_ms=HEAT_WINDOW_MS + 10_000)
+        assert rs.total_message_count == 2
 
 
 class TestRoomStateScQueue:

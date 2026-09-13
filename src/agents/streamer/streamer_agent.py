@@ -988,10 +988,12 @@ class StreamerAgent(BaseAgent):
         }
         result["reply_to_message_id"] = outcome.get("reply_to")
         result["silent_reason"] = outcome.get("silent_reason")
+        result["reply_duration_ms"] = int(outcome.get("reply_duration_ms", 0) or 0)
 
-        # 未说话（自然终止/超步/LLM 失败）——静默收场
+        # 未说话（自然终止/超步/LLM 失败/reply 工具失败）——静默收场
         if not outcome.get("replied"):
             self._total_no_action += 1
+            self._replyer_failures += int(outcome.get("reply_failures", 0) or 0)
             if outcome.get("error"):
                 self._planner_failures += 1
                 result["error"] = f"planner_failed: {outcome['error']}"

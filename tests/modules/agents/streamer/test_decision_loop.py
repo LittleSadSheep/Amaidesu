@@ -24,9 +24,10 @@ from src.modules.events.payloads.room import RoomMessagePayload, RoomMessageUser
 from src.modules.events.event_bus import EventBus
 from src.modules.events.names import CoreEvents
 from src.modules.llm.manager import LLMResponse
-from src.modules.tools import ToolRegistry, ToolInvocation
+from src.modules.tools import ToolRegistry
 from src.modules.events.payloads.live import LiveEndedPayload, LiveStartedPayload
 from src.modules.events.payloads.planner import PlannerDecisionPayload, StreamerStagePayload
+
 
 def _make_payload(text: str = "主播好可爱") -> RoomMessagePayload:
     return RoomMessagePayload(
@@ -40,13 +41,16 @@ def _make_payload(text: str = "主播好可爱") -> RoomMessagePayload:
 # LLMResponse 工厂（Planner ReAct：chat_messages 完整形态 / Replyer：call_tools）
 # ---------------------------------------------------------------------------
 
+
 def _planner_tool_call(name: str, args: dict, call_id: str = "call_p1") -> dict:
     """构造 Planner 的完整 OpenAI 形态 tool_call。"""
     return {"id": call_id, "type": "function", "function": {"name": name, "arguments": args}}
 
+
 def _planner_react_response(tool_calls: list) -> LLMResponse:
     """构造 Planner 的 chat_messages 响应（完整 tool_calls；空列表 = 自然终止）。"""
     return LLMResponse(success=True, content="", tool_calls=tool_calls)
+
 
 def _replyer_response(speech: str, emotion: str = "happy", actions: list | None = None) -> LLMResponse:
     """构造 Replyer 的 call_tools 响应（tool_calls[0] = reply）。"""
@@ -66,13 +70,16 @@ def _replyer_response(speech: str, emotion: str = "happy", actions: list | None 
             )
     return LLMResponse(success=True, content="", tool_calls=tool_calls)
 
+
 def _replyer_failure(reason: str = "mock failure") -> LLMResponse:
     """构造 Replyer LLM 失败响应（success=False）。"""
     return LLMResponse(success=False, content=None, error=reason)
 
+
 # ---------------------------------------------------------------------------
 # Agent 装配（Planner ReAct + Replyer call_tools）
 # ---------------------------------------------------------------------------
+
 
 def _setup_agent(
     chat_responses: list | None = None,
@@ -107,11 +114,13 @@ def _setup_agent(
     prompt = MagicMock()
     prompt.render = MagicMock(return_value="PROMPT")
 
-    config = StreamerConfig.from_dict({
-        "batch": {"batch_window_ms": 100, "tick_interval_ms": 50},
-        "proactive": {"enabled": False},
-        **(config_overrides or {}),
-    })
+    config = StreamerConfig.from_dict(
+        {
+            "batch": {"batch_window_ms": 100, "tick_interval_ms": 50},
+            "proactive": {"enabled": False},
+            **(config_overrides or {}),
+        }
+    )
 
     bus = EventBus()
     registry = ToolRegistry()
@@ -125,6 +134,7 @@ def _setup_agent(
     )
 
     return agent, bus, registry, llm, prompt
+
 
 @pytest.mark.asyncio
 async def test_decision_loop_danmaku_to_reply_provider():
@@ -170,6 +180,7 @@ async def test_decision_loop_danmaku_to_reply_provider():
     finally:
         await agent.cleanup()
 
+
 @pytest.mark.asyncio
 async def test_decision_loop_planner_no_reply_path():
     """Planner 自然终止（无 tool_calls）→ 不触发 Replyer.call_tools，静默收场。"""
@@ -182,10 +193,12 @@ async def test_decision_loop_planner_no_reply_path():
     prompt = MagicMock()
     prompt.render = MagicMock(return_value="PROMPT")
 
-    config = StreamerConfig.from_dict({
-        "proactive": {"enabled": False},
-        "batch": {"batch_window_ms": 100, "tick_interval_ms": 50},
-    })
+    config = StreamerConfig.from_dict(
+        {
+            "proactive": {"enabled": False},
+            "batch": {"batch_window_ms": 100, "tick_interval_ms": 50},
+        }
+    )
 
     bus = EventBus()
     registry = ToolRegistry()
@@ -217,8 +230,8 @@ async def test_decision_loop_planner_no_reply_path():
     finally:
         await agent.cleanup()
 
-@pytest.mark.asyncio
 
+@pytest.mark.asyncio
 @pytest.mark.asyncio
 async def test_decision_loop_proactive_gated_until_live_started():
     """主动发言场次闸：开播前静默且 pending 信号保留，开播后首个 tick 触发。"""
@@ -247,6 +260,7 @@ async def test_decision_loop_proactive_gated_until_live_started():
         assert agent._rundown_proactive_pending is False
     finally:
         await agent.cleanup()
+
 
 @pytest.mark.asyncio
 async def test_decision_loop_proactive_gated_after_live_ended():
@@ -282,6 +296,7 @@ async def test_decision_loop_proactive_gated_after_live_ended():
     finally:
         await agent.cleanup()
 
+
 @pytest.mark.asyncio
 async def test_decision_loop_danmaku_reply_not_gated_by_live_session():
     """场次闸只挡主动发言分支：弹幕回复路径不受开播状态影响。"""
@@ -295,8 +310,8 @@ async def test_decision_loop_danmaku_reply_not_gated_by_live_session():
     finally:
         await agent.cleanup()
 
-@pytest.mark.asyncio
 
+@pytest.mark.asyncio
 @pytest.mark.asyncio
 async def test_decision_loop_handle_message_direct():
     """handle_message 直接入口（测试用）：跳过 EventBus，直接调 Agent。"""
@@ -306,9 +321,11 @@ async def test_decision_loop_handle_message_direct():
     prompt = MagicMock()
     prompt.render = MagicMock(return_value="PROMPT")
 
-    config = StreamerConfig.from_dict({
-        "proactive": {"enabled": False},
-    })
+    config = StreamerConfig.from_dict(
+        {
+            "proactive": {"enabled": False},
+        }
+    )
 
     agent = StreamerAgent(
         config=config,
@@ -323,6 +340,7 @@ async def test_decision_loop_handle_message_direct():
 
     # 统计：消息已入缓冲
     assert agent.get_statistics()["total_messages"] == 1
+
 
 class TestDecisionObservability:
     """决策可观测收口：每轮决策恰好一条 planner.decision + 阶段事件成对。"""
@@ -434,3 +452,108 @@ class TestDecisionObservability:
         finally:
             await agent.stop()
             await bus.cleanup()
+
+
+class TestStatisticsFields:
+    """统计字段口径验证：reply_duration_ms 实测写回 / replyer_failures 失败递增。"""
+
+    @pytest.mark.asyncio
+    async def test_reply_duration_ms_measured_on_successful_reply(self):
+        """成功回复轮：reply_duration_ms 由 reply 工具调用实测写回，必须 > 0。"""
+        agent, bus, registry, llm, prompt = _setup_agent()
+
+        # time.time 粒度在 Windows 上较粗，mock 秒回时毫秒差值可能取整为 0；
+        # 注入 50ms 延迟保证实测耗时可靠大于 0。
+        async def _slow_call_tools(*args, **kwargs):
+            await asyncio.sleep(0.05)
+            return _replyer_response("谢谢支持！", emotion="happy")
+
+        llm.call_tools = AsyncMock(side_effect=_slow_call_tools)
+
+        await agent.start()
+        try:
+            result = await agent.debug_test_decision(batch=[{"user": "观众A", "text": "主播好可爱"}])
+        finally:
+            await agent.cleanup()
+
+        assert result["speech"] == "谢谢支持！"
+        assert result["reply_duration_ms"] > 0, (
+            f"成功回复轮 reply_duration_ms 应实测 > 0，实际 {result['reply_duration_ms']}"
+        )
+        assert agent.get_statistics()["replyer_failures"] == 0
+
+    @pytest.mark.asyncio
+    async def test_replyer_failure_increments_counter(self):
+        """reply 工具失败（Replyer LLM 失败 → ToolExecutionResult.success=False）→ _replyer_failures 递增。"""
+        agent, bus, registry, llm, prompt = _setup_agent(
+            chat_responses=[
+                _planner_react_response(
+                    [
+                        _planner_tool_call(
+                            "streamer_reply", {"topic_summary": "t", "reply_guidance": "g", "target": "u1"}
+                        )
+                    ]
+                ),
+                _planner_react_response([]),
+            ]
+        )
+        llm.call_tools = AsyncMock(return_value=_replyer_failure("llm down"))
+
+        await agent.start()
+        try:
+            result = await agent.debug_test_decision(batch=[{"user": "观众A", "text": "hi"}])
+        finally:
+            await agent.cleanup()
+
+        assert result["speech"] is None
+        # mock 秒回时毫秒整型计时可为 0；耗时字段存在且非负即口径成立
+        assert result["reply_duration_ms"] >= 0
+        stats = agent.get_statistics()
+        assert stats["replyer_failures"] == 1
+        assert stats["planner_failures"] == 0, "reply 失败不应记入 planner_failures"
+        assert stats["total_replies"] == 0
+        assert stats["total_no_action"] == 1
+
+    @pytest.mark.asyncio
+    async def test_no_reply_round_with_consecutive_replyer_failures_stats_consistent(self):
+        """边界：无成功回复轮 + replyer 连续失败 → get_statistics 正常返回且口径自洽。"""
+        agent, bus, registry, llm, prompt = _setup_agent(
+            chat_responses=[
+                _planner_react_response(
+                    [
+                        _planner_tool_call(
+                            "streamer_reply", {"topic_summary": "t", "reply_guidance": "g", "target": "u1"}
+                        )
+                    ]
+                ),
+                _planner_react_response(
+                    [
+                        _planner_tool_call(
+                            "streamer_reply", {"topic_summary": "t", "reply_guidance": "g", "target": "u1"}
+                        )
+                    ]
+                ),
+                # reply 失败后 Planner 循环内会再取响应重试，补足自然终止响应
+                # 防止 round2 StopIteration 被误记为 planner 失败
+                _planner_react_response([]),
+                _planner_react_response([]),
+                _planner_react_response([]),
+            ]
+        )
+        llm.call_tools = AsyncMock(return_value=_replyer_failure("llm down"))
+
+        await agent.start()
+        try:
+            first = await agent.debug_test_decision(batch=[{"user": "观众A", "text": "hi"}])
+            second = await agent.debug_test_decision(batch=[{"user": "观众A", "text": "hi2"}])
+        finally:
+            await agent.cleanup()
+
+        assert first["speech"] is None and second["speech"] is None
+        stats = agent.get_statistics()
+        assert stats["replyer_failures"] == 2
+        assert stats["planner_failures"] == 0
+        assert stats["total_replies"] == 0
+        assert stats["total_no_action"] == 2
+        # 口径自洽：总轮数 = 回复 + 无动作
+        assert stats["total_replies"] + stats["total_no_action"] == 2

@@ -250,6 +250,8 @@ class Planner:
             - steps / tool_trace: 循环步数与执行过的工具名序列（可观测）
             - error: 异常原因（无异常为 None）
             - reply_payload: reply 工具完整结果（发言管线消费）
+            - reply_duration_ms: reply 工具调用累计耗时（毫秒；未调用为 0）
+            - reply_failures: reply 工具失败次数（成功轮为 0）
         """
         self.last_raw_content = ""
         self.last_request_id = None
@@ -270,6 +272,8 @@ class Planner:
             "tool_trace": [],
             "error": None,
             "reply_payload": None,
+            "reply_duration_ms": 0,
+            "reply_failures": 0,
         }
 
         system_prompt = self._render_system_prompt()
@@ -527,10 +531,12 @@ class Planner:
         （一次性语义，防跨轮残留）——槽位挂在 Provider 实例上，不经注册表。
         """
         if self._tool_registry is None:
+            outcome["reply_failures"] += 1
             return json.dumps(
                 {"ok": False, "error": "reply 工具不可用（tool_registry 未注入）"}, ensure_ascii=False
             ), False
         set_thinking = getattr(self._reply_provider, "set_thinking_callback", None)
+        invoke_started_ms = now_ms()
         try:
             if set_thinking is not None:
                 set_thinking(thinking.callback_for("replyer", 1) if thinking else None)
@@ -539,12 +545,16 @@ class Planner:
             )
         except Exception as e:
             self.logger.warning(f"reply 工具执行异常: {e}", exc_info=True)
+            outcome["reply_duration_ms"] += now_ms() - invoke_started_ms
+            outcome["reply_failures"] += 1
             return json.dumps({"ok": False, "error": f"{type(e).__name__}: {e}"}, ensure_ascii=False), False
         finally:
             if set_thinking is not None:
                 set_thinking(None)
+        outcome["reply_duration_ms"] += now_ms() - invoke_started_ms
 
         if not result.success:
+            outcome["reply_failures"] += 1
             return json.dumps({"ok": False, "error": result.error_message or "reply 失败"}, ensure_ascii=False), False
 
         payload = result.structured_content if isinstance(result.structured_content, dict) else {}

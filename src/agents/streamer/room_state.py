@@ -119,8 +119,8 @@ class RoomState:
         # 最近一次主播主动发言时刻(与弹幕并列但互不影响;
         # 供 ProactiveTrigger 的 min_interval 频率限制使用)
         self._last_speech_ms: Optional[int] = None
-        # 累计主动发言次数(用于 max_per_hour 频率限制统计)
-        self._speech_count: int = 0
+        # 自启动以来的累计弹幕条数(不受滑动窗口裁剪影响)
+        self._total_message_count: int = 0
 
     # ------------------------------------------------------------------
     # 时钟注入
@@ -155,6 +155,7 @@ class RoomState:
         text = getattr(message, "content", "") or ""
         self._window.append(_WindowEntry(ts_ms=ts, text=text))
         self._last_message_ms = ts
+        self._total_message_count += 1
         self._trim(ts)
 
     def _trim(self, now_ms: int) -> None:
@@ -281,7 +282,6 @@ class RoomState:
         """
         ts = self._resolve_now(now_ms)
         self._last_speech_ms = ts
-        self._speech_count += 1
 
     @property
     def last_speech_ms(self) -> Optional[int]:
@@ -301,14 +301,6 @@ class RoomState:
         无新弹幕时摘要内容不会变化,可跳过 LLM 刷新。
         """
         return self._last_message_ms
-
-    @property
-    def speech_count(self) -> int:
-        """累计主动发言次数(自进程启动以来)
-
-        供 ProactiveTrigger 的 ``max_per_hour`` 频率限制统计使用。
-        """
-        return self._speech_count
 
     # ------------------------------------------------------------------
     # SC / 礼物 / 上舰 队列
@@ -363,5 +355,5 @@ class RoomState:
 
     @property
     def total_message_count(self) -> int:
-        """自启动以来的累计弹幕条数(全窗口外也累计)。"""
-        return len(self._window)  # 仅窗口内的可见,实际累计应在 background 中维护
+        """自启动以来的累计弹幕条数(全窗口外也累计,不受滑动窗口裁剪影响)。"""
+        return self._total_message_count
