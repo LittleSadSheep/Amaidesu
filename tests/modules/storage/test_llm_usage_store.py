@@ -16,7 +16,11 @@ from typing import AsyncGenerator, Generator
 
 import pytest
 
-from src.modules.llm.manager import LLMManager, LLMResponse
+from src.modules.llm.client import LLMResponse
+from src.modules.llm.bootstrap import _ResolvedModel, _ResolvedProfile
+from src.modules.llm.engine import LLMManager
+from src.modules.llm.payload import Response as PayloadResponse
+from src.modules.llm.payload import Usage as PayloadUsage
 from src.modules.storage.database import SQLiteDatabase
 
 
@@ -79,14 +83,14 @@ async def test_insert_llm_usage_roundtrip(store: SQLiteDatabase) -> None:
 
 
 class _FakeUsageClient:
-    """伪客户端：chat 成功并返回 usage（不发起网络请求）。"""
+    """伪客户端：generate 成功并返回 usage（不发起网络请求）。"""
 
-    async def chat(self, messages, **kwargs):
-        return LLMResponse(
+    async def generate(self, request, **kwargs):
+        return PayloadResponse(
             success=True,
             content="回复",
             model="glm-4.7",
-            usage={"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+            usage=PayloadUsage(prompt_tokens=10, completion_tokens=5, total_tokens=15),
         )
 
 
@@ -100,30 +104,24 @@ def _make_manager_with_fake_client(store: SQLiteDatabase, monkeypatch) -> LLMMan
         {"name": "glm-4.7", "model_identifier": "glm-4.7", "api_provider": "zhipu"},
         "zhipu",
     )
-    from src.modules.llm.manager import _ResolvedModel, _ResolvedProfile
-
-    manager._profiles["llm"] = _ResolvedProfile(
-        profile_name="llm",
+    manager._profiles["planner"] = _ResolvedProfile(
+        profile_name="planner",
         hard_timeout_ms=90_000,
         slow_threshold_ms=15_000,
         selection_strategy="sequential",
         seed=0,
         temperature=0.3,
         max_tokens=4096,
-        models=[
-            _ResolvedModel(
-                model_name="glm-4.7", model_identifier="glm-4.7", provider_name="zhipu"
-            )
-        ],
+        models=[_ResolvedModel(model_name="glm-4.7", model_identifier="glm-4.7", provider_name="zhipu")],
     )
-    manager._model_call_counts["llm"] = {}
+    manager._model_call_counts["planner"] = {}
     return manager
 
 
 @pytest.mark.asyncio
 async def test_successful_call_persists_llm_usage(store: SQLiteDatabase, monkeypatch) -> None:
     manager = _make_manager_with_fake_client(store, monkeypatch)
-    result = await manager.chat("你好", client_type="llm")
+    result = await manager.generate("你好", profile="planner")
     assert result.success
 
     rows = await store.execute("SELECT * FROM llm_usage")
@@ -131,7 +129,7 @@ async def test_successful_call_persists_llm_usage(store: SQLiteDatabase, monkeyp
     row = rows[0]
     assert row["model_name"] == "glm-4.7"
     assert row["provider_name"] == "zhipu"
-    assert row["profile_name"] == "llm"
+    assert row["profile_name"] == "planner"
     assert row["prompt_tokens"] == 10
     assert row["total_tokens"] == 15
     assert row["duration_ms"] >= 0
@@ -147,24 +145,18 @@ async def test_call_without_store_does_not_persist(monkeypatch) -> None:
         {"name": "glm-4.7", "model_identifier": "glm-4.7", "api_provider": "zhipu"},
         "zhipu",
     )
-    from src.modules.llm.manager import _ResolvedModel, _ResolvedProfile
-
-    manager._profiles["llm"] = _ResolvedProfile(
-        profile_name="llm",
+    manager._profiles["planner"] = _ResolvedProfile(
+        profile_name="planner",
         hard_timeout_ms=90_000,
         slow_threshold_ms=15_000,
         selection_strategy="sequential",
         seed=0,
         temperature=0.3,
         max_tokens=4096,
-        models=[
-            _ResolvedModel(
-                model_name="glm-4.7", model_identifier="glm-4.7", provider_name="zhipu"
-            )
-        ],
+        models=[_ResolvedModel(model_name="glm-4.7", model_identifier="glm-4.7", provider_name="zhipu")],
     )
-    manager._model_call_counts["llm"] = {}
-    result = await manager.chat("你好", client_type="llm")
+    manager._model_call_counts["planner"] = {}
+    result = await manager.generate("你好", profile="planner")
     assert result.success
 
 
@@ -176,6 +168,6 @@ async def test_persist_failure_degrades_without_breaking_call(store: SQLiteDatab
         raise RuntimeError("db locked")
 
     monkeypatch.setattr(manager._llm_repo, "insert_llm_usage", _boom)
-    result = await manager.chat("你好", client_type="llm")
+    result = await manager.generate("你好", profile="planner")
     # 落库失败不阻断调用链，调用仍成功返回
     assert result.success

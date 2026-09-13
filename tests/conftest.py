@@ -14,7 +14,7 @@ import pytest
 
 from src.modules.config.service import ConfigService
 from src.modules.events.event_bus import EventBus
-from src.modules.llm.manager import LLMManager
+from src.modules.llm.engine import LLMManager
 
 
 @pytest.fixture

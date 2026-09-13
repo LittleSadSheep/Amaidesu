@@ -92,8 +92,7 @@ def fake_vendor_manager():
     fake 实例读取捕获的请求。
     """
     with patch.dict(_CLIENT_DISPATCH, {"fakevendor": FakeVendorClient}):
-        with patch("src.modules.llm.clients.token_usage_manager.TokenUsageManager"):
-            yield LLMManager()
+        yield LLMManager()
 
 
 class TestPayloadZeroVendor:
@@ -181,10 +180,9 @@ class TestFakeVendorThroughGenerate:
         bad_config = dict(FAKE_CONFIG)
         bad_config["llm_profiles"] = {**FAKE_CONFIG["llm_profiles"], "mystery": {"model_list": ["m1"]}}
         with patch.dict(_CLIENT_DISPATCH, {"fakevendor": FakeVendorClient}):
-            with patch("src.modules.llm.clients.token_usage_manager.TokenUsageManager"):
-                manager = LLMManager()
-                with pytest.raises(ValueError, match="mystery"):
-                    await manager.setup(bad_config)
+            manager = LLMManager()
+            with pytest.raises(ValueError, match="mystery"):
+                await manager.setup(bad_config)
 
     def test_old_registry_symbols_gone(self):
         """旧注册表机制已删除：client 模块不再提供 register_client/_client_impls"""

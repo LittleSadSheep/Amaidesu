@@ -34,7 +34,7 @@ _PERSONA_CONFIG = {
 
 def _make_llm_mock() -> MagicMock:
     llm = MagicMock()
-    llm.call_tools = AsyncMock()
+    llm.generate = AsyncMock()
     return llm
 
 
@@ -67,10 +67,14 @@ def _make_agent_with_persona_config() -> tuple[Any, MagicMock, MagicMock]:
 
 def _replyer_llm_response(speech: str = "测试回复") -> object:
     # 用例内导入（测试可 mock 性）：按用例独立构造桩响应，模块导入期不绑定 LLM 类型
-    from src.modules.llm.manager import LLMResponse
+    from src.modules.llm.payload import Response as PayloadResponse
+    from src.modules.llm.payload import ToolCall as PayloadToolCall
 
-    payload = json.dumps({"speech": speech, "emotion": "neutral"}, ensure_ascii=False)
-    return LLMResponse(success=True, content="", tool_calls=[{"name": "reply", "arguments": payload}])
+    return PayloadResponse(
+        success=True,
+        content="",
+        tool_calls=[PayloadToolCall(id="call_reply", name="reply", arguments={"speech": speech, "emotion": "neutral"})],
+    )
 
 
 class TestPersonaConfigToPromptEndToEnd:
@@ -81,7 +85,7 @@ class TestPersonaConfigToPromptEndToEnd:
         """Replyer 渲染 kwargs 的四字段必须全部等于配置值（非 _DEFAULT_*）。"""
         agent, llm, prompt = _make_agent_with_persona_config()
 
-        llm.call_tools = AsyncMock(return_value=_replyer_llm_response())
+        llm.generate = AsyncMock(return_value=_replyer_llm_response())
 
         # 用例内导入（测试可 mock 性）：决策计划在本用例内独立构造，不与模块导入期耦合
         from src.agents.streamer.plan import DecisionPlan
@@ -108,7 +112,7 @@ class TestPersonaConfigToPromptEndToEnd:
         """反向锁定：behavior_style 只进 Planner，不进 Replyer（决策/表达侧分离契约）。"""
         agent, llm, prompt = _make_agent_with_persona_config()
 
-        llm.call_tools = AsyncMock(return_value=_replyer_llm_response(speech="ok"))
+        llm.generate = AsyncMock(return_value=_replyer_llm_response(speech="ok"))
 
         # 用例内导入（测试可 mock 性）：决策计划在本用例内独立构造，不与模块导入期耦合
         from src.agents.streamer.plan import DecisionPlan
@@ -147,11 +151,16 @@ class TestDecisionExpressionSeparation:
             ensure_ascii=False,
         )
         # 用例内导入（测试可 mock 性）：按用例独立构造桩响应，模块导入期不绑定 LLM 类型
-        from src.modules.llm.manager import LLMResponse
+        from src.modules.llm.payload import Response as PayloadResponse
+        from src.modules.llm.payload import ToolCall as PayloadToolCall
 
-        llm.call_tools = AsyncMock(
-            return_value=LLMResponse(
-                success=True, content="", tool_calls=[{"name": "produce_plan", "arguments": planner_payload}]
+        llm.generate = AsyncMock(
+            return_value=PayloadResponse(
+                success=True,
+                content="",
+                tool_calls=[
+                    PayloadToolCall(id="call_plan", name="produce_plan", arguments=json.loads(planner_payload))
+                ],
             )
         )
 

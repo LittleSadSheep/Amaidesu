@@ -27,7 +27,7 @@ import json
 import random
 import time
 import uuid
-from typing import Any, AsyncIterator, Callable, Dict, List, Optional, Tuple, Union
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 from pydantic import BaseModel
 
@@ -45,7 +45,7 @@ from src.modules.llm.client import LLMResponse
 from src.modules.llm.clients import resolve_client_method
 from src.modules.llm.errors import FatalError, LLMError, LLMInterruptedError, LLMTimeoutError, RetryableError
 from src.modules.llm.interrupt import HardTimeoutExceeded, guarded_call
-from src.modules.llm.observation import record_usage
+from src.modules.llm.observation import calculate_cost, record_usage
 from src.modules.llm.payload import GenerateRequest, ImagePart, Message, Response, TextPart, ToolCall, ToolSpec, Usage
 from src.modules.logging import get_logger
 from src.modules.storage.repos import LLMRepo
@@ -268,7 +268,7 @@ class LLMManager:
     - 按 profile.model_list 调度模型选择（sequential / balance / random）
     - 实现故障切换（当前模型失败切下一个）与慢调用告警
     - 内置重试（仅在同一模型上重试，不跨模型）
-    - Token 使用量统计 + llm_usage 落库
+    - 费用计算（统一口径 observation.calculate_cost）+ llm_usage 落库
 
     provider 池/模型索引/profile 解析快照的构建委托给 bootstrap 模块。
 
@@ -279,9 +279,9 @@ class LLMManager:
         await llm_manager.setup(config["model"])
 
         # 调用（按用途 profile 名）
-        response = await llm_manager.chat_messages(
-            [{"role": "user", "content": "你好"}],
-            client_type="planner",
+        response = await llm_manager.generate(
+            "你好",
+            profile="planner",
         )
         ```
     """
@@ -301,7 +301,8 @@ class LLMManager:
         # profile_name -> 各 model 已调用次数（balance 策略使用）
         self._model_call_counts: Dict[str, Dict[str, int]] = {}
         self._config: Dict[str, Any] = {}
-        self._token_manager = None
+        # 价格表（{model_identifier: {price_in, price_out, ...}}），费用计算唯一口径
+        self._model_prices: Dict[str, Dict[str, Any]] = {}
         self._retry_config = RetryConfig()
         # 注入后每次成功调用旁路写一条 llm_usage（失败降级不阻断调用）；None 时不落库
         self._llm_repo = llm_repo
@@ -348,6 +349,7 @@ class LLMManager:
         self._profile_call_counts.clear()
         self._model_call_counts.clear()
         self._rng = None
+        self._model_prices = {}
 
         provider_configs = config.get("llm_providers") or []
         if not provider_configs:
@@ -368,26 +370,18 @@ class LLMManager:
         # 启动期弱校验：profile 硬超时小于 provider 请求超时时告警（防请求级超时变死配置）
         warn_hard_timeout_conflicts(self._profiles, self._providers, self.logger)
 
-        # 初始化 token manager
-        # 必须函数体内 import：测试用 patch 拦截（src.modules.llm.clients.token_usage_manager.TokenUsageManager），
-        # 顶部 import 会使 patch 失效（参见 tests/modules/llm/test_llm_manager.py）
-        from src.modules.llm.clients.token_usage_manager import TokenUsageManager
-
-        self._token_manager = TokenUsageManager(use_global=True)
         # 价格唯一来源 = model.toml [[llm_models]] 的定价字段
-        # 价格表按 model_identifier 键入（费用查询用的是请求实际的 API 模型标识）
-        self._token_manager.set_model_prices(
-            {
-                mcfg.get("model_identifier") or mname: {
-                    "price_in": mcfg.get("price_in", 0.0),
-                    "price_out": mcfg.get("price_out", 0.0),
-                    "cache_price_in": mcfg.get("cache_price_in", 0.0),
-                    "cache": mcfg.get("cache", ""),
-                }
-                for mname, (mcfg, _prov) in self._models.items()
-                if mcfg.get("price_in", 0.0) > 0 or mcfg.get("price_out", 0.0) > 0
+        # 价格表按 model_identifier 键入（费用计算用的是请求实际的 API 模型标识）
+        self._model_prices = {
+            mcfg.get("model_identifier") or mname: {
+                "price_in": mcfg.get("price_in", 0.0),
+                "price_out": mcfg.get("price_out", 0.0),
+                "cache_price_in": mcfg.get("cache_price_in", 0.0),
+                "cache": mcfg.get("cache", ""),
             }
-        )
+            for mname, (mcfg, _prov) in self._models.items()
+            if mcfg.get("price_in", 0.0) > 0 or mcfg.get("price_out", 0.0) > 0
+        }
 
         self.logger.info(
             f"LLMManager 初始化完成，providers: {list(self._providers.keys())}, profiles: {list(self._profiles.keys())}"
@@ -456,228 +450,6 @@ class LLMManager:
         )
         return _legacy_response_to_payload(result)
 
-    # === 公共 API（遗留，过渡期保留）：chat / chat_messages / chat_vision / stream_chat / call_tools / simple_*
-
-    async def chat(
-        self,
-        prompt: str,
-        *,
-        client_type: Optional[str] = None,
-        system_message: Optional[str] = None,
-        temperature: float = 0.3,
-        max_tokens: int = 4096,
-    ) -> LLMResponse:
-        """聊天调用（按用途 profile 名走 model_list 选择 + 故障切换）"""
-        profile_name = self._resolve_profile_name(client_type)
-        messages = self._build_messages(prompt, system_message)
-        return await self._call_with_failover(
-            profile_name,
-            method="chat",
-            messages=messages,
-            temperature=temperature,
-            max_tokens=max_tokens,
-        )
-
-    async def chat_fast(self, prompt: str, **kwargs: Any) -> LLMResponse:
-        """快速聊天（语义别名：等价 ``chat(client_type='replyer')``，保留向后兼容）"""
-        return await self.chat(prompt, client_type=ProfileNames.REPLYER, **kwargs)
-
-    async def chat_messages(
-        self,
-        messages: List[Dict[str, Any]],
-        *,
-        client_type: Optional[str] = None,
-        temperature: float = 0.3,
-        max_tokens: int = 4096,
-        tools: Optional[List[Dict[str, Any]]] = None,
-        on_delta: Optional[Callable[[str, str], None]] = None,
-    ) -> LLMResponse:
-        """聊天调用（messages 列表 + 可选 tools + 可选流式回调）"""
-        profile_name = self._resolve_profile_name(client_type)
-        return await self._call_with_failover(
-            profile_name,
-            method="chat",
-            messages=messages,
-            temperature=temperature,
-            max_tokens=max_tokens,
-            tools=tools,
-            on_delta=on_delta,
-        )
-
-    async def stream_chat(
-        self,
-        prompt: str,
-        *,
-        client_type: Optional[str] = None,
-        system_message: Optional[str] = None,
-        stop_event: Optional[asyncio.Event] = None,
-    ) -> AsyncIterator[str]:
-        """流式聊天调用（不参与故障切换——流式语义不允许多模型切换；单模型失败即停）"""
-        profile_name = self._resolve_profile_name(client_type)
-        resolved = self._get_profile(profile_name)
-        if not resolved.models:
-            raise ValueError(f"profile {profile_name!r} 无可用模型")
-        first = resolved.models[0]
-        client = self._provider_clients[first.provider_name]
-        messages = self._build_messages(prompt, system_message)
-        stream = resolve_client_method(client, "stream_chat")
-        async for chunk in stream(
-            messages=messages,
-            model=first.model_identifier,
-            stop_event=stop_event,
-        ):
-            yield chunk
-
-    async def chat_vision(
-        self,
-        prompt: str,
-        images: List[Any],
-        *,
-        client_type: Optional[str] = None,
-        system_message: Optional[str] = None,
-    ) -> LLMResponse:
-        """视觉理解调用（默认走 vision profile，可通过 client_type 覆盖）"""
-        # chat_vision 与 chat 的默认 profile 不同：默认走 vision，
-        # 调用方可通过 client_type 显式指向其他 profile。
-        if client_type is None:
-            profile_name = ProfileNames.VISION
-        else:
-            profile_name = self._resolve_profile_name(client_type)
-        messages = self._build_messages(prompt, system_message)
-        return await self._call_with_failover(
-            profile_name,
-            method="vision",
-            messages=messages,
-            images=images,
-        )
-
-    async def call_tools(
-        self,
-        prompt: str,
-        tools: List[Dict[str, Any]],
-        *,
-        client_type: Optional[str] = None,
-        system_message: Optional[str] = None,
-        on_delta: Optional[Callable[[str, str], None]] = None,
-    ) -> LLMResponse:
-        """工具调用（按用途 profile 走 model_list + 故障切换）"""
-        profile_name = self._resolve_profile_name(client_type)
-        messages = self._build_messages(prompt, system_message)
-        response = await self._call_with_failover(
-            profile_name,
-            method="chat",
-            messages=messages,
-            tools=tools,
-            on_delta=on_delta,
-        )
-        self.logger.warning(
-            f"[诊断] call_tools 完成: profile={profile_name}, success={getattr(response, 'success', None)}, "
-            f"error={getattr(response, 'error', None)!r}, "
-            f"tool_calls={[tc.get('function', {}).get('name') for tc in (getattr(response, 'tool_calls', None) or []) if isinstance(tc, dict)]}, "
-            f"content[:200]={(getattr(response, 'content', None) or '')[:200]!r}"
-        )
-        return response
-
-    async def simple_chat(
-        self,
-        prompt: str,
-        *,
-        client_type: Optional[str] = None,
-        system_message: Optional[str] = None,
-    ) -> str:
-        result = await self.chat(prompt, client_type=client_type, system_message=system_message)
-        return result.content if result.success and result.content else f"错误: {result.error}"
-
-    async def simple_vision(
-        self,
-        prompt: str,
-        images: List[Any],
-        *,
-        client_type: Optional[str] = None,
-    ) -> str:
-        result = await self.chat_vision(prompt, images, client_type=client_type)
-        return result.content if result.success and result.content else f"错误: {result.error}"
-
-    # === 客户端 / profile 信息查询（兼容旧 API 形式）===
-
-    def get_client(self, client_type: Optional[str] = None):
-        """获取指定用途 profile 的首个模型对应 provider 客户端
-
-        旧 API 形式保留（部分测试与外部探针依赖）；新代码应使用
-        :func:`get_provider_client` 与 :func:`has_profile`。
-        """
-        profile_name = self._resolve_profile_name(client_type)
-        resolved = self._get_profile(profile_name)
-        if not resolved.models:
-            raise ValueError(f"profile {profile_name!r} 无可用模型")
-        return self._provider_clients[resolved.models[0].provider_name]
-
-    def get_provider_client(self, provider_name: str):
-        """按 provider name 获取共享客户端（不存在则抛 ValueError）"""
-        if provider_name not in self._provider_clients:
-            raise ValueError(f"provider {provider_name!r} 不存在（已注册: {sorted(self._provider_clients.keys())}）")
-        return self._provider_clients[provider_name]
-
-    def has_client(self, client_type: str) -> bool:
-        """是否已配置指定用途 profile（兼容旧 API）"""
-        return self.has_profile(client_type)
-
-    def has_profile(self, profile_name: str) -> bool:
-        """是否已配置指定用途 profile"""
-        return profile_name in self._profiles
-
-    def list_clients(self) -> List[str]:
-        """列出所有已配置的用途 profile（兼容旧 API：返回 profile 名）"""
-        return list(self._profiles.keys())
-
-    def list_providers(self) -> List[str]:
-        """列出所有已注册的 provider 名"""
-        return list(self._providers.keys())
-
-    def has_provider(self, provider_name: str) -> bool:
-        """是否已注册指定 provider"""
-        return provider_name in self._providers
-
-    def list_models(self) -> List[str]:
-        """列出所有已注册的 model 名"""
-        return list(self._models.keys())
-
-    def get_client_config(self, profile_name: str) -> Optional[Dict[str, Any]]:
-        """获取指定用途 profile 的运行时配置（model_list / 阈值 / 温度等）"""
-        resolved = self._profiles.get(profile_name)
-        if resolved is None:
-            return None
-        return {
-            "profile_name": resolved.profile_name,
-            "hard_timeout_ms": resolved.hard_timeout_ms,
-            "slow_threshold_ms": resolved.slow_threshold_ms,
-            "selection_strategy": resolved.selection_strategy,
-            "temperature": resolved.temperature,
-            "max_tokens": resolved.max_tokens,
-            "models": [
-                {
-                    "model_name": m.model_name,
-                    "model_identifier": m.model_identifier,
-                    "provider_name": m.provider_name,
-                }
-                for m in resolved.models
-            ],
-        }
-
-    def get_client_info(self) -> Dict[str, Any]:
-        """获取所有已注册 provider 的客户端信息（兼容旧 API：返回 profile 视角）"""
-        info: Dict[str, Any] = {}
-        for provider_name, client in self._provider_clients.items():
-            info[provider_name] = {
-                "client": client.__class__.__name__,
-                "profiles": [
-                    pname
-                    for pname, resolved in self._profiles.items()
-                    if any(m.provider_name == provider_name for m in resolved.models)
-                ],
-            }
-        return info
-
     # === 内部：profile 解析 ===
 
     def _resolve_profile_name(self, client_type: Optional[str]) -> str:
@@ -688,18 +460,6 @@ class LLMManager:
         if profile_name not in self._profiles:
             raise ValueError(f"profile {profile_name!r} 未配置。已配置的 profile: {list(self._profiles.keys())}")
         return self._profiles[profile_name]
-
-    def _build_messages(
-        self,
-        prompt: str,
-        system_message: Optional[str] = None,
-    ) -> List[Dict[str, Any]]:
-        """构建消息列表"""
-        messages = []
-        if system_message:
-            messages.append({"role": "system", "content": system_message})
-        messages.append({"role": "user", "content": prompt})
-        return messages
 
     # === 内部：模型选择（按 selection_strategy 排序）===
 
@@ -974,14 +734,7 @@ class LLMManager:
         kwargs: Dict[str, Any],
         start_time: float,
     ) -> None:
-        """成功路径后置动作：token 记录 + llm_usage 落库 + 请求历史"""
-        if result.usage and self._token_manager:
-            self._token_manager.record_usage(
-                model_name=result.model or model_name,
-                prompt_tokens=result.usage.get("prompt_tokens", 0),
-                completion_tokens=result.usage.get("completion_tokens", 0),
-                total_tokens=result.usage.get("total_tokens", 0),
-            )
+        """成功路径后置动作：llm_usage 落库 + 请求历史"""
         if result.usage and self._llm_repo:
             duration_ms = int((time.time() - start_time) * 1000)
             try:
@@ -1035,15 +788,16 @@ class LLMManager:
 
         ``LLMRepo`` 注入且结果带 usage 时生效；聚合账与请求明细共享同一
         ``request_id``，经 observation（``record_usage`` 携带明细载荷）在单个
-        SQLite 事务内写入，第二步失败整体回滚。费用口径与请求历史一致
-        （同走 ``TokenUsageManager._calculate_cost``）；任何写入失败只记
+        SQLite 事务内写入，第二步失败整体回滚。费用口径统一走
+        ``observation.calculate_cost``（请求历史同口径）；任何写入失败只记
         warning，绝不阻断 LLM 调用链。
         """
         try:
             usage = result.usage or {}
             cost = 0.0
-            if self._token_manager is not None:
-                cost_info = self._token_manager._calculate_cost(
+            if usage:
+                cost_info = calculate_cost(
+                    self._model_prices,
                     result.model or model_name,
                     usage.get("prompt_tokens", 0),
                     usage.get("completion_tokens", 0),
@@ -1121,10 +875,8 @@ class LLMManager:
                 )
 
             cost = 0.0
-            if usage and self._token_manager:
-                cost_info = self._token_manager._calculate_cost(
-                    model_name, usage.prompt_tokens, usage.completion_tokens
-                )
+            if usage:
+                cost_info = calculate_cost(self._model_prices, model_name, usage.prompt_tokens, usage.completion_tokens)
                 cost = cost_info.get("cost", 0.0)
 
             record = RequestRecord(
@@ -1168,10 +920,4 @@ class LLMManager:
         self._profiles.clear()
         self._profile_call_counts.clear()
         self._model_call_counts.clear()
-
-    # === 统计 ===
-
-    def get_token_usage_summary(self) -> str:
-        if self._token_manager:
-            return self._token_manager.format_total_cost_summary()
-        return "Token 管理器未初始化"
+        self._model_prices.clear()

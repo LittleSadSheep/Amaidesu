@@ -31,7 +31,7 @@ import pytest
 
 from src.agents.streamer.config import StreamerConfig
 from src.agents.streamer.streamer_agent import StreamerAgent
-from src.modules.llm.manager import LLMResponse
+from src.modules.llm.client import LLMResponse
 from src.modules.llm.payload import Response
 from src.modules.tools import ToolExecutionResult, ToolInvocation
 from src.modules.tools.registry import ToolRegistry

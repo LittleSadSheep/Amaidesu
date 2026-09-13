@@ -81,8 +81,8 @@ class TestSimulatorWiring:
         async def _noop_cleanup(self) -> None:
             return None
 
-        monkeypatch.setattr("src.modules.llm.manager.LLMManager.setup", _noop_setup)
-        monkeypatch.setattr("src.modules.llm.manager.LLMManager.cleanup", _noop_cleanup)
+        monkeypatch.setattr("src.modules.llm.engine.LLMManager.setup", _noop_setup)
+        monkeypatch.setattr("src.modules.llm.engine.LLMManager.cleanup", _noop_cleanup)
 
     @pytest.mark.asyncio
     async def test_disabled_means_zero_wiring(self, config_service_factory, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -185,8 +185,8 @@ class TestMainDryModeShutdown:
         async def _noop_cleanup(self) -> None:
             return None
 
-        monkeypatch.setattr("src.modules.llm.manager.LLMManager.setup", _noop_setup)
-        monkeypatch.setattr("src.modules.llm.manager.LLMManager.cleanup", _noop_cleanup)
+        monkeypatch.setattr("src.modules.llm.engine.LLMManager.setup", _noop_setup)
+        monkeypatch.setattr("src.modules.llm.engine.LLMManager.cleanup", _noop_cleanup)
 
     @pytest.mark.asyncio
     async def test_dry_mode_does_not_start_simulator(

@@ -1,10 +1,10 @@
 """StreamerAgent 决策循环集成测试（Planner ReAct 架构）。
 
-Planner 以 ReAct 循环运行（``llm.chat_messages`` + 全局工具列表 + reply 局部工具）；
-Replyer 仍是 ``llm.call_tools(tools=[reply])``。测试 mock 同步对齐：
-- Planner LLM 响应 = ``chat_messages`` 返回完整 OpenAI 形态 tool_calls
-  （``{id, type, function: {name, arguments}}``）
-- Replyer LLM 响应 = ``call_tools`` 返回 reply tool_call
+Planner 以 ReAct 循环运行（``llm.generate(messages, tools=..., profile="planner")`` +
+全局工具列表 + reply 局部工具）；Replyer 走 ``llm.generate(prompt, tools=[reply],
+profile="replyer")``。测试 mock 按 profile 分流：
+- Planner LLM 响应 = tool_calls 为中立 ToolCall 对象（arguments 为 dict）
+- Replyer LLM 响应 = tool_calls[0] 为 reply ToolCall（arguments 为 JSON 字符串）
 
 决策流：Planner 循环内调 reply（经 _reply_provider.invoke → Replyer.generate）；
 自然终止（无 tool_calls）= 静默。
@@ -23,7 +23,8 @@ from src.agents.streamer.streamer_agent import StreamerAgent
 from src.modules.events.payloads.room import RoomMessagePayload, RoomMessageUser
 from src.modules.events.event_bus import EventBus
 from src.modules.events.names import CoreEvents
-from src.modules.llm.manager import LLMResponse
+from src.modules.llm.payload import Response as PayloadResponse
+from src.modules.llm.payload import ToolCall as PayloadToolCall
 from src.modules.tools import ToolRegistry
 from src.modules.events.payloads.live import LiveEndedPayload, LiveStartedPayload
 from src.modules.events.payloads.planner import PlannerDecisionPayload, StreamerStagePayload
@@ -38,46 +39,75 @@ def _make_payload(text: str = "主播好可爱") -> RoomMessagePayload:
 
 
 # ---------------------------------------------------------------------------
-# LLMResponse 工厂（Planner ReAct：chat_messages 完整形态 / Replyer：call_tools）
+# 响应工厂（Planner ReAct / Replyer 均走 generate；tool_calls 为中立 ToolCall）
 # ---------------------------------------------------------------------------
 
 
-def _planner_tool_call(name: str, args: dict, call_id: str = "call_p1") -> dict:
-    """构造 Planner 的完整 OpenAI 形态 tool_call。"""
-    return {"id": call_id, "type": "function", "function": {"name": name, "arguments": args}}
+
+def _planner_tool_call(name: str, args: dict, call_id: str = "call_p1") -> PayloadToolCall:
+    """构造 Planner 的中立 tool_call（arguments 为 dict）。"""
+    return PayloadToolCall(id=call_id, name=name, arguments=args)
 
 
-def _planner_react_response(tool_calls: list) -> LLMResponse:
-    """构造 Planner 的 chat_messages 响应（完整 tool_calls；空列表 = 自然终止）。"""
-    return LLMResponse(success=True, content="", tool_calls=tool_calls)
+def _planner_react_response(tool_calls: list) -> PayloadResponse:
+    """构造 Planner 的 generate 响应（空 tool_calls = 自然终止）。"""
+    return PayloadResponse(success=True, content="", tool_calls=tool_calls)
 
 
-def _replyer_response(speech: str, emotion: str = "happy", actions: list | None = None) -> LLMResponse:
-    """构造 Replyer 的 call_tools 响应（tool_calls[0] = reply）。"""
+def _replyer_response(speech: str, emotion: str = "happy", actions: list | None = None) -> PayloadResponse:
+    """构造 Replyer 的 generate 响应（tool_calls[0] = reply）。"""
     tool_calls = [
-        {
-            "name": "reply",
-            "arguments": json.dumps({"speech": speech, "emotion": emotion}, ensure_ascii=False),
-        }
+        PayloadToolCall(
+            id="call_reply",
+            name="reply",
+            arguments={"speech": speech, "emotion": emotion},
+        )
     ]
     if actions:
         for action in actions:
             tool_calls.append(
-                {
-                    "name": action["name"],
-                    "arguments": json.dumps(action.get("parameters", {}), ensure_ascii=False),
-                }
+                PayloadToolCall(
+                    id="call_" + action["name"],
+                    name=action["name"],
+                    arguments=action.get("parameters", {}),
+                )
             )
-    return LLMResponse(success=True, content="", tool_calls=tool_calls)
+    return PayloadResponse(success=True, content="", tool_calls=tool_calls)
 
 
-def _replyer_failure(reason: str = "mock failure") -> LLMResponse:
+def _replyer_failure(reason: str = "mock failure") -> PayloadResponse:
     """构造 Replyer LLM 失败响应（success=False）。"""
-    return LLMResponse(success=False, content=None, error=reason)
+    return PayloadResponse(success=False, content=None, error=reason)
+
+
+def _make_generate_mock(planner_side, replyer_return) -> AsyncMock:
+    """generate mock：按 profile 分流——planner 消费 side_effect 队列，replyer 返回固定值。"""
+
+    async def _dispatch(*args, **kwargs):
+        if kwargs.get("profile") == "planner":
+            if isinstance(planner_side, Exception):
+                raise planner_side
+            return planner_side.pop(0) if isinstance(planner_side, list) else planner_side
+        if isinstance(replyer_return, Exception):
+            raise replyer_return
+        return replyer_return
+
+    return AsyncMock(side_effect=_dispatch)
+
+
+def _planner_calls(llm: MagicMock) -> list:
+    """generate 调用中 profile=planner 的子集（ReAct 轮数断言用）。"""
+    return [c for c in llm.generate.await_args_list if c.kwargs.get("profile") == "planner"]
+
+
+def _replyer_calls(llm: MagicMock) -> list:
+    """generate 调用中 profile=replyer 的子集（Replyer 触发断言用）。"""
+    return [c for c in llm.generate.await_args_list if c.kwargs.get("profile") == "replyer"]
+
 
 
 # ---------------------------------------------------------------------------
-# Agent 装配（Planner ReAct + Replyer call_tools）
+# Agent 装配（Planner ReAct + Replyer 均走 generate）
 # ---------------------------------------------------------------------------
 
 
@@ -85,7 +115,7 @@ def _setup_agent(
     chat_responses: list | None = None,
     config_overrides: dict | None = None,
 ) -> tuple[StreamerAgent, EventBus, ToolRegistry, MagicMock, MagicMock]:
-    """构造完整测试 Agent：mock LLM（chat_messages=Planner / call_tools=Replyer）。
+    """构造完整测试 Agent：mock LLM generate 按 profile 分流（Planner / Replyer）。
 
     默认：Planner 首步直接调 reply；Replyer 产出 "谢谢支持！" + happy。
     """
@@ -108,8 +138,7 @@ def _setup_agent(
     replyer_resp = _replyer_response("谢谢支持！", emotion="happy")
 
     llm = MagicMock()
-    llm.chat_messages = AsyncMock(side_effect=list(chat_responses))
-    llm.call_tools = AsyncMock(return_value=replyer_resp)
+    llm.generate = _make_generate_mock(list(chat_responses), replyer_resp)
 
     prompt = MagicMock()
     prompt.render = MagicMock(return_value="PROMPT")
@@ -138,7 +167,7 @@ def _setup_agent(
 
 @pytest.mark.asyncio
 async def test_decision_loop_danmaku_to_reply_provider():
-    """决策循环端到端：弹幕事件 → Planner chat_messages（ReAct 调 reply）→ Replyer.call_tools → 发言管线。
+    """决策循环端到端：弹幕事件 → Planner generate（ReAct 调 reply）→ Replyer generate → 发言管线。
 
     reply 是真工具：注册进 ToolRegistry（名单 [streamer]）；Planner 循环内暂仍经
     _reply_provider.invoke 直连（调用统一在后续任务收口）。proactive/command 是
@@ -164,11 +193,11 @@ async def test_decision_loop_danmaku_to_reply_provider():
         # 给 Agent 一些时间处理事件 + flush 循环
         await asyncio.sleep(0.2)
 
-        # 2. Planner ReAct 至少一轮 chat_messages
-        assert llm.chat_messages.await_count >= 1, "Planner 应至少调一次 chat_messages"
+        # 2. Planner ReAct 至少一轮 generate
+        assert len(_planner_calls(llm)) >= 1, "Planner 应至少调一次 generate"
 
-        # 3. 循环内调 reply → Replyer 生成（call_tools）
-        assert llm.call_tools.await_count >= 1, "Planner 调 reply 后 Replyer 应被触发"
+        # 3. 循环内调 reply → Replyer 生成
+        assert len(_replyer_calls(llm)) >= 1, "Planner 调 reply 后 Replyer 应被触发"
 
         # 4. reply_provider 已构造（循环内直连 invoke）
         assert agent._reply_provider is not None
@@ -183,12 +212,11 @@ async def test_decision_loop_danmaku_to_reply_provider():
 
 @pytest.mark.asyncio
 async def test_decision_loop_planner_no_reply_path():
-    """Planner 自然终止（无 tool_calls）→ 不触发 Replyer.call_tools，静默收场。"""
+    """Planner 自然终止（无 tool_calls）→ 不触发 Replyer 生成，静默收场。"""
     chat_responses = [_planner_react_response([])]
 
     llm = MagicMock()
-    llm.chat_messages = AsyncMock(side_effect=list(chat_responses))
-    llm.call_tools = AsyncMock()
+    llm.generate = _make_generate_mock(list(chat_responses), _replyer_response("不应被消费"))
 
     prompt = MagicMock()
     prompt.render = MagicMock(return_value="PROMPT")
@@ -221,9 +249,9 @@ async def test_decision_loop_planner_no_reply_path():
 
         await asyncio.sleep(0.2)
 
-        # Planner 恰好 1 轮 chat_messages（自然终止），Replyer 不调
-        assert llm.chat_messages.await_count == 1, "自然终止应恰好 1 轮"
-        assert llm.call_tools.await_count == 0, "自然终止时 Replyer 不应被触发"
+        # Planner 恰好 1 轮 generate（自然终止），Replyer 不调
+        assert len(_planner_calls(llm)) == 1, "自然终止应恰好 1 轮"
+        assert len(_replyer_calls(llm)) == 0, "自然终止时 Replyer 不应被触发"
 
         stats = agent.get_statistics()
         assert stats["total_no_action"] >= 1
@@ -306,7 +334,7 @@ async def test_decision_loop_danmaku_reply_not_gated_by_live_session():
     try:
         await bus.emit(CoreEvents.ROOM_MESSAGE_DANMAKU, _make_payload("主播好可爱！"), source="bilibili")
         await asyncio.sleep(0.2)
-        assert llm.chat_messages.await_count >= 1, "未开播时弹幕回复不应被门控"
+        assert len(_planner_calls(llm)) >= 1, "未开播时弹幕回复不应被门控"
     finally:
         await agent.cleanup()
 
@@ -316,8 +344,7 @@ async def test_decision_loop_danmaku_reply_not_gated_by_live_session():
 async def test_decision_loop_handle_message_direct():
     """handle_message 直接入口（测试用）：跳过 EventBus，直接调 Agent。"""
     llm = MagicMock()
-    llm.chat_messages = AsyncMock(return_value=_planner_react_response([]))
-    llm.call_tools = AsyncMock(return_value=_replyer_response("OK", emotion="happy"))
+    llm.generate = _make_generate_mock(_planner_react_response([]), _replyer_response("OK", emotion="happy"))
     prompt = MagicMock()
     prompt.render = MagicMock(return_value="PROMPT")
 
@@ -390,7 +417,7 @@ class TestDecisionObservability:
     async def test_planner_failure_still_emits_decision_event(self):
         """Planner LLM 失败也必须发决策事件——失败可见性是核心价值。"""
         agent, bus, registry, llm, prompt = _setup_agent()
-        llm.chat_messages = AsyncMock(side_effect=RuntimeError("boom"))
+        llm.generate = _make_generate_mock(RuntimeError("boom"), _replyer_response("x"))
 
         decisions: list = []
 

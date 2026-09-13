@@ -53,14 +53,10 @@ def get_client_impl(client_type: str) -> type[BaseLLMClient]:
 
 
 # 能力调度表：方法名 → 取该能力的访问器（替代引擎层的 getattr 动态分派）。
-# generate / generate_vision 是中立 payload 契约；chat / vision / stream_chat
-# 是遗留能力面（旧入口过渡期使用）。
+# generate / generate_vision 是中立 payload 契约，也是引擎仅有的两个入口。
 _CLIENT_METHODS: Dict[str, Callable[[BaseLLMClient], Callable[..., Any]]] = {
     "generate": lambda client: client.generate,
     "generate_vision": lambda client: client.generate_vision,
-    "chat": lambda client: client.chat,
-    "vision": lambda client: client.vision,
-    "stream_chat": lambda client: client.stream_chat,
 }
 
 

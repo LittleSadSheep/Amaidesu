@@ -23,7 +23,6 @@ from src.modules.llm.clients import get_client_impl
 from src.modules.logging import get_logger
 
 __all__ = [
-    "ClientType",
     "ProfileNames",
     "KNOWN_PROFILE_NAMES",
     "_ResolvedModel",
@@ -68,10 +67,6 @@ def validate_profile_binding(profile_name: str) -> None:
     """
     if profile_name not in KNOWN_PROFILE_NAMES:
         raise ValueError(f"未知的 LLM 用途 profile: {profile_name!r}（封闭集合：{sorted(KNOWN_PROFILE_NAMES)}）")
-
-
-# 向后兼容别名：旧测试 / 旧代码可能引用 ``ClientType``；语义已收敛到 ProfileNames
-ClientType = ProfileNames
 
 
 class _ResolvedModel(BaseModel):
@@ -237,28 +232,14 @@ def resolve_profile_name(
 ) -> str:
     """把 ``client_type`` 参数解析为 profile 名。
 
-    - None / 非法值 → ProfileNames.DEFAULT
+    - None / 缺省 → ProfileNames.DEFAULT
     - 已是 profile 名（存在于 profiles）→ 原样返回
-    - 旧名（llm / llm_fast / vlm 等）→ 映射到新名（兼容过渡期）
+    - 其余值 fail-fast（旧名 llm / llm_fast / vlm 等兼容映射已退役，
+      消费方一律使用封闭集合内的 profile 名）
     """
-    log = logger if logger is not None else get_logger("LLMBootstrap")
     if client_type is None:
         return ProfileNames.DEFAULT
     if client_type in profiles:
         return client_type
-    # 旧名映射（过渡期兼容，避免下游误传 hardcode 触发 ValueError）
-    legacy_map = {
-        "llm": ProfileNames.PLANNER,
-        "llm_fast": ProfileNames.REPLYER,
-        "vlm": ProfileNames.VISION,
-        "llm_local": ProfileNames.MINECRAFT,
-        "llm_summary": ProfileNames.SUMMARY,
-        "llm_agenda": ProfileNames.SUMMARY,
-        "llm_outline": ProfileNames.SUMMARY,
-    }
-    if client_type in legacy_map:
-        mapped = legacy_map[client_type]
-        log.debug(f"client_type {client_type!r} 已映射到新 profile 名 {mapped!r}")
-        return mapped
     # 真正未注册：fail-fast
     raise ValueError(f"LLM 客户端/用途 '{client_type}' 未配置。已配置的 profile: {list(profiles.keys())}")

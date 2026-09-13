@@ -97,12 +97,11 @@ def _make_policy_client(behavior: Callable[[str], Optional[Exception]]) -> type:
 async def _run_generate(client_cls: type):
     """把 fake 客户端挂进调度表并跑一次 generate，返回 (fake 实例, 响应)"""
     with patch.dict(_CLIENT_DISPATCH, {"policyfake": client_cls}):
-        with patch("src.modules.llm.clients.token_usage_manager.TokenUsageManager"):
-            manager = LLMManager()
-            await manager.setup(_policy_config())
-            fake = manager._provider_clients["fake"]
-            response = await manager.generate("你好", profile="planner")
-            return fake, response
+        manager = LLMManager()
+        await manager.setup(_policy_config())
+        fake = manager._provider_clients["fake"]
+        response = await manager.generate("你好", profile="planner")
+        return fake, response
 
 
 @pytest.mark.asyncio
@@ -144,12 +143,11 @@ async def test_interrupted_aborts_whole_call():
     client_cls = _make_policy_client(lambda _model: LLMInterruptedError("调用被中断"))
 
     with patch.dict(_CLIENT_DISPATCH, {"policyfake": client_cls}):
-        with patch("src.modules.llm.clients.token_usage_manager.TokenUsageManager"):
-            manager = LLMManager()
-            await manager.setup(_policy_config())
-            fake = manager._provider_clients["fake"]
+        manager = LLMManager()
+        await manager.setup(_policy_config())
+        fake = manager._provider_clients["fake"]
 
-            with pytest.raises(LLMInterruptedError):
-                await manager.generate("你好", profile="planner")
+        with pytest.raises(LLMInterruptedError):
+            await manager.generate("你好", profile="planner")
 
     assert fake.calls == ["fake-1"]

@@ -8,7 +8,6 @@ LLM 请求历史记录管理器
 全局管理器使用方式：
 1. 直接创建 RequestHistoryManager() - 会自动使用全局实例
 2. 使用 get_global_request_history_manager() - 显式获取全局实例
-3. 使用 set_global_request_history_manager_callback() - 设置回调函数（用于实时推送）
 
 注意：所有地方都应该使用全局实例以确保数据一致性
 """
@@ -18,7 +17,7 @@ import json
 import uuid
 from collections import deque
 from datetime import datetime
-from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
@@ -44,19 +43,6 @@ def get_global_request_history_manager() -> "RequestHistoryManager":
     if global_request_history_manager is None:
         global_request_history_manager = RequestHistoryManager(use_global=False)
     return global_request_history_manager
-
-
-def set_global_request_history_manager_callback(callback: Optional[Callable[[Dict[str, Any]], None]]) -> None:
-    """设置全局请求历史记录管理器的回调
-
-    Args:
-        callback: 回调函数，参数为请求记录字典
-    """
-    global global_request_history_manager
-    if global_request_history_manager is None:
-        global_request_history_manager = RequestHistoryManager(record_callback=callback)
-    else:
-        global_request_history_manager.record_callback = callback
 
 
 CACHE_SIZE = 100  # 内存缓存大小
@@ -129,7 +115,6 @@ class RequestHistoryManager:
 
     def __init__(
         self,
-        record_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
         use_global: bool = True,
         cache_size: int = CACHE_SIZE,
         enabled: bool = True,
@@ -138,7 +123,6 @@ class RequestHistoryManager:
         """初始化请求历史记录管理器
 
         Args:
-            record_callback: 记录更新时的回调函数，参数为请求记录字典
             use_global: 是否使用全局实例
             cache_size: 内存缓存大小
             enabled: 是否启用记录功能。测试环境关闭以避免污染数据库
@@ -147,16 +131,11 @@ class RequestHistoryManager:
         # 如果使用全局实例且已存在，则返回现有实例
         global global_request_history_manager
         if use_global and global_request_history_manager is not None:
-            if record_callback:
-                global_request_history_manager.record_callback = record_callback
             self.__dict__.update(global_request_history_manager.__dict__)
             return
 
         # 初始化 logger
         self.logger = get_logger("RequestHistoryManager")
-
-        # 设置回调
-        self.record_callback = record_callback
 
         # 记录开关（测试环境关闭）
         self.enabled = enabled
@@ -207,13 +186,6 @@ class RequestHistoryManager:
                 pass
             else:
                 loop.create_task(self._persist_request(record_dict))
-
-        # 触发回调
-        if self.record_callback:
-            try:
-                self.record_callback(record_dict)
-            except Exception as e:
-                self.logger.warning(f"执行记录回调失败: {e}")
 
         self.logger.debug(
             f"记录请求: {record.request_id}, 模型: {record.model_name}, "

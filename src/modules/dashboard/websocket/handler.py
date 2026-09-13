@@ -40,7 +40,6 @@ class WebSocketHandler:
         self._last_pong: Dict[str, float] = {}
         self._send_queues: Dict[str, asyncio.Queue[WebSocketMessage]] = {}
         self._writer_tasks: Dict[str, "asyncio.Task[None]"] = {}
-        self._broadcast_callbacks: List[Callable] = []
         self._running = False
 
     @property

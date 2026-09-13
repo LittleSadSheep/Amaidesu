@@ -11,17 +11,18 @@ import pytest
 
 from src.agents.streamer.planner import Planner
 from src.agents.streamer.room_state import RoomState
-from src.modules.llm.manager import LLMResponse
+from src.modules.llm.payload import Response as PayloadResponse
+from src.modules.llm.payload import ToolCall as PayloadToolCall
 from src.modules.tools.models import ToolSpec, ToolExecutionResult
 from src.modules.tools.registry import ToolRegistry
 
 
-def _tc(name: str, args: dict, call_id: str = "c1") -> dict:
-    return {"id": call_id, "type": "function", "function": {"name": name, "arguments": args}}
+def _tc(name: str, args: dict, call_id: str = "c1") -> PayloadToolCall:
+    return PayloadToolCall(id=call_id, name=name, arguments=args)
 
 
-def _resp(content: str = "", tool_calls: list | None = None) -> LLMResponse:
-    return LLMResponse(success=True, content=content, tool_calls=tool_calls or [])
+def _resp(content: str = "", tool_calls: list | None = None) -> PayloadResponse:
+    return PayloadResponse(success=True, content=content, tool_calls=tool_calls or [])
 
 
 def _make_planner(
@@ -33,12 +34,12 @@ def _make_planner(
     max_steps: int = 8,
     elapsed_live_provider: Any | None = None,
 ) -> tuple[Planner, MagicMock, MagicMock]:
-    """构造测试 Planner：mock LLM（chat_messages）+ mock prompt_service。
+    """构造测试 Planner：mock LLM（generate）+ mock prompt_service。
 
     registry 缺省给一个空 registry mock；reply_provider 缺省给一个成功 mock。
     """
     llm = MagicMock()
-    llm.chat_messages = AsyncMock(side_effect=list(chat_responses) if chat_responses else [])
+    llm.generate = AsyncMock(side_effect=list(chat_responses) if chat_responses else [])
 
     prompt = MagicMock()
     prompt.render = MagicMock(return_value="SYSTEM_PROMPT")
@@ -113,7 +114,13 @@ def test_tool_list_is_for_agent_registry_result() -> None:
     """工具列表 = for_agent("streamer") 注册表结果（全名直出，统一来源）；rundown 例外条件追加。"""
     registry = MagicMock()
     registry.list_tools.return_value = [
-        ToolSpec(name="get_work_log", description="查工作文档", parameters_schema={"type": "object"}, kind="sync", provider="minecraft"),
+        ToolSpec(
+            name="get_work_log",
+            description="查工作文档",
+            parameters_schema={"type": "object"},
+            kind="sync",
+            provider="minecraft",
+        ),
         ToolSpec(name="reply", description="说话出口", parameters_schema=None, kind="sync", provider="streamer"),
     ]
     planner, _llm, _prompt = _make_planner(registry=registry)
@@ -156,7 +163,7 @@ async def test_react_reply_terminates_loop() -> None:
     assert outcome["steps"] == 1
     assert outcome["tool_trace"] == ["streamer_reply"]
     # reply 之后不再有下一轮 LLM 调用
-    assert llm.chat_messages.await_count == 1
+    assert llm.generate.await_count == 1
 
 
 @pytest.mark.asyncio
@@ -168,7 +175,7 @@ async def test_react_natural_termination_silent() -> None:
 
     assert outcome["replied"] is False
     assert outcome["silent_reason"] == "natural"
-    assert llm.chat_messages.await_count == 1
+    assert llm.generate.await_count == 1
 
 
 @pytest.mark.asyncio
@@ -176,7 +183,13 @@ async def test_react_registry_tool_then_reply() -> None:
     """先调 registry 工具（观察作为观察返回）→ 再调 reply 收尾。"""
     registry = MagicMock()
     registry.list_tools.return_value = [
-        ToolSpec(name="minecraft_get_state", description="查", parameters_schema={"type": "object"}, kind="sync", provider="minecraft"),
+        ToolSpec(
+            name="minecraft_get_state",
+            description="查",
+            parameters_schema={"type": "object"},
+            kind="sync",
+            provider="minecraft",
+        ),
     ]
     registry.invoke = AsyncMock(
         return_value=ToolExecutionResult(tool_name="minecraft_get_state", success=True, structured_content={"todo": []})
@@ -191,9 +204,9 @@ async def test_react_registry_tool_then_reply() -> None:
 
     assert outcome["replied"] is True
     assert outcome["tool_trace"] == ["minecraft_get_state", "streamer_reply"]
-    assert llm.chat_messages.await_count == 2
+    assert llm.generate.await_count == 2
     # 观察作为观察返回：第二轮 messages 含 tool role + tool_call_id 关联
-    second = llm.chat_messages.await_args_list[1].kwargs["messages"]
+    second = llm.generate.await_args_list[1].args[0]
     tool_msgs = [m for m in second if m.get("role") == "tool"]
     assert tool_msgs and tool_msgs[0]["tool_call_id"] == "c1"
     assert '"todo"' in tool_msgs[0]["content"]
@@ -220,7 +233,7 @@ async def test_react_max_steps_silent() -> None:
     assert outcome["replied"] is False
     assert outcome["silent_reason"] == "max_steps"
     assert outcome["steps"] == 3
-    assert llm.chat_messages.await_count == 3
+    assert llm.generate.await_count == 3
 
 
 @pytest.mark.asyncio
@@ -242,7 +255,7 @@ async def test_react_tool_failure_fed_back_to_llm() -> None:
     outcome = await planner.plan([_msg()])
 
     assert outcome["replied"] is False
-    second = llm.chat_messages.await_args_list[1].kwargs["messages"]
+    second = llm.generate.await_args_list[1].args[0]
     tool_msgs = [m for m in second if m.get("role") == "tool"]
     assert tool_msgs and "world not loaded" in tool_msgs[0]["content"]
 
@@ -258,7 +271,7 @@ async def test_react_reply_unavailable_fed_back() -> None:
         tool_registry=MagicMock(),
         reply_provider=None,
     )
-    planner._llm_service.chat_messages = AsyncMock(
+    planner._llm_service.generate = AsyncMock(
         side_effect=[
             _resp(tool_calls=[_tc("streamer_reply", {"topic_summary": "t"})]),
             _resp(),
@@ -273,9 +286,9 @@ async def test_react_reply_unavailable_fed_back() -> None:
 
 @pytest.mark.asyncio
 async def test_react_llm_error_outcome() -> None:
-    """chat_messages 抛异常 → llm_error outcome（不抛出）。"""
+    """generate 抛异常 → llm_error outcome（不抛出）。"""
     llm = MagicMock()
-    llm.chat_messages = AsyncMock(side_effect=RuntimeError("boom"))
+    llm.generate = AsyncMock(side_effect=RuntimeError("boom"))
     planner, _llm, _prompt = _make_planner()
     planner._llm_service = llm
 
@@ -312,7 +325,7 @@ async def test_context_bare_path_when_disabled() -> None:
 
     await planner.plan([_msg("主播好")], history=[])
 
-    messages = llm.chat_messages.await_args.kwargs["messages"]
+    messages = llm.generate.await_args.args[0]
     assert messages[1]["role"] == "user"
     assert "主播好" in messages[1]["content"]
     # 系统提示词只渲染 behavior_style（无 context_block 变量）
@@ -390,7 +403,7 @@ async def test_observability_fields_reset_and_populated() -> None:
     await planner.plan([_msg()])
     assert planner.last_raw_content == "思考中"
     # 二轮失败路径：last_failure 写入
-    planner._llm_service.chat_messages = AsyncMock(side_effect=RuntimeError("x"))
+    planner._llm_service.generate = AsyncMock(side_effect=RuntimeError("x"))
     await planner.plan([_msg()])
     assert planner.last_failure is not None and "x" in planner.last_failure
 
@@ -415,7 +428,7 @@ async def test_prompt_render_failure_degrades() -> None:
 
 def _reference_message(llm: Any) -> Any:
     """参考段 = 发给 LLM 的消息序列中最后一条 user 消息（序列尾，循环追加在其后）。"""
-    messages = llm.chat_messages.await_args.kwargs["messages"]
+    messages = llm.generate.await_args.args[0]
     return next((m for m in reversed(messages) if m["role"] == "user"), None)
 
 
@@ -471,7 +484,7 @@ async def test_context_dedups_batch_from_history_tail() -> None:
 
     await planner.plan([_msg("来个落地水", mid="m9")], history=history)
 
-    msgs = llm.chat_messages.await_args.kwargs["messages"]
+    msgs = llm.generate.await_args.args[0]
     dialogue = [m for m in msgs if m["role"] in ("user", "assistant")][:-1]  # 去掉参考段
     joined = "\n".join(m["content"] for m in dialogue)
     assert joined.count("来个落地水") == 1
@@ -487,7 +500,7 @@ async def test_context_omits_char_level_topics() -> None:
 
     await planner.plan([_msg("来个落地水")])
 
-    ref_msg = llm.chat_messages.await_args.kwargs["messages"][-1]
+    ref_msg = llm.generate.await_args.args[0][-1]
     assert "关键变化" not in ref_msg["content"]
 
 
@@ -524,6 +537,7 @@ async def test_context_elapsed_provider_missing_omits_line() -> None:
 @pytest.mark.asyncio
 async def test_context_elapsed_provider_failure_degrades() -> None:
     """provider 抛异常 → 降级为 0（省略该行），不阻断决策。"""
+
     def _boom() -> int:
         raise RuntimeError("agenda down")
 

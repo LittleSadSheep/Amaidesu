@@ -27,7 +27,7 @@ from src.agents.streamer.streamer_agent import StreamerAgent
 from src.modules.events.event_bus import EventBus
 from src.modules.events.names import CoreEvents
 from src.modules.events.payloads.speech import StreamerSpeechPayload
-from src.modules.llm.manager import LLMResponse
+from src.modules.llm.client import LLMResponse
 from src.modules.llm.payload import Response
 
 

@@ -13,7 +13,7 @@
 - profile 字段 = 应用侧角色调整 → 改 llm_profiles 段
 
 价格合流：价格唯一来源 = 本表 ``price_in`` / ``price_out`` / ``cache_price_in``，
-``token_usage_manager`` 按模型标识从注入的价格表取价。
+费用计算（``observation.calculate_cost``）按模型标识从引擎装配的价格表取价。
 """
 
 from __future__ import annotations

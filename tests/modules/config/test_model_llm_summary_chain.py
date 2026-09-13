@@ -19,7 +19,7 @@ import pytest
 from src.modules.config.model_schemas import LLMProfilesConfig, ModelRootConfig
 from src.modules.config.multi_file_loader import generate_default_configs, load_config_dir
 from src.modules.llm.clients import _CLIENT_DISPATCH
-from src.modules.llm.manager import LLMManager
+from src.modules.llm.engine import LLMManager
 
 
 @pytest.fixture
@@ -108,33 +108,30 @@ class TestScenarioBLLMManagerParsesSummary:
         manager = LLMManager()
 
         with patch.dict(_CLIENT_DISPATCH, {"openai": mock_backend_class}):
-            with patch("src.modules.llm.clients.token_usage_manager.TokenUsageManager"):
-                await manager.setup(loaded_model_config)
-                yield manager, created_instances, mock_backend_class
+            await manager.setup(loaded_model_config)
+            yield manager, created_instances, mock_backend_class
 
     @pytest.mark.asyncio
     async def test_has_profile_summary(self, setup_manager_with_real_config):
         manager, _, _ = setup_manager_with_real_config
-        assert manager.has_profile("summary") is True
+        assert "summary" in manager._profiles
 
     @pytest.mark.asyncio
     async def test_summary_profile_resolves_model_list(self, setup_manager_with_real_config):
         manager, _, _ = setup_manager_with_real_config
-        summary_cfg = manager.get_client_config("summary")
-        assert summary_cfg is not None
-        assert summary_cfg["profile_name"] == "summary"
-        assert len(summary_cfg["models"]) >= 1
+        summary_profile = manager._profiles["summary"]
+        assert summary_profile.profile_name == "summary"
+        assert len(summary_profile.models) >= 1
         # 每个 model 都应有 model_identifier 和 provider_name
-        for m in summary_cfg["models"]:
-            assert m["model_identifier"]
-            assert m["provider_name"]
+        for m in summary_profile.models:
+            assert m.model_identifier
+            assert m.provider_name
 
     @pytest.mark.asyncio
     async def test_summary_shares_provider_with_other_profiles(self, setup_manager_with_real_config):
         """summary 与 replyer 等 profile 共享同一 provider 时复用同一连接。"""
         manager, _, _ = setup_manager_with_real_config
         # 同一 provider 的客户端应是同一实例（共享连接池）
-        providers_used_by_summary = {m["provider_name"] for m in manager.get_client_config("summary")["models"]}
-        # 至少验证 has_provider
+        providers_used_by_summary = {m.provider_name for m in manager._profiles["summary"].models}
         for provider_name in providers_used_by_summary:
-            assert manager.has_provider(provider_name) if hasattr(manager, "has_provider") else True
+            assert provider_name in manager._provider_clients

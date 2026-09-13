@@ -106,13 +106,12 @@ def _make_timeout_client(m1_behavior: Any) -> type:
 async def _run(client_cls: type, config: Dict[str, Any], **generate_kwargs: Any):
     """装配 LLMManager 跑一次 generate，返回 (fake 实例, 响应, record_usage mock)"""
     with patch.dict(_CLIENT_DISPATCH, {"timeoutfake": client_cls}):
-        with patch("src.modules.llm.clients.token_usage_manager.TokenUsageManager"):
-            with patch("src.modules.llm.engine.record_usage", new_callable=AsyncMock) as record_mock:
-                manager = LLMManager(llm_repo=object())  # 注入 repo 使 llm_usage 落库路径生效
-                await manager.setup(config)
-                fake = manager._provider_clients["fake"]
-                response = await manager.generate("你好", profile="planner", **generate_kwargs)
-                return fake, response, record_mock
+        with patch("src.modules.llm.engine.record_usage", new_callable=AsyncMock) as record_mock:
+            manager = LLMManager(llm_repo=object())  # 注入 repo 使 llm_usage 落库路径生效
+            await manager.setup(config)
+            fake = manager._provider_clients["fake"]
+            response = await manager.generate("你好", profile="planner", **generate_kwargs)
+            return fake, response, record_mock
 
 
 async def _noop_behavior(_on_delta: Any) -> None:
@@ -214,9 +213,8 @@ async def test_setup_warns_when_hard_timeout_below_provider_timeout():
     handler_id = loguru_logger.add(lambda msg: warnings.append(str(msg)), level="WARNING")
     try:
         with patch.dict(_CLIENT_DISPATCH, {"timeoutfake": client_cls}):
-            with patch("src.modules.llm.clients.token_usage_manager.TokenUsageManager"):
-                manager = LLMManager()
-                await manager.setup(config)
+            manager = LLMManager()
+            await manager.setup(config)
     finally:
         loguru_logger.remove(handler_id)
 
@@ -234,9 +232,8 @@ async def test_setup_no_warning_when_hard_timeout_above_provider_timeout():
     handler_id = loguru_logger.add(lambda msg: warnings.append(str(msg)), level="WARNING")
     try:
         with patch.dict(_CLIENT_DISPATCH, {"timeoutfake": client_cls}):
-            with patch("src.modules.llm.clients.token_usage_manager.TokenUsageManager"):
-                manager = LLMManager()
-                await manager.setup(config)
+            manager = LLMManager()
+            await manager.setup(config)
     finally:
         loguru_logger.remove(handler_id)
 

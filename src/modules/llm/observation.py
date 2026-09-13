@@ -2,9 +2,7 @@
 
 单一费用口径：按 ``model.toml`` ``[[llm_models]]`` 的定价字段
 （price_in / price_out，每百万 token）把一次调用的 token 消耗折算为费用。
-
-JSON 使用量账本（``TokenUsageManager``）的完整退役属后续任务；
-本波仅把费用计算逻辑收拢到这里，原文件以薄委托引用。
+引擎装配期从同一来源构建价格表，经 ``calculate_cost`` 取价。
 
 本模块是 ``llm_usage`` 与 ``llm_requests`` 两表在 llm 模块内的**唯一写入者**：
 - ``record_usage``：只写聚合账（既有调用方兼容路径）

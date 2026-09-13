@@ -70,9 +70,8 @@ def usage_env(tmp_path):
     conn_manager.connection().executescript(build_schema_sql())
     repo = LLMRepo(conn_manager)
     with patch.dict(_CLIENT_DISPATCH, {"cacheprobe": CacheProbeClient}):
-        with patch("src.modules.llm.clients.token_usage_manager.TokenUsageManager"):
-                manager = LLMManager(llm_repo=repo)
-                yield manager, repo, conn_manager
+        manager = LLMManager(llm_repo=repo)
+        yield manager, repo, conn_manager
     # 连接管理器无显式 close；tmp_path 数据库随用例结束自动清理
 
 

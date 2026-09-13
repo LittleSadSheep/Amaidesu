@@ -22,7 +22,7 @@ from src.agents.streamer.background import BackgroundMaintainer
 from src.agents.streamer.room_state import RoomState
 from src.agents.streamer.streamer_agent import StreamerAgent
 from src.agents.streamer.config import StreamerConfig
-from src.modules.llm.manager import LLMResponse
+from src.modules.llm.client import LLMResponse
 from src.modules.llm.payload import Response
 from src.modules.storage.database import SQLiteDatabase
 
