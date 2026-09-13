@@ -452,9 +452,9 @@ class LLMManager:
 
     # === 内部：profile 解析 ===
 
-    def _resolve_profile_name(self, client_type: Optional[str]) -> str:
-        """把 ``client_type`` 参数解析为 profile 名（解析规则见 bootstrap 模块）。"""
-        return resolve_profile_name(client_type, self._profiles, self.logger)
+    def _resolve_profile_name(self, profile: Optional[str]) -> str:
+        """把调用方传入的 profile 参数解析为已配置 profile 名（解析规则见 bootstrap 模块）。"""
+        return resolve_profile_name(profile, self._profiles, self.logger)
 
     def _get_profile(self, profile_name: str) -> _ResolvedProfile:
         if profile_name not in self._profiles:

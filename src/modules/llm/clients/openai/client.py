@@ -12,7 +12,7 @@ import json
 import mimetypes
 import os
 from io import BytesIO
-from typing import Any, AsyncIterator, Callable, Dict, List, Optional, Union
+from typing import Any, Callable, Dict, List, Optional, Union
 
 from json_repair import repair_json
 from openai import (
@@ -370,8 +370,8 @@ class OpenAIClient(BaseLLMClient):
     ) -> LLMResponse:
         """聊天调用实现：SDK 异常翻译为错误分类异常后抛出（不自行重试）。
 
-        on_delta 非 None 时走流式传输（SSE 逐帧接收、边收边回调），流结束后
-        组装完整 LLMResponse 返回——传输层流式、语义层整段）。
+        on_delta 非 None 时走流式传输：SSE 逐帧接收、边收边回调，流结束后
+        组装完整 LLMResponse 返回（传输层流式、语义层整段）。
         流式请求建立失败时自动降级为非流式一次性调用（回调不触发）。
         """
         if on_delta is not None:
@@ -555,50 +555,6 @@ class OpenAIClient(BaseLLMClient):
                 )
         self._ensure_not_empty(result)
         return result
-
-    async def stream_chat(  # type: ignore[override]
-        self,
-        messages: List[Dict[str, Any]],
-        *,
-        model: str,
-        temperature: Optional[float] = None,
-        max_tokens: Optional[int] = None,
-        stop_event: Optional[asyncio.Event] = None,
-        interrupt_flag: Optional[asyncio.Event] = None,
-    ) -> AsyncIterator[str]:
-        """流式聊天。"""
-        request_params: Dict[str, Any] = {
-            "model": model,
-            "messages": messages,
-            "temperature": temperature or self.temperature,
-            "stream": True,
-        }
-        if max_tokens:
-            request_params["max_tokens"] = max_tokens
-        elif self.max_tokens:
-            request_params["max_tokens"] = self.max_tokens
-        stream = None
-        try:
-            stream = await self.client.chat.completions.create(**request_params)
-            async for chunk in stream:
-                if (stop_event is not None and stop_event.is_set()) or (
-                    interrupt_flag is not None and interrupt_flag.is_set()
-                ):
-                    break
-                try:
-                    text_piece = getattr(chunk.choices[0].delta, "content", None)
-                    if text_piece:
-                        yield text_piece
-                except (IndexError, AttributeError, TypeError, KeyError):
-                    yield ""
-        except (LLMError, OSError, ValueError, TypeError) as e:
-            self.logger.error(f"流式 LLM 请求失败: {e}")
-        finally:
-            if stream is not None:
-                try:
-                    await stream.aclose()
-                except _LEGACY_FALLBACK_ERRORS as e:
-                    self.logger.debug(f"关闭流失败（已忽略）: {e}")
 
     async def vision(
         self,

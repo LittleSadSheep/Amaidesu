@@ -107,30 +107,6 @@ async def test_chat_interrupt():
 
 
 @pytest.mark.asyncio
-async def test_stream_chat_interrupt():
-    client, sdk_client = _make_client()
-    stop_event = asyncio.Event()
-    stream = MagicMock()
-    stream.aclose = AsyncMock()
-
-    async def chunks():
-        yield SimpleNamespace(choices=[SimpleNamespace(delta=SimpleNamespace(content="first"))])
-        stop_event.set()
-        yield SimpleNamespace(choices=[SimpleNamespace(delta=SimpleNamespace(content="second"))])
-
-    stream.__aiter__.side_effect = chunks
-    sdk_client.chat.completions.create.return_value = stream
-
-    pieces = [
-        piece async for piece in client.stream_chat(MESSAGES, model="test-model", max_tokens=88, stop_event=stop_event)
-    ]
-
-    assert pieces == ["first"]
-    assert sdk_client.chat.completions.create.await_args.kwargs["max_tokens"] == 88
-    stream.aclose.assert_awaited_once()
-
-
-@pytest.mark.asyncio
 async def test_vision():
     client, sdk_client = _make_client()
     sdk_client.chat.completions.create.return_value = _response(

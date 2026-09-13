@@ -1,9 +1,12 @@
-"""Helpers for interruptible and bounded LLM requests."""
+"""可中断、有硬超时边界的 LLM 请求取消原语。"""
 
 import asyncio
 from typing import Awaitable, Callable, Optional, TypeVar
 
 from src.modules.llm.errors import LLMInterruptedError
+from src.modules.logging import get_logger
+
+_logger = get_logger(__name__)
 
 _T = TypeVar("_T")
 
@@ -28,8 +31,8 @@ async def _reap(task: "asyncio.Task") -> None:
         await task
     except asyncio.CancelledError:
         pass
-    except Exception:
-        pass
+    except Exception as e:
+        _logger.debug(f"子任务清理期异常（已忽略）: {e}")
 
 
 async def guarded_call(
@@ -82,9 +85,9 @@ async def await_with_timeout_and_interrupt(
 ) -> _T:
     """等待 LLM 请求完成并支持超时/外部中断，确保 httpx 连接得到清理。
 
-    hard timeout prevents a request from hanging indefinitely.  When an interrupt
-    event is set, the underlying task is cancelled and awaited so its httpx
-    response/connection cleanup can finish before ``CancelledError`` propagates.
+    provider 级超时防止请求无限挂起；中断事件置位时取消底层任务
+    并等待其结束，让 httpx 的响应/连接清理先完成，再向上传播
+    ``CancelledError``。
     """
     loop = asyncio.get_running_loop()
     deadline = loop.time() + timeout
@@ -115,5 +118,5 @@ async def await_with_timeout_and_interrupt(
             await task
         except asyncio.CancelledError:
             pass
-        except Exception:
-            pass
+        except Exception as e:
+            _logger.debug(f"任务收尾期异常（已忽略）: {e}")
