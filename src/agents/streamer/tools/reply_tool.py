@@ -148,7 +148,6 @@ class ReplyToolProvider:
                         reply_guidance=str(args.get("reply_guidance", "") or ""),
                         confidence=min(1.0, max(0.0, confidence)),
                         target=target if isinstance(target, str) else None,
-                        reply_to_message_id=None,
                     ),
                     source="reply_tool",
                 )

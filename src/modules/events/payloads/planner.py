@@ -161,7 +161,6 @@ class PlannerVerdictPayload(BasePayload):
         reply_guidance: 给 Replyer 的方向性指引
         confidence: 决策置信度 [0.0, 1.0]
         target: 决策面向的对象
-        reply_to_message_id: 决策所回复弹幕的 message_id
         timestamp_ms: 事件发布时间戳（Unix 毫秒）
     """
 
@@ -174,7 +173,6 @@ class PlannerVerdictPayload(BasePayload):
     reply_guidance: str = Field(default="", description="给 Replyer 的方向性指引")
     confidence: float = Field(default=0.0, description="决策置信度 [0.0, 1.0]")
     target: Optional[str] = Field(default=None, description="决策面向的对象")
-    reply_to_message_id: Optional[str] = Field(default=None, description="决策所回复弹幕的 message_id")
     timestamp_ms: int = Field(
         default_factory=lambda: now_ms(),
         description="事件发布时间戳（Unix 毫秒）",
