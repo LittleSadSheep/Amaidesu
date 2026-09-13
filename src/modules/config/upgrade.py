@@ -1,14 +1,16 @@
 """每文件版本推进 + 升级钩子注册表
 
-版本流按文件独立递进：读 ``[meta].version`` → 低于基线时跑该文件的钩子链
-→ 写回推进。钩子分两类：
+版本流按文件独立递进：读 ``[meta].version`` → 跑该文件所有 ``old < target``
+的钩子 → 版本戳推进到最后一个已执行钩子的 target。没有适用钩子的文件版本
+保持原值——一个文件升版本绝不带动其他文件的版本戳。钩子分两类：
 
 - **FileUpgradeHook**：单文件钩子，原地改 dict、返回变更路径列表、幂等。
 - **CrossFileHook**：跨文件钩子——声明 ``target_file``；运行时同时拿到宿主
-  与目标两个文件的 dict，变更由调度器双写并双版本同升（无独立预通道）。
+  与目标两个文件的 dict，变更由调度器双写，目标文件版本推进到该钩子的
+  target（不回退已高于 target 的目标文件）。
 
-调度采用**区间语义**：``old < hook.target <= baseline`` 的钩子执行，链跑完
-后版本戳推进到基线。新钩子随结构变更在此登记。
+调度不存在全局版本上界：文件版本超前于全部钩子时自然零变更。新钩子随
+结构变更在此登记。
 """
 
 from __future__ import annotations
@@ -17,7 +19,6 @@ from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Protocol
 
 from src.modules.config.errors import ConfigValidationError
-from src.modules.config.file_meta import CONFIG_BASELINE_VERSION
 from src.modules.logging import get_logger
 
 logger = get_logger("ConfigUpgrade")
@@ -138,20 +139,20 @@ def _version_tuple(version: str) -> tuple[int, ...]:
 def advance_file_versions(raw_docs: Dict[str, Dict[str, Any]]) -> Dict[str, List[str]]:
     """版本推进调度（加载管线阶段②③）。
 
-    逐文件：版本缺失硬错；区间 ``old < target <= baseline`` 内的钩子依次
-    执行；链毕把版本戳推进到基线。跨文件钩子执行时目标文件版本同步推进
-    （双版本同升），即使目标文件自身无待跑钩子。
+    逐文件：版本缺失硬错；所有 ``old < target`` 的钩子依次执行；链毕把版本
+    戳推进到最后一个已执行钩子的 target。没有适用钩子的文件版本保持原值，
+    不产生变更记录。跨文件钩子执行时目标文件版本推进到该钩子的 target
+    （已高于 target 的目标文件不回退）。
 
     Args:
         raw_docs: 文件名 → 原始配置 dict（阶段①产物；原地修改）
 
     Returns:
-        文件名 → 本次推进产生的变更路径列表（仅含发生推进的文件）
+        文件名 → 本次推进产生的变更路径列表（仅含真发生变更的文件）
 
     Raises:
         ValueError: 任一存在的文件缺 ``[meta].version`` 字段
     """
-    baseline = _version_tuple(CONFIG_BASELINE_VERSION)
     changed: Dict[str, List[str]] = {}
 
     for file_name, data in raw_docs.items():
@@ -160,14 +161,14 @@ def advance_file_versions(raw_docs: Dict[str, Dict[str, Any]]) -> Dict[str, List
             raise ConfigValidationError(file_name, "meta.version", "缺少版本字段（每文件版本为硬性要求）")
         old_version = str(meta["version"])
         old = _version_tuple(old_version)
-        if old >= baseline:
-            continue
 
         file_changed: List[str] = []
+        last_target: str | None = None
         hooks = sorted(_FILE_HOOKS.get(file_name, []), key=lambda h: _version_tuple(h.target_version))
         for hook in hooks:
-            if not (old < _version_tuple(hook.target_version) <= baseline):
+            if not (old < _version_tuple(hook.target_version)):
                 continue
+            last_target = hook.target_version
             if hook.target_file is None:
                 file_changed.extend(hook.run(data))
             else:
@@ -176,26 +177,33 @@ def advance_file_versions(raw_docs: Dict[str, Dict[str, Any]]) -> Dict[str, List
                     logger.warning(f"跨文件钩子 {hook.name} 的目标文件 {hook.target_file} 不存在，跳过")
                     continue
                 file_changed.extend(hook.run(data, target_data))
-                # 双版本同升：目标文件版本同步推进到基线
+                # 双版本同升：目标文件推进到该钩子的 target；已超前的目标文件不回退
                 target_meta = target_data.get("meta")
                 if isinstance(target_meta, dict):
-                    target_meta["version"] = CONFIG_BASELINE_VERSION
-                changed.setdefault(hook.target_file, []).append("meta.version")
+                    target_old = str(target_meta.get("version", ""))
+                    if _version_tuple(target_old) < _version_tuple(hook.target_version):
+                        target_meta["version"] = hook.target_version
+                        changed.setdefault(hook.target_file, []).append("meta.version")
+                        logger.info(
+                            f"{hook.target_file} 版本推进（跨文件钩子 {hook.name}）: {target_old} → {hook.target_version}"
+                        )
 
-        # 宿主文件版本推进到基线
-        data["meta"]["version"] = CONFIG_BASELINE_VERSION
+        if last_target is None:
+            continue
+
+        # 宿主文件推进到最后一个已执行钩子的 target
+        data["meta"]["version"] = last_target
         file_changed.append("meta.version")
         changed[file_name] = file_changed
         logger.info(
-            f"{file_name} 版本推进: {old_version} → {CONFIG_BASELINE_VERSION}"
-            + (f"（钩子变更 {len(file_changed) - 1} 处）" if len(file_changed) > 1 else "（无钩子，仅版本戳）")
+            f"{file_name} 版本推进: {old_version} → {last_target}"
+            + (f"（钩子变更 {len(file_changed) - 1} 处）" if len(file_changed) > 1 else "（钩子无数据变更，仅版本戳）")
         )
 
     return changed
 
 
 __all__ = [
-    "CONFIG_BASELINE_VERSION",
     "FileUpgradeHook",
     "CrossFileHook",
     "register_file_hook",

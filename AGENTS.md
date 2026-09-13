@@ -73,7 +73,7 @@
 
 ### 配置与存储变更
 
-- 配置系统是"Schema 即真相"（Pydantic Schema 驱动生成/验证/迁移），权威入口在 `src/modules/config/`。配置布局为 6 文件（agents / collectors / tools / model / storage / infra），每文件自带 `[meta].version`，**版本流彻底独立**——各文件自走，互不联动；不存在全局版本常量与"单 stamp 管全部文件"的写法
+- 配置系统是"Schema 即真相"（Pydantic Schema 驱动生成/验证/迁移），权威入口在 `src/modules/config/`。配置布局为 6 文件（agents / collectors / tools / model / storage / infra），每文件自带 `[meta].version`，**版本流彻底独立**——每文件只推进到"作用于它的最后一个已执行升级钩子的 target"，无适用钩子的文件版本保持原值；`CONFIG_BASELINE_VERSION` 仅作新生成文件的版本种子，不参与既有文件的推进调度，不存在"单 stamp 管全部文件"的写法
 - 版本字段由 `FileMetaConfig`（per-file）承载，WebUI 侧只读（显示不可编辑）；文件存在但版本字段缺失 → 启动硬错，杜绝"无版本→绕过钩子"的退化路径
 - 结构修改（增删改字段/段移动）分两档：**纯新增字段零成本**——漂移写回自动补默认值，不写钩子不升版本；**数据变换**（字段重命名/段拆分/类型转换）——升该文件的 `[meta].version` + 注册该文件升级 hook（原地修改 dict、幂等、返回变更路径）+ 配迁移测试；跨文件搬移的 hook 声明 `target_file`（双写 + 双版本同升），无独立机制
 - **升版本 ≠ 迁移生效**：提交前实际验证迁移写回落盘（跑 `tests/config/` 或手动触发配置加载检查升级日志）——"只改 Schema 不升版本/不验证迁移"是本区最高频事故形态，此类提交视为未完成

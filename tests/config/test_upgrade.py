@@ -1,8 +1,9 @@
 """每文件版本推进 + 升级钩子注册表测试
 
 覆盖：
-- 版本推进调度：区间语义（old < target <= baseline）、幂等、变更路径返回
-- 版本缺失硬错；跨文件钩子双写 + 双版本同升
+- 版本推进调度：钩子条件 ``old < target``、推进到"作用于该文件的最后一个
+  已执行钩子的 target_version"、无适用钩子的文件不推进、幂等、变更路径返回
+- 版本缺失硬错；跨文件钩子双写 + 目标文件推进到该钩子 target
 - 全新生成 6 文件版本独立（改单文件不带动他文件）
 
 演示样例钩子只在本文件定义，不注册进生产注册表。
@@ -62,8 +63,8 @@ def sample_cross_hook(host_data: Dict[str, Any], target_data: Dict[str, Any]) ->
 
 
 class TestAdvanceFileVersions:
-    def test_runs_interval_hooks_and_stamps_baseline(self):
-        """区间 (old, baseline] 内的钩子执行，版本戳推进到基线"""
+    def test_advances_to_last_executed_hook_target(self):
+        """有适用钩子的文件推进到最后一个已执行钩子的 target（不是基线）"""
         raw = {"agents.toml": {"meta": {"version": "2.0.30"}, "agents": {"bot_name": "麦麦"}}}
         upgrade.register_file_hook("agents.toml", "sample", "2.0.31", sample_hook_v2_0_31)
         try:
@@ -71,10 +72,69 @@ class TestAdvanceFileVersions:
         finally:
             upgrade._FILE_HOOKS.pop("agents.toml", None)
 
-        assert raw["agents.toml"]["meta"]["version"] == CONFIG_BASELINE_VERSION
+        assert raw["agents.toml"]["meta"]["version"] == "2.0.31"
         persona = raw["agents.toml"]["agents"]["streamer"]["persona"]
         assert persona["bot_name"] == "麦麦"
         assert changed["agents.toml"] == ["agents.bot_name -> agents.streamer.persona.bot_name", "meta.version"]
+
+    def test_advances_past_old_baseline_when_hook_target_higher(self):
+        """钩子 target 高于历史基线时同样推进（调度不含基线上界）"""
+        raw = {"agents.toml": {"meta": {"version": "2.0.32"}, "agents": {}}}
+
+        def noop(data: Dict[str, Any]) -> List[str]:
+            return []
+
+        upgrade.register_file_hook("agents.toml", "future", "2.0.33", noop)
+        try:
+            changed = advance_file_versions(raw)
+        finally:
+            upgrade._FILE_HOOKS.pop("agents.toml", None)
+
+        assert raw["agents.toml"]["meta"]["version"] == "2.0.33"
+        assert changed["agents.toml"] == ["meta.version"]
+
+    def test_file_without_applicable_hooks_not_advanced(self):
+        """无适用钩子的文件保持原版本，不进 changed、无版本戳变更"""
+        raw = {
+            "agents.toml": {"meta": {"version": "2.0.30"}, "agents": {"bot_name": "麦麦"}},
+            "tools.toml": {"meta": {"version": "2.0.30"}, "tools": {}},
+        }
+        upgrade.register_file_hook("agents.toml", "sample", "2.0.31", sample_hook_v2_0_31)
+        try:
+            changed = advance_file_versions(raw)
+        finally:
+            upgrade._FILE_HOOKS.pop("agents.toml", None)
+
+        # 只有 A（有钩子）推进；B（无钩子）保持原值
+        assert raw["agents.toml"]["meta"]["version"] == "2.0.31"
+        assert raw["tools.toml"]["meta"]["version"] == "2.0.30"
+        assert set(changed) == {"agents.toml"}
+
+    def test_version_ahead_of_all_hooks_no_change(self):
+        """版本高于全部钩子 target 的文件零变更"""
+        raw = {"agents.toml": {"meta": {"version": "9.9.9"}, "agents": {"bot_name": "麦麦"}}}
+        upgrade.register_file_hook("agents.toml", "sample", "2.0.31", sample_hook_v2_0_31)
+        try:
+            changed = advance_file_versions(raw)
+        finally:
+            upgrade._FILE_HOOKS.pop("agents.toml", None)
+
+        assert changed == {}
+        assert raw["agents.toml"]["meta"]["version"] == "9.9.9"
+        assert "bot_name" in raw["agents.toml"]["agents"]
+
+    def test_second_advance_is_noop(self):
+        """连续两次推进：第二次 old == 钩子 target，零变更"""
+        raw = {"agents.toml": {"meta": {"version": "2.0.30"}, "agents": {"bot_name": "麦麦"}}}
+        upgrade.register_file_hook("agents.toml", "sample", "2.0.31", sample_hook_v2_0_31)
+        try:
+            advance_file_versions(raw)
+            changed = advance_file_versions(raw)
+        finally:
+            upgrade._FILE_HOOKS.pop("agents.toml", None)
+
+        assert changed == {}
+        assert raw["agents.toml"]["meta"]["version"] == "2.0.31"
 
     def test_hook_idempotent_on_rerun(self):
         """同一数据重复推进：钩子幂等，第二次零变更"""
@@ -90,27 +150,34 @@ class TestAdvanceFileVersions:
 
         assert changed["agents.toml"] == ["meta.version"]
 
-    def test_hooks_outside_interval_skipped(self):
-        """target <= old 或 > baseline 的钩子不执行"""
-        raw = {"agents.toml": {"meta": {"version": CONFIG_BASELINE_VERSION}, "agents": {"bot_name": "麦麦"}}}
-        upgrade.register_file_hook("agents.toml", "sample", "2.0.31", sample_hook_v2_0_31)
-        try:
-            changed = advance_file_versions(raw)
-        finally:
-            upgrade._FILE_HOOKS.pop("agents.toml", None)
-
-        assert changed == {}
-        # 版本已在基线：旧键不被搬动（区间外不执行）
-        assert "bot_name" in raw["agents.toml"]["agents"]
-
     def test_missing_version_raises(self):
         """存在文件缺 [meta].version → 硬错（ConfigValidationError）"""
         raw = {"agents.toml": {"agents": {}}}
         with pytest.raises(ConfigValidationError, match="version"):
             advance_file_versions(raw)
 
-    def test_cross_file_hook_bumps_both_versions(self):
-        """跨文件钩子：双写 + 双版本同升"""
+    def test_cross_file_hook_bumps_both_versions_to_hook_target(self):
+        """跨文件钩子：双写 + 目标文件推进到该钩子 target（不是基线）"""
+        raw = {
+            "agents.toml": {"meta": {"version": "2.0.30"}, "agents": {"sample_migrated": True}},
+            "tools.toml": {"meta": {"version": "2.0.30"}, "tools": {}},
+        }
+        upgrade.register_cross_file_hook("agents.toml", "tools.toml", "mover", "2.0.31", sample_cross_hook)
+        try:
+            changed = advance_file_versions(raw)
+        finally:
+            upgrade._FILE_HOOKS.pop("agents.toml", None)
+
+        # 宿主：标记搬走 + 版本推进到钩子 target
+        assert "sample_migrated" not in raw["agents.toml"]["agents"]
+        assert raw["agents.toml"]["meta"]["version"] == "2.0.31"
+        # 目标：收到数据 + 版本推进到钩子 target
+        assert raw["tools.toml"]["tools"]["sample_received"] is True
+        assert raw["tools.toml"]["meta"]["version"] == "2.0.31"
+        assert "tools.toml" in changed
+
+    def test_cross_file_hook_target_not_downgraded(self):
+        """目标文件版本已高于钩子 target 时不回退"""
         raw = {
             "agents.toml": {"meta": {"version": "2.0.30"}, "agents": {"sample_migrated": True}},
             "tools.toml": {"meta": {"version": "2.0.31"}, "tools": {}},
@@ -121,13 +188,8 @@ class TestAdvanceFileVersions:
         finally:
             upgrade._FILE_HOOKS.pop("agents.toml", None)
 
-        # 宿主：标记搬走 + 版本推进
-        assert "sample_migrated" not in raw["agents.toml"]["agents"]
-        assert raw["agents.toml"]["meta"]["version"] == CONFIG_BASELINE_VERSION
-        # 目标：收到数据 + 版本同升（其原值已在基线，也被同升保持）
-        assert raw["tools.toml"]["tools"]["sample_received"] is True
-        assert raw["tools.toml"]["meta"]["version"] == CONFIG_BASELINE_VERSION
-        assert "tools.toml" in changed
+        assert raw["tools.toml"]["meta"]["version"] == "2.0.31"
+        assert "tools.toml" not in changed
 
 
 # ---------------------------------------------------------------------------
@@ -149,7 +211,7 @@ class TestVersionPipeline:
             assert get_config_version(tmp_path, fname) == CONFIG_BASELINE_VERSION
 
     def test_version_advance_roundtrip(self, tmp_path: Path):
-        """旧版本 + 已注册钩子 → load 推进并写回基线（闭环）"""
+        """旧版本 + 已注册钩子 → load 推进到钩子 target 并写回（闭环）"""
         generate_default_configs(tmp_path)
         self._write_version(tmp_path, "agents.toml", "2.0.30")
 
@@ -165,23 +227,42 @@ class TestVersionPipeline:
         finally:
             upgrade._FILE_HOOKS.pop("agents.toml", None)
 
-        assert get_config_version(tmp_path, "agents.toml") == CONFIG_BASELINE_VERSION
+        assert get_config_version(tmp_path, "agents.toml") == "2.0.31"
         assert config["agents"]["agents"]["streamer"]["persona"]["bot_name"] == "麦麦"
-        # 二次 load：版本已在基线，无进一步写盘
+        # 二次 load：old == 钩子 target，零变更零写盘
         _config2, report2 = load_config_dir(tmp_path)
         assert not report2.has_drift
+        assert get_config_version(tmp_path, "agents.toml") == "2.0.31"
 
     def test_independent_advance(self, tmp_path: Path):
-        """改单文件版本不带动他文件（独立递增）"""
+        """版本流独立：有钩子的文件推进到钩子 target，无钩子文件版本不动"""
         generate_default_configs(tmp_path)
+        self._write_version(tmp_path, "agents.toml", "2.0.30")
         self._write_version(tmp_path, "tools.toml", "2.0.30")
 
-        load_config_dir(tmp_path)
+        # 旧版布局标记，使 agents.toml 的样例钩子有实际变更
+        agents_path = tmp_path / "agents.toml"
+        content = agents_path.read_text(encoding="utf-8-sig")
+        content = content.replace("[agents]\n", '[agents]\nbot_name = "麦麦"\n', 1)
+        agents_path.write_text(content, encoding="utf-8-sig")
 
-        assert get_config_version(tmp_path, "tools.toml") == CONFIG_BASELINE_VERSION
-        # 其他文件版本保持基线不动（未被降级或重写推进）
-        assert get_config_version(tmp_path, "agents.toml") == CONFIG_BASELINE_VERSION
+        upgrade.register_file_hook("agents.toml", "sample", "2.0.31", sample_hook_v2_0_31)
+        try:
+            load_config_dir(tmp_path)
+        finally:
+            upgrade._FILE_HOOKS.pop("agents.toml", None)
+
+        # A：有适用钩子 → 推进到钩子 target 并写回
+        assert get_config_version(tmp_path, "agents.toml") == "2.0.31"
+        # B：无适用钩子 → 保持原值，不齐步走
+        assert get_config_version(tmp_path, "tools.toml") == "2.0.30"
+        # 未拨版本的文件保持基线种子值
         assert get_config_version(tmp_path, "infra.toml") == CONFIG_BASELINE_VERSION
+
+        # 二次 load：全部文件 old == 各自当前值，零写回
+        _config2, report2 = load_config_dir(tmp_path)
+        assert not report2.has_drift
+        assert get_config_version(tmp_path, "tools.toml") == "2.0.30"
 
     def test_missing_version_hard_fail(self, tmp_path: Path):
         """删 [meta].version → load 硬错"""
