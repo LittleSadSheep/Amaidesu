@@ -70,7 +70,7 @@ from src.modules.tools import TaskLedger, TaskTracker, ToolHealthMonitor, ToolRe
 from src.modules.tools.tasks import resolve_tasks_config
 from src.modules.tools.bootstrap import bind_core_tools
 from src.modules.vision.look_at_screen import LookAtScreenProvider
-from src.modules.vision.pil_capture import PillowImageGrabCapture
+from src.modules.vision.mss_capture import MssScreenCapture
 
 logger = get_logger("Main")
 _BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -571,7 +571,7 @@ async def create_app_components(
             memory_tool_count = bind_memory_tools(tool_registry, memory)
             logger.info(f"query_memory 记忆检索工具已注册（新增 {memory_tool_count} 个）")
 
-        # --- 视觉基础模块工具 look_at_screen（L2 DI：组合根注入 Pillow 截图后端）---
+        # --- 视觉基础模块工具 look_at_screen（L2 DI：组合根注入 mss 截屏后端）---
         # bootstrap 明文不接管 DI 工具（见 bootstrap.py 注释），由组合根按 [tools.vision] 开关装配
         vision_cfg = tools_section.get("vision", {}) if isinstance(tools_section, dict) else {}
         if isinstance(vision_cfg, dict) and vision_cfg.get("enabled", False):
@@ -579,10 +579,10 @@ async def create_app_components(
             tool_registry.register_provider(
                 LookAtScreenProvider(
                     config=vision_config,
-                    screen_capture=PillowImageGrabCapture(),
+                    screen_capture=MssScreenCapture(),
                 )
             )
-            logger.info("look_at_screen 已注册（Pillow 截图后端）")
+            logger.info("look_at_screen 已注册（mss 截屏后端）")
 
         # --- 通用 MCP 外部工具源（[tools.mcp] 段驱动；可选能力，失败不阻断启动）---
         # 必须在 start_all() 之前装配：任何启动阶段查询工具清单的消费方

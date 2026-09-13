@@ -30,6 +30,7 @@ from src.modules.vision.look_at_screen import (
     TextReader,
     build_look_at_screen_spec,
 )
+from src.modules.vision.mss_capture import MonitorInfo, MssScreenCapture
 
 __all__ = [
     "LookAtScreenProvider",
@@ -39,4 +40,6 @@ __all__ = [
     "FakeScreenCapture",
     "FakeTextReader",
     "build_look_at_screen_spec",
+    "MonitorInfo",
+    "MssScreenCapture",
 ]
