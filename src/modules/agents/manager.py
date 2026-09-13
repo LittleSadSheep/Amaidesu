@@ -58,6 +58,9 @@ class AgentManager:
         memory: Optional[Any] = None,
     ) -> None:
         self._agents: Dict[str, AgentRegistration] = {}
+        # enable 时记住的构造入参（name → kwargs 字典，含 config 与基建透传）；
+        # rebuild 按它经同一构造路径重建实例
+        self._enable_args: Dict[str, Dict[str, Any]] = {}
         self._tool_registry = tool_registry
         self._memory = memory
         self._lock = asyncio.Lock()
@@ -213,15 +216,62 @@ class AgentManager:
             instance.name = name
         if not self.register(instance):
             return False
+        # 记住构造入参（重建入口 rebuild 依赖；回退成员后的有效值不回填——
+        # 重建时 enable_agent 会再走一次同样的回退逻辑）
+        self._enable_args[name] = {
+            "config": config,
+            "llm_manager": llm_manager,
+            "prompt_manager": prompt_manager,
+            "event_bus": event_bus,
+            "tool_registry": tool_registry,
+            "memory": memory,
+            "thinking_sink": thinking_sink,
+            "speech_config": speech_config,
+            "tts_engine": tts_engine,
+            "subtitle_service": subtitle_service,
+            "session_manager": session_manager,
+            "context_assembler_config": context_assembler_config,
+            "task_tracker": task_tracker,
+        }
         return await self.start_agent(name)
 
     async def disable_agent(self, name: str) -> bool:
-        """动态停用 Agent：停止 → unregister。"""
+        """动态停用 Agent：停止 → 摘 provider → 关 MCP → unregister。
+
+        provider 摘除与 MCP 客户端关闭主要由 Agent 自身 ``stop()`` 路径完成；
+        此处兜底再调一次（均幂等），覆盖未接入清理契约的旧 Agent 子类。
+        """
         if not await self.stop_agent(name):
             return False
+        reg = self._agents.get(name)
+        if reg is not None:
+            try:
+                reg.agent.unregister_tool_providers()
+                await reg.agent.close_mcp_clients()
+            except Exception as exc:  # noqa: BLE001 - 清理兜底边界
+                logger.warning(f"Agent '{name}' 停用清理异常: {type(exc).__name__}: {exc}")
         self.unregister(name)
+        self._enable_args.pop(name, None)
         logger.info(f"Agent '{name}' 已动态停用")
         return True
+
+    async def rebuild(self, name: str) -> bool:
+        """重建 Agent（控制面 restart / 心跳自愈复用）：完整清理 → 同路径重建 → 启动。
+
+        前置：该 Agent 此前经 ``enable_agent`` 启用（构造入参已记住）。流程：
+        ``disable_agent``（stop + 摘 provider + 关 MCP + unregister）→ 按
+        记住的入参再次 ``enable_agent``（与首次启用同走 factory 单一构造
+        路径）→ start。未记住入参（非 enable 途径注册）时拒绝重建。
+        """
+        args = self._enable_args.get(name)
+        if args is None:
+            logger.warning(f"Agent '{name}' 无 enable 记录，无法重建（仅支持经 enable_agent 启用的 Agent）")
+            return False
+        if not await self.disable_agent(name):
+            logger.warning(f"Agent '{name}' 重建前清理失败，放弃重建")
+            return False
+        logger.info(f"Agent '{name}' 开始重建（stop → 重新构造 → start）")
+        return await self.enable_agent(name, **args)
 
     def __len__(self) -> int:
         return len(self._agents)

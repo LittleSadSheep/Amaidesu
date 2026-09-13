@@ -465,7 +465,10 @@ class StreamerAgent(BaseAgent):
                 pass
         self._flush_task = None
 
-        self._logger.info("StreamerAgent 已停止")
+        # 资源清理契约：摘除本 Agent 注册的 provider（reply / rundown）
+        removed = self.unregister_tool_providers()
+
+        self._logger.info(f"StreamerAgent 已停止（摘除 {removed} 个工具）")
 
     # ==================================================================
     # 工具提供（list_tools）
@@ -514,11 +517,15 @@ class StreamerAgent(BaseAgent):
         self._planner.bind_reply_provider(self._reply_provider)
 
         # proactive tool
-        # 注册：reply 与 rundown_control（可见名单 ["streamer"]）
+        # 注册：reply 与 rundown_control（可见名单 ["streamer"]）；经基类入口
+        # 登记归属，stop 路径逐一摘除（disable/重建不留残留工具）
         if self._tool_registry is not None:
-            self._tool_registry.register_provider(self._reply_provider, visible_to={"streamer_reply": ["streamer"]})
-            self._tool_registry.register_provider(
+            self.register_tool_provider(
+                self._reply_provider, registry=self._tool_registry, visible_to={"streamer_reply": ["streamer"]}
+            )
+            self.register_tool_provider(
                 build_rundown_tool_provider(self._rundown_tool_provider),
+                registry=self._tool_registry,
                 visible_to={"rundown_control": ["streamer"]},
             )
             self._logger.info("StreamerAgent 工具已注册：streamer_reply / rundown_control（名单 [streamer]）")

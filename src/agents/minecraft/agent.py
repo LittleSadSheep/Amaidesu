@@ -193,8 +193,9 @@ class MinecraftAgent(BaseAgent):
         MinecraftAgent 通过 ``list_tools(provider="maicraft")`` 域内查询可见。
         失败语义：整个装配 try/except 包裹，连接失败/装配异常仅 warning 不阻断
         Agent 启动——Agent 是命令驱动，MCP 不可用只降级（无 maicraft 工具可调）。
-        关闭：依赖全局 ``close_mcp_providers``（registry._providers 遍历）——
-        本 Agent 不在 _on_stop 单独关闭，保持与"通用 MCP 通道"一致的清理路径。
+        关闭：本 Agent 在 ``_on_stop`` 摘除自己注册的 provider 并关闭登记的
+        MCP 客户端（经基类登记入口）；全局 ``close_mcp_providers`` 仍保留
+        供 main.py 全量停机兜底。
         装配成功时把 client 引用留给 handoff 订阅接线（``_mcp_client``）。
         """
         if self._tool_registry is None:
@@ -235,8 +236,8 @@ class MinecraftAgent(BaseAgent):
                 pass
             return
         try:
-            new_count = self._tool_registry.register_provider(
-                prov, visible_to=self._maicraft_visible_to(prov.list_tools())
+            new_count = self.register_tool_provider(
+                prov, registry=self._tool_registry, visible_to=self._maicraft_visible_to(prov.list_tools())
             )
         except Exception as exc:  # noqa: BLE001 - 注册异常兜底
             self._logger.warning(f"Agent 私有 MCP（名单 fail-closed）注册失败: {type(exc).__name__}: {exc}")
@@ -246,6 +247,8 @@ class MinecraftAgent(BaseAgent):
             except Exception:  # noqa: BLE001
                 pass
             return
+        # 注册成功后客户端纳入基类登记（stop/重建路径统一关闭）
+        self.register_mcp_client(client)
         # 绑定处适配声明：任务查询工具（原始名后缀定位，server
         # 特有知识留在此处）+ 状态映射 + attention 通知资源；订阅起停归跟踪循环
         for spec in prov.list_tools():
@@ -282,7 +285,11 @@ class MinecraftAgent(BaseAgent):
             except Exception as exc:  # noqa: BLE001 - 边界兜底
                 self._logger.warning(f"命令 worker 退出异常: {exc}")
             self._worker_task = None
-        self._logger.info("MinecraftAgent 已停止")
+        # 资源清理契约：摘除本 Agent 注册的 provider + 关闭登记的 MCP 客户端
+        removed = self.unregister_tool_providers()
+        await self.close_mcp_clients()
+        self._mcp_client = None
+        self._logger.info(f"MinecraftAgent 已停止（摘除 {removed} 个工具）")
 
     async def _on_pause(self) -> None:
         """暂停钩子：任务循环在步骤间挂起（不打断当前工具调用）。"""
@@ -318,7 +325,9 @@ class MinecraftAgent(BaseAgent):
         """注册 Agent 专属工具到 ToolRegistry（复用 __init__ 创建的执行器实例）。"""
         if self._tool_registry is None:
             return
-        self._tool_registry.register_provider(self._tool_provider, visible_to=dict(self._LOCAL_VISIBLE_TO))
+        self.register_tool_provider(
+            self._tool_provider, registry=self._tool_registry, visible_to=dict(self._LOCAL_VISIBLE_TO)
+        )
         self._logger.info(
             "MinecraftAgent 工具已注册：minecraft_todo / minecraft_notebook / minecraft_get_work_log / minecraft_report"
         )

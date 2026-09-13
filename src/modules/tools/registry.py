@@ -234,6 +234,40 @@ class ToolRegistry:
         logger.info(f"Provider '{provider.name}' 已注册（含 {new_count} 个新工具，总数={len(self._tools)}）")
         return new_count
 
+    def unregister_provider(self, provider: ToolProvider) -> int:
+        """移除一个 Provider 及其名下全部工具；幂等（未注册 → 返回 0 不报错）。
+
+        一致清理四类映射：``_providers``（引用）、``_tools``（工具实现）、
+        ``_tool_owner``（归属）、``_visible_to``（可见名单），并连带清掉
+        名下工具的熔断状态与该提供者的分类记录——移除后工具对
+        list/invoke/探活/可见性计算整体消失，不留悬挂条目。
+
+        工具归属按 spec.provider 提供者名匹配（与注册期"一个提供者一个
+        短名"校验同源，不同 provider 不会撞名）；同时按 ``_tool_owner``
+        对象引用兜底，覆盖非 ``BaseToolProvider`` 子类注册（无归属记录）
+        的情形。
+
+        Returns:
+            实际移除的工具数（provider 本身未注册 → 0）。
+        """
+        if provider not in self._providers:
+            logger.debug(f"Provider '{provider.name}' 未注册，unregister 跳过（幂等）")
+            return 0
+        self._providers.remove(provider)
+        owned = [
+            name
+            for name, (spec, _) in self._tools.items()
+            if spec.provider == provider.name or self._tool_owner.get(name) is provider
+        ]
+        for name in owned:
+            self._tools.pop(name, None)
+            self._tool_owner.pop(name, None)
+            self._visible_to.pop(name, None)
+            self._health.pop(name, None)
+        self._categories.pop(provider.name, None)
+        logger.info(f"Provider '{provider.name}' 已移除（摘除 {len(owned)} 个工具，总数={len(self._tools)}）")
+        return len(owned)
+
     @staticmethod
     def _validate_visible_to(
         visible_to: Optional[Dict[str, List[str]]],

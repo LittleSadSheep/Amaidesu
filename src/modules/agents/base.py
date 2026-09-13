@@ -100,6 +100,12 @@ class BaseAgent(abc.ABC):
         self._restart_count: int = 0
         # task.changed 唤醒订阅句柄（start 订阅 / stop 退订；None = 未订阅）
         self._task_wakeup_handler: Any = None
+        # 本 Agent 注册进 ToolRegistry 的 provider 登记（(provider, registry) 列表；
+        # 经 register_tool_provider 登记，unregister_tool_providers 逐一摘除）
+        self._registered_providers: list[Any] = []
+        # 本 Agent 持有的 MCP 客户端（经 register_mcp_client 登记；
+        # close_mcp_clients 统一关闭，供 stop/重建/disable 路径调用）
+        self._registered_mcp_clients: list[Any] = []
         # 异步锁用于状态转移
         # 注：asyncio.Lock 在同步 __init__ 创建后，到第一次 await 才会在 loop 上绑定
         self._lock = asyncio.Lock()
@@ -255,6 +261,55 @@ class BaseAgent(abc.ABC):
         logger.info(f"Agent '{self.name}' 已 shutdown")
 
     # ---------------- 工具提供 ----------------
+
+    def register_tool_provider(
+        self,
+        provider: Any,
+        *,
+        registry: Any,
+        visible_to: Optional[Dict[str, Any]] = None,
+    ) -> int:
+        """经基类入口把 provider 注册进 ToolRegistry 并登记归属。
+
+        Agent 子类在启动期用本方法替代直调 ``registry.register_provider``；
+        登记后 ``unregister_tool_providers`` 可在 stop 路径逐一摘除，
+        避免 disable/重建时 registry 里残留本 Agent 的工具。
+        registry 为 None（未注入）时不注册也不登记，返回 0。
+        """
+        if registry is None:
+            return 0
+        count = registry.register_provider(provider, visible_to=visible_to)
+        if not any(p is provider for p, _ in self._registered_providers):
+            self._registered_providers.append((provider, registry))
+        return count
+
+    def unregister_tool_providers(self) -> int:
+        """从 registry 摘除本 Agent 登记的全部 provider（stop/清理路径调用；幂等）。"""
+        removed = 0
+        for provider, registry in self._registered_providers:
+            try:
+                removed += registry.unregister_provider(provider)
+            except Exception as exc:  # noqa: BLE001 - 摘除失败不阻断停机
+                logger.warning(f"Agent '{self.name}' 摘除 provider '{provider.name}' 异常: {exc}")
+        self._registered_providers.clear()
+        return removed
+
+    def register_mcp_client(self, client: Any) -> None:
+        """登记本 Agent 持有的 MCP 客户端（重复登记同一实例自动去重）。"""
+        if client is not None and not any(c is client for c in self._registered_mcp_clients):
+            self._registered_mcp_clients.append(client)
+
+    async def close_mcp_clients(self) -> None:
+        """关闭本 Agent 登记的全部 MCP 客户端（重建/disable 前调用；幂等）。
+
+        单个客户端关闭失败仅记日志，不影响其余客户端关闭。
+        """
+        for client in self._registered_mcp_clients:
+            try:
+                await client.close()
+            except Exception as exc:  # noqa: BLE001 - 关闭失败不阻断停机
+                logger.warning(f"Agent '{self.name}' 关闭 MCP 客户端异常: {type(exc).__name__}: {exc}")
+        self._registered_mcp_clients.clear()
 
     @abc.abstractmethod
     def list_tools(self) -> Iterable[ToolSpec]:
