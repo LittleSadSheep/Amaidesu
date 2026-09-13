@@ -24,7 +24,6 @@ class TestRoomStateUpdate:
         snap = rs.get_snapshot(now_ms=1_000)
         assert snap.heat == "low"
         assert snap.topics == []
-        assert snap.sc_queue == []
 
     def test_update_appends_text_to_window(self) -> None:
         rs = RoomState()
@@ -54,20 +53,6 @@ class TestRoomStateUpdate:
         rs.update(_FakeMsg("hi"), now_ms=1_000)
         rs.update(_FakeMsg("hi again"), now_ms=HEAT_WINDOW_MS + 10_000)
         assert rs.total_message_count == 2
-
-
-class TestRoomStateScQueue:
-    """SC 队列管理。"""
-
-    def test_push_drain_sc(self) -> None:
-        rs = RoomState()
-        rs.push_sc({"id": "sc1", "text": "hi"}, now_ms=1_000)
-        rs.push_sc({"id": "sc2", "text": "hi2"}, now_ms=2_000)
-        snap = rs.get_snapshot(now_ms=2_000)
-        assert len(snap.sc_queue) == 2
-        drained = rs.drain_sc()
-        assert len(drained) == 2
-        assert rs.get_snapshot(now_ms=2_500).sc_queue == []
 
 
 class TestRoomStateTopics:

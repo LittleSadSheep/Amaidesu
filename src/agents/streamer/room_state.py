@@ -20,7 +20,7 @@
 """
 
 from dataclasses import dataclass
-from typing import Any, List, Optional, Tuple
+from typing import List, Optional, Tuple
 
 from src.modules.time_utils import now_ms as _real_now_ms
 
@@ -66,7 +66,6 @@ class RoomStateSnapshot:
     Attributes:
         heat: 热度等级,"low" | "medium" | "high"(基于弹幕速率)
         topics: 话题关键词列表(字符级词频聚类,按频次降序)
-        sc_queue: 待处理的 SC/礼物/上舰消息列表
         last_update_ms: 本次快照生成时刻(Unix 毫秒)
         topic_summary: 低频 LLM 话题摘要(可选,RoomStateLoop 填充,默认空串)
         topic_summary_at_ms: 话题摘要的生成时刻(Unix 毫秒,0 表示尚未生成)
@@ -76,7 +75,6 @@ class RoomStateSnapshot:
 
     heat: str
     topics: List[str]
-    sc_queue: List[dict[str, Any]]
     last_update_ms: int
     topic_summary: str = ""
     topic_summary_at_ms: int = 0
@@ -100,15 +98,13 @@ class RoomState:
     """直播间态势规则层。
 
     非线程安全;仅在 Streamer Agent 的单一 asyncio 事件循环内使用。
-    通过方法调用驱动(``update`` / ``push_sc`` / ``drain_sc``),
+    通过方法调用驱动(``update``),
     **不订阅 EventBus**——它是 Agent 内部子组件。
     """
 
     def __init__(self) -> None:
         # 弹幕滑动窗口:(ts_ms, text)
         self._window: List[_WindowEntry] = []
-        # SC / 礼物 / 上舰 待处理队列
-        self._sc_queue: List[dict[str, Any]] = []
         # 话题摘要(由 background.py 低频 LLM 填充,内存态)
         self._topic_summary: str = ""
         self._topic_summary_at_ms: int = 0
@@ -303,29 +299,6 @@ class RoomState:
         return self._last_message_ms
 
     # ------------------------------------------------------------------
-    # SC / 礼物 / 上舰 队列
-    # ------------------------------------------------------------------
-
-    def push_sc(self, sc_msg: dict[str, Any], *, now_ms: Optional[int] = None) -> None:
-        """压入一条待处理 SC / 礼物 / 上舰消息
-
-        Args:
-            sc_msg: SC 消息字典(结构由调用方约定,通常含 message_id/text/amount)
-            now_ms: 保留参数,便于日志对齐;不影响队列逻辑
-        """
-        self._sc_queue.append(sc_msg)
-
-    def drain_sc(self) -> List[dict[str, Any]]:
-        """取出并清空 SC 队列
-
-        Returns:
-            按 push 顺序排列的 SC 消息列表(可能为空)
-        """
-        drained = self._sc_queue
-        self._sc_queue = []
-        return drained
-
-    # ------------------------------------------------------------------
     # 快照
     # ------------------------------------------------------------------
 
@@ -336,13 +309,12 @@ class RoomState:
             now_ms: 快照时刻(Unix 毫秒);None 时使用真实时钟
 
         Returns:
-            RoomStateSnapshot(SC 队列为副本,外部修改不影响内部状态)
+            RoomStateSnapshot(供决策面只读消费)
         """
         ts = self._resolve_now(now_ms)
         return RoomStateSnapshot(
             heat=self._compute_heat(ts),
             topics=self._extract_topics(ts),
-            sc_queue=list(self._sc_queue),
             last_update_ms=ts,
             topic_summary=self._topic_summary,
             topic_summary_at_ms=self._topic_summary_at_ms,

@@ -69,7 +69,6 @@ def _make_maintainer(
     rs_snap = MagicMock()
     rs_snap.heat = "low"
     rs_snap.topics = []
-    rs_snap.sc_queue = []
     rs_snap.topic_summary = ""
     rs_snap.topic_summary_at_ms = 0
     rs_snap.last_update_ms = 1
