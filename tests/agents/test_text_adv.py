@@ -1,594 +1,356 @@
-"""TextAdvGameAgent 单元测试 + 感知-推进-闭环 QA Scenario（Wave 7）
-
-QA Scenario（acceptance criteria）：
-    Tool: Bash
-    Preconditions: 注入 mock perception（FakeScreenCapture + FakeTextReader）
-                   + FakeContentEngine + ToolRegistry 注册公用 look_at_screen
-                   + TextAdvGameAgent 专属 text_adv_choose_option / text_adv_get_story
-    Steps:
-      1. 实例化 TextAdvGameAgent，注入一段 mock 屏幕文本 + 选项
-      2. 调用 feed_state_change() 触发一次感知-推进闭环
-      3. 断言 perception 被调用（look_at_screen tool）
-      4. 断言 advance 被触发（text_adv_choose_option tool → content_engine.send_input）
-      5. 断言 game.milestone 事件被 emit
-      6. 断言循环闭合（perception_count >= 1, advance_count >= 1）
-    Expected Result: 感知-推进-循环闭路（mock 环境）
-    Evidence: .omo/evidence/w7-game-agent.txt
+"""TextAdvGameAgent 测试（观察循环 + auto 标志 + 事件分流）
 
 覆盖：
-- BaseAgent 协议六项在游戏 Agent 上的具体落地
-- 感知工具复用（look_at_screen 通过 ToolRegistry.invoke 调用）
-- 推进工具自备（text_adv_choose_option provider="game"）
-- content_engine 为包内私有接口（send_input 触发 FakeContentEngine 记录，直连不经注册表）
-- 内部状态机（TextAdvGameAgentState：场景/选项/历史/去重）
-- game.* 事件 emit
-- main.py wiring：build_text_adv_agent 工厂 + AgentManager.register
-- 优雅降级：无 ScreenCapture 后端时 look_at_screen 返回成功+空文本
-- 优雅降级：无 content_engine 时 StubContentEngine 默认提供
-- 框架零改动证明：BaseAgent / ToolRegistry / EventBus / GamePayload 均无变更
+- 元数据：name / emits_events（game.milestone / game.report / game.error）
+- set_auto 幂等：连调两次只产生一个观察循环 Task
+- set_auto(False)：Task 取消、auto 标志清零
+- 错误分流：感知失败只记日志不发 game.error、循环存活
+- 循环整体死亡：game.error 恰好一条 + auto 回落 False
+- 窗口护栏：失焦停循环 + 恰好一条 game.error（连跑多轮不刷屏）
+- 首屏上报：启动后读一次当前屏（有选项 → report；无选项 → milestone）
+- 文本去重：同屏文本不重复上报；连续无新屏后暂停 VLM 读取
+- 屏幕线既有契约：look_at_screen capture 失败 → success=True + 结构化 error（原样保留）
 """
 
 from __future__ import annotations
 
 import asyncio
-from typing import AsyncGenerator, Dict, List
+import time
+from typing import Callable, Dict, List, Optional, Tuple
 
-import pytest
-
-from src.agents.text_adv import (
-    TextAdvConfig,
-    TextAdvGameAgent,
-    TextAdvGameAgentState,
-    build_text_adv_agent,
-)
-from src.agents.text_adv.content_engine import FakeContentEngine
-from src.agents.text_adv.state import TextAdvOption
-from src.modules.agents import AgentManager, AgentState
+from src.agents.text_adv import TextAdvConfig, TextAdvGameAgent, build_text_adv_agent
+from src.agents.text_adv.vlm import FakeVisionReader, ScreenReading
+from src.agents.text_adv.window import FakeWindowBackend
 from src.modules.events.event_bus import EventBus
 from src.modules.events.names import CoreEvents
 from src.modules.events.payloads.game import GamePayload
-from src.modules.tools.registry import ToolRegistry
-from src.modules.vision import (
-    FakeScreenCapture,
-    FakeTextReader,
-    LookAtScreenProvider,
-)
+from src.modules.vision import LookAtScreenProvider
+from src.modules.vision.look_at_screen import ScreenCaptureResult
 
 
 # =============================================================================
-# Fixtures
+# 假件与辅助
 # =============================================================================
 
 
-def _make_options() -> List[TextAdvOption]:
-    """构造示例选项：第一个默认选择。"""
-    return [
-        TextAdvOption(
-            option_id="opt_1",
-            label="继续前进",
-            advance_kind="key",
-            advance_key="enter",
-        ),
-        TextAdvOption(
-            option_id="opt_2",
-            label="回头看看",
-            advance_kind="key",
-            advance_key="left",
-        ),
-    ]
+class StaticCapture:
+    """每次返回同一帧的假采集后端（快速达成稳定判定）。"""
+
+    def __init__(self, frame: bytes = b"frame-a") -> None:
+        self.frame = frame
+        self.calls = 0
+
+    def capture(
+        self,
+        monitor_index: int,
+        region: Optional[Tuple[int, int, int, int]] = None,
+        max_width: Optional[int] = None,
+    ) -> ScreenCaptureResult:
+        self.calls += 1
+        return ScreenCaptureResult(image=self.frame)
 
 
-@pytest.fixture
-def perception_capture() -> FakeScreenCapture:
-    """注入模拟 ScreenCapture（Wave 7 范式验证核心）。"""
-    capture = FakeScreenCapture()
-    # 预置一张 PNG（fake bytes；本测试只关心是否调用 capture，不解析像素）
-    capture.queue_png(b"\x89PNG_FAKE_BYTES", width=1920, height=1080)
-    capture.queue_png(b"\x89PNG_FAKE_BYTES_2", width=1920, height=1080)
-    return capture
+class GenCapture:
+    """每次返回互不相同帧的假采集后端（模拟画面持续变化，帧级去重永不命中）。"""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def capture(
+        self,
+        monitor_index: int,
+        region: Optional[Tuple[int, int, int, int]] = None,
+        max_width: Optional[int] = None,
+    ) -> ScreenCaptureResult:
+        self.calls += 1
+        return ScreenCaptureResult(image=f"gen-{self.calls}".encode("utf-8"))
 
 
-@pytest.fixture
-def text_reader() -> FakeTextReader:
-    """注入模拟 TextReader，返回预置的剧情文本。"""
-    reader = FakeTextReader()
-    reader.queue_text("（场景：村口；遇到 NPC）\n1) 继续前进\n2) 回头看看")
-    reader.queue_text("（场景：村口；遇到 NPC）\n1) 继续前进\n2) 回头看看")
-    return reader
+class BoomCapture:
+    """capture 抛异常的假采集后端（模拟采集持续失败）。"""
+
+    def capture(
+        self,
+        monitor_index: int,
+        region: Optional[Tuple[int, int, int, int]] = None,
+        max_width: Optional[int] = None,
+    ) -> ScreenCaptureResult:
+        raise RuntimeError("screen unavailable")
 
 
-@pytest.fixture
-def content_engine() -> FakeContentEngine:
-    """注入 FakeContentEngine，记录所有 send_input 调用。"""
-    return FakeContentEngine(engine_kind="text_adv")
+class BoomReader:
+    """read_screen 抛异常的假读屏后端（驱动循环整体死亡路径）。"""
+
+    async def read_screen(self, *, want_options: bool) -> ScreenReading:
+        raise RuntimeError("reader boom")
 
 
-@pytest.fixture
-def event_bus() -> EventBus:
-    return EventBus()
+# 契约格式回复：带选项屏
+REPLY_WITH_OPTIONS = "正文：\n（村口）你面前出现两条路。\n选项：\n1. 继续前进 (100, 200)\n2. 回头看看 (300, 200)"
+# 契约格式回复：纯叙事屏
+REPLY_PLAIN = "正文：\n风静静地吹着。"
 
 
-@pytest.fixture
-async def started_agent(
-    perception_capture: FakeScreenCapture,
-    text_reader: FakeTextReader,
-    content_engine: FakeContentEngine,
-    event_bus: EventBus,
-) -> AsyncGenerator[Dict[str, object], None]:
-    """构造并启动 TextAdvGameAgent；返回测试辅助 dict（含所有 mock 引用）。"""
-    registry = ToolRegistry()
-    # 1) 注册公用感知工具（look_at_screen）
-    look_provider = LookAtScreenProvider(
-        config={},
-        screen_capture=perception_capture,
-        text_reader=text_reader,
-    )
-    registry.register_provider(look_provider)
-
-    # 2) 构造 Agent；Agent 自己会在 _on_start 中注册 text_adv_choose_option / text_adv_get_story
-    #    （内容引擎为包内私有接口，构造注入直连，不经工具注册表）
-    manager = AgentManager(tool_registry=registry)
-    agent = build_text_adv_agent(
-        config=TextAdvConfig(),
-        agent_manager=manager,
-        content_engine=content_engine,
-        event_bus=event_bus,
-        tool_registry=registry,
+def fast_config() -> TextAdvConfig:
+    """测试用快节奏配置（毫秒级采样/超时，小去重上限）。"""
+    return TextAdvConfig(
+        stability_sample_ms=10,
+        stability_consecutive=2,
+        stability_timeout_ms=120,
+        no_change_limit=3,
     )
 
-    await agent.start()
 
-    yield {
-        "agent": agent,
-        "manager": manager,
-        "registry": registry,
-        "look_provider": look_provider,
-        "content_engine": content_engine,
-        "perception_capture": perception_capture,
-        "text_reader": text_reader,
-        "event_bus": event_bus,
-    }
+async def wait_for(condition: Callable[[], bool], timeout: float = 2.0) -> bool:
+    """轮询条件成立；超时返回条件最终取值（不抛）。"""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if condition():
+            return True
+        await asyncio.sleep(0.02)
+    return condition()
 
-    await agent.cleanup()
+
+def make_agent(
+    *,
+    reader: object | None = None,
+    window: FakeWindowBackend | None = None,
+    capture: object | None = None,
+    config: TextAdvConfig | None = None,
+) -> Tuple[TextAdvGameAgent, Dict[str, List[GamePayload]]]:
+    """构造注入全假件的 Agent + 真实 EventBus 的事件收集器。"""
+    bus = EventBus()
+    collected: Dict[str, List[GamePayload]] = {"milestone": [], "report": [], "error": []}
+
+    def _make(kind: str, key: str) -> Callable[[str, GamePayload, str], None]:
+        async def _on(event_name: str, payload: GamePayload, source: str) -> None:
+            collected[key].append(payload)
+
+        return _on  # type: ignore[return-value]
+
+    bus.on(CoreEvents.GAME_MILESTONE, _make("milestone", "milestone"), model_class=GamePayload)
+    bus.on(CoreEvents.GAME_REPORT, _make("report", "report"), model_class=GamePayload)
+    bus.on(CoreEvents.GAME_ERROR, _make("error", "error"), model_class=GamePayload)
+
+    agent = TextAdvGameAgent(
+        config or fast_config(),
+        vision_reader=reader or FakeVisionReader(REPLY_PLAIN),  # type: ignore[arg-type]
+        window_backend=window or FakeWindowBackend(),
+        capture=capture or StaticCapture(),  # type: ignore[arg-type]
+        event_bus=bus,
+    )
+    return agent, collected
 
 
 # =============================================================================
-# BaseAgent 协议六项（落地在 TextAdvGameAgent）
+# 元数据
 # =============================================================================
 
 
 def test_text_adv_agent_metadata() -> None:
-    """协议 6：name / description。"""
+    """name 与描述。"""
     assert TextAdvGameAgent.name == "text_adv"
     assert "文字冒险" in TextAdvGameAgent.description
 
 
 def test_text_adv_agent_emits_game_events() -> None:
-    """协议 3：声明事件族（game.* 三类）。"""
+    """事件族声明：milestone / report / error 三个 game.* 事件。"""
     assert CoreEvents.GAME_MILESTONE in TextAdvGameAgent.emits_events
-    assert CoreEvents.GAME_ATTENTION_REQUIRED in TextAdvGameAgent.emits_events
+    assert CoreEvents.GAME_REPORT in TextAdvGameAgent.emits_events
     assert CoreEvents.GAME_ERROR in TextAdvGameAgent.emits_events
 
 
-def test_text_adv_agent_list_tools_returns_game_provider_specs() -> None:
-    """协议 2：list_tools 暴露 text_adv_choose_option + text_adv_get_story（provider="text_adv"）。"""
-    config = TextAdvConfig()
-    agent = TextAdvGameAgent(config=config)
-    specs = list(agent.list_tools())
-    assert len(specs) == 2
-    full_names = {s.full_name for s in specs}
-    assert full_names == {"text_adv_choose_option", "text_adv_get_story"}
-    for s in specs:
-        assert s.provider == "text_adv"
-        assert s.kind == "sync"
-
-
-def test_text_adv_agent_factory_registers_in_manager() -> None:
-    """工厂 build_text_adv_agent：构造 + register 到 AgentManager。"""
-    manager = AgentManager()
+def test_build_text_adv_agent_returns_agent() -> None:
+    """便捷构造函数：依赖显式传参，返回未启动实例。"""
     agent = build_text_adv_agent(
-        config=TextAdvConfig(),
-        agent_manager=manager,
+        config=fast_config(),
+        vision_reader=FakeVisionReader(REPLY_PLAIN),
+        window_backend=FakeWindowBackend(),
+        capture=StaticCapture(),
     )
-    assert "text_adv" in manager
-    assert manager.get_agent_by_name("text_adv") is agent
+    assert isinstance(agent, TextAdvGameAgent)
+    assert agent.name == "text_adv"
+    assert agent.auto is False
 
 
 # =============================================================================
-# 内部状态机（§1.31 内容状态内部自由）
+# set_auto：幂等启停
 # =============================================================================
 
 
-def test_game_state_change_detection_via_hash() -> None:
-    """TextAdvGameAgentState：apply_screen_text 去重（哈希相同 → 不算变化）。"""
-    state = TextAdvGameAgentState()
-    assert state.apply_screen_text("hello") is True
-    assert state.apply_screen_text("hello") is False
-    assert state.apply_screen_text("world") is True
-
-
-def test_game_state_pick_default_returns_first_option() -> None:
-    """决策策略（Wave 7 简化版）：pick_default_option → 首选项。"""
-    state = TextAdvGameAgentState()
-    state.set_options(_make_options())
-    chosen = state.pick_default_option()
-    assert chosen is not None
-    assert chosen.option_id == "opt_1"
-    assert state.history == ["opt_1"]
-
-
-def test_game_state_pick_default_returns_none_when_empty() -> None:
-    state = TextAdvGameAgentState()
-    assert state.pick_default_option() is None
-
-
-# =============================================================================
-# 协议 1：生命周期（start → RUNNING → stop → STOPPED）
-# =============================================================================
-
-
-async def test_agent_lifecycle() -> None:
-    """start → RUNNING；stop → STOPPED；cleanup 幂等。"""
-    registry = ToolRegistry()
-    manager = AgentManager(tool_registry=registry)
-    agent = build_text_adv_agent(
-        config=TextAdvConfig(),
-        agent_manager=manager,
-        content_engine=FakeContentEngine(),
-        tool_registry=registry,
-    )
-    assert agent.state == AgentState.CREATED
-    await agent.start()
-    assert agent.state == AgentState.RUNNING
-    await agent.stop()
-    assert agent.state == AgentState.STOPPED
-    await agent.cleanup()
-
-
-async def test_agent_start_registers_own_tools() -> None:
-    """_on_start：自动注册 text_adv_choose_option / text_adv_get_story 到 ToolRegistry。"""
-    registry = ToolRegistry()
-    manager = AgentManager(tool_registry=registry)
-    agent = build_text_adv_agent(
-        config=TextAdvConfig(),
-        agent_manager=manager,
-        content_engine=FakeContentEngine(),
-        tool_registry=registry,
-    )
-    assert "text_adv_choose_option" not in registry
-    assert "text_adv_get_story" not in registry
-    await agent.start()
-    assert registry.has("text_adv_choose_option")
-    assert registry.has("text_adv_get_story")
-    await agent.stop()
-
-
-# =============================================================================
-# 核心 QA Scenario：感知-推进-循环闭环（acceptance criteria）
-# =============================================================================
-
-
-async def test_perception_advance_loop_closed(
-    started_agent: Dict[str, object],
-) -> None:
-    """Wave 7 acceptance：feed_state_change 触发感知 + 推进 + 循环闭合。
-
-    Steps:
-      1. 注入 mock 屏幕文本 + 选项
-      2. 调用 feed_state_change() 触发一次闭环
-      3. 断言 look_at_screen 被调用（perception_count == 1）
-      4. 断言 text_adv_choose_option 被触发（advance_count == 1）
-      5. 断言 content_engine.send_input 被调用（content_engine.sent_inputs 长度 == 1）
-      6. 断言 game.milestone 事件被 emit
-    """
-    agent: TextAdvGameAgent = started_agent["agent"]  # type: ignore[assignment]
-    look_provider: LookAtScreenProvider = started_agent["look_provider"]  # type: ignore[assignment]
-    content_engine: FakeContentEngine = started_agent["content_engine"]  # type: ignore[assignment]
-    perception_capture: FakeScreenCapture = started_agent["perception_capture"]  # type: ignore[assignment]
-    event_bus: EventBus = started_agent["event_bus"]  # type: ignore[assignment]
-
-    # 订阅 game.milestone 以断言事件被 emit
-    received: List[GamePayload] = []
-
-    async def on_milestone(event_name: str, payload: GamePayload, source: str) -> None:
-        received.append(payload)
-
-    event_bus.on(
-        CoreEvents.GAME_MILESTONE,
-        on_milestone,
-        model_class=GamePayload,
-    )
-
-    # Step 1+2: 注入状态变化 → 触发一次闭环
-    result = await agent.feed_state_change(
-        new_screen_text="（场景：村口；遇到 NPC）\n1) 继续前进\n2) 回头看看",
-        options=_make_options(),
-    )
-
-    # Step 3: 感知被调用
-    assert look_provider.call_count == 1, f"expected 1 perception call, got {look_provider.call_count}"
-    assert result["perception_called"] is True
-
-    # Step 4: 推进被触发
-    stats = agent.get_statistics()
-    assert stats["advance_count"] == 1, f"expected 1 advance, got {stats['advance_count']}"
-    assert result["advance_called"] is True
-    assert result["decision"] == "opt_1"
-
-    # Step 5: content_engine.send_input 被调用（FakeContentEngine 记录）
-    assert len(content_engine.sent_inputs) == 1
-    sent = content_engine.sent_inputs[0]
-    assert sent.kind == "key"
-    assert sent.key == "enter"
-
-    # 感知后端也真被触发了
-    assert len(perception_capture.calls) == 1
-
-    # Step 6: game.milestone 事件被 emit（异步派发，可能需短暂等待）
+async def test_set_auto_true_is_idempotent() -> None:
+    """连调两次 set_auto(True)：只产生一个观察循环 Task。"""
+    agent, _ = make_agent()
+    await agent.set_auto(True)
+    task_first = agent._observe_task
+    assert task_first is not None
     await asyncio.sleep(0.05)
-    assert len(received) == 1
-    assert received[0].event_type == "milestone"
-    assert received[0].game == "text_adv"
-    assert "opt_1" in received[0].message
+    await agent.set_auto(True)
+    assert agent._observe_task is task_first, "重复 set_auto(True) 不应创建新 Task"
+    assert not task_first.done()
+    assert agent.auto is True
+    await agent.set_auto(False)
 
 
-async def test_perception_advance_loop_two_steps_increment_counters(
-    started_agent: Dict[str, object],
-) -> None:
-    """连续两次 feed_state_change：每次都触发完整闭环，计数器累加。"""
-    agent: TextAdvGameAgent = started_agent["agent"]  # type: ignore[assignment]
-    look_provider: LookAtScreenProvider = started_agent["look_provider"]  # type: ignore[assignment]
-    content_engine: FakeContentEngine = started_agent["content_engine"]  # type: ignore[assignment]
-
-    # 第 1 步
-    r1 = await agent.feed_state_change(
-        new_screen_text="scene A: 1) opt_a 2) opt_b",
-        options=[TextAdvOption(option_id="opt_a", label="A", advance_key="enter")],
-    )
-    assert r1["perception_called"] is True
-    assert r1["advance_called"] is True
-
-    # 第 2 步（文本不同 → apply_screen_text 返回 True，闭环再次触发）
-    r2 = await agent.feed_state_change(
-        new_screen_text="scene B: 1) opt_c 2) opt_d",
-        options=[TextAdvOption(option_id="opt_c", label="C", advance_key="enter")],
-    )
-    assert r2["perception_called"] is True
-    assert r2["advance_called"] is True
-
-    stats = agent.get_statistics()
-    assert stats["perception_count"] == 2
-    assert stats["advance_count"] == 2
-    assert look_provider.call_count == 2
-    assert len(content_engine.sent_inputs) == 2
-
-
-async def test_no_advance_when_screen_text_unchanged_and_no_options(
-    started_agent: Dict[str, object],
-) -> None:
-    """屏幕文本未变 + 无新选项注入 → 不触发推进（去重）。"""
-    agent: TextAdvGameAgent = started_agent["agent"]  # type: ignore[assignment]
-    look_provider: LookAtScreenProvider = started_agent["look_provider"]  # type: ignore[assignment]
-    content_engine: FakeContentEngine = started_agent["content_engine"]  # type: ignore[assignment]
-
-    # 先设置首屏 + 选项
-    r1 = await agent.feed_state_change(
-        new_screen_text="scene X",
-        options=[TextAdvOption(option_id="opt_x", label="X", advance_key="enter")],
-    )
-    assert r1["advance_called"] is True
-    init_perception = look_provider.call_count
-    init_advance = len(content_engine.sent_inputs)
-
-    # 再次喂相同文本 + 不传 options → apply_screen_text 返回 False，无推进
-    r2 = await agent.feed_state_change(new_screen_text="scene X")
-    assert r2["perception_called"] is True  # 感知仍触发（去重在 Agent 内部）
-    assert r2["advance_called"] is False
-    assert look_provider.call_count == init_perception + 1
-    assert len(content_engine.sent_inputs) == init_advance
+async def test_set_auto_false_cancels_loop() -> None:
+    """set_auto(False)：观察 Task 被取消、auto 标志回落 False。"""
+    agent, _ = make_agent()
+    await agent.set_auto(True)
+    task = agent._observe_task
+    assert task is not None
+    await asyncio.sleep(0.05)
+    await agent.set_auto(False)
+    assert agent.auto is False
+    assert task.done() or task.cancelled()
 
 
 # =============================================================================
-# text_adv_choose_option / text_adv_get_story 工具细节（TextAdvToolProvider）
+# 首屏上报与去重
 # =============================================================================
 
 
-async def test_choose_option_rejects_unknown_option(
-    started_agent: Dict[str, object],
-) -> None:
-    """text_adv_choose_option(option_id="不存在") → 失败 result，不抛。"""
-    registry: ToolRegistry = started_agent["registry"]  # type: ignore[assignment]
-
-    # 先喂一个有效场景让 Agent 有选项
-    agent: TextAdvGameAgent = started_agent["agent"]  # type: ignore[assignment]
-    await agent.feed_state_change(
-        new_screen_text="scene Q",
-        options=[TextAdvOption(option_id="valid", label="V", advance_key="enter")],
-    )
-
-    from src.modules.tools.models import ToolInvocation
-
-    res = await registry.invoke(
-        ToolInvocation(
-            tool_name="text_adv_choose_option",
-            arguments={"option_id": "nope"},
-            source="test",
-        )
-    )
-    assert res.success is False
-    assert "nope" in res.error_message
+async def test_first_screen_with_options_emits_report_once() -> None:
+    """首屏带选项：启动后恰好一条 game.report（escalation），message 含选项与工具提示。"""
+    agent, collected = make_agent(reader=FakeVisionReader(REPLY_WITH_OPTIONS))
+    await agent.set_auto(True)
+    ok = await wait_for(lambda: len(collected["report"]) >= 1)
+    assert ok, "首屏 report 未上报"
+    await asyncio.sleep(0.1)
+    assert len(collected["report"]) == 1
+    assert len(collected["milestone"]) == 0
+    payload = collected["report"][0]
+    assert payload.report_kind == "escalation"
+    assert "text_adv_choose" in payload.message
+    assert "1. 继续前进" in payload.message
+    await agent.set_auto(False)
 
 
-async def test_get_story_returns_state_snapshot(
-    started_agent: Dict[str, object],
-) -> None:
-    """text_adv_get_story → 返回 state.to_dict() 快照。"""
-    registry: ToolRegistry = started_agent["registry"]  # type: ignore[assignment]
-    agent: TextAdvGameAgent = started_agent["agent"]  # type: ignore[assignment]
-    expected_scene_text = "（场景：村口；遇到 NPC）\n1) 继续前进\n2) 回头看看"
-    await agent.feed_state_change(
-        new_screen_text=expected_scene_text,
-        options=[TextAdvOption(option_id="snap", label="S", advance_key="enter")],
-    )
-
-    from src.modules.tools.models import ToolInvocation
-
-    res = await registry.invoke(ToolInvocation(tool_name="text_adv_get_story", arguments={}, source="test"))
-    assert res.success is True
-    snap = res.structured_content
-    assert snap is not None
-    assert snap["scene_text"] == expected_scene_text
-    options = snap["options"]
-    assert any(o["option_id"] == "snap" for o in options)
+async def test_first_screen_plain_emits_milestone_once() -> None:
+    """首屏无选项：启动后恰好一条 game.milestone。"""
+    agent, collected = make_agent(reader=FakeVisionReader(REPLY_PLAIN))
+    await agent.set_auto(True)
+    ok = await wait_for(lambda: len(collected["milestone"]) >= 1)
+    assert ok, "首屏 milestone 未上报"
+    await asyncio.sleep(0.1)
+    assert len(collected["milestone"]) == 1
+    assert len(collected["report"]) == 0
+    assert "风静静地吹着" in collected["milestone"][0].message
+    await agent.set_auto(False)
 
 
-# =============================================================================
-# 优雅降级（无 ScreenCapture 后端）
-# =============================================================================
-
-
-async def test_look_at_screen_graceful_when_no_backend(
-    event_bus: EventBus,
-) -> None:
-    """无 ScreenCapture 后端 → vision_look_at_screen 返回成功 + 空文本 + 警告（不抛）。"""
-    from src.modules.tools.models import ToolInvocation
-
-    registry = ToolRegistry()
-    provider = LookAtScreenProvider(config={}, screen_capture=None, text_reader=None)
-    registry.register_provider(provider)
-
-    res = await registry.invoke(ToolInvocation(tool_name="vision_look_at_screen", arguments={}, source="test"))
-    assert res.success is True
-    assert res.content  # 空提示文本
-    assert any("ScreenCapture 未注入" in b.text for b in res.blocks)
-
-
-async def test_look_at_screen_with_fake_backend_returns_image_block() -> None:
-    """注入 FakeScreenCapture → vision_look_at_screen 返回 image block + text block。"""
-    from src.modules.tools.models import ToolInvocation
-
-    registry = ToolRegistry()
-    capture = FakeScreenCapture()
-    capture.queue_png(b"\x89PNG_FAKE", width=800, height=600)
-    reader = FakeTextReader()
-    reader.queue_text("游戏文本片段")
-    provider = LookAtScreenProvider(config={}, screen_capture=capture, text_reader=reader)
-    registry.register_provider(provider)
-
-    res = await registry.invoke(ToolInvocation(tool_name="vision_look_at_screen", arguments={}, source="test"))
-    assert res.success is True
-    assert res.content == "游戏文本片段"
-    block_kinds = {b.kind for b in res.blocks}
-    assert "text" in block_kinds
-    assert "image" in block_kinds
+async def test_same_text_not_reported_twice_and_vlm_pauses() -> None:
+    """帧持续变化但文本同屏：不重复上报；连续无新屏达上限后暂停 VLM 读取。"""
+    reader = FakeVisionReader(REPLY_PLAIN)
+    agent, collected = make_agent(reader=reader, capture=GenCapture())
+    await agent.set_auto(True)
+    ok = await wait_for(lambda: len(collected["milestone"]) >= 1)
+    assert ok
+    # 首屏之后再跑若干轮：文本无新 → 不重复上报；no_change_limit(=3) 达到后暂停 VLM
+    # （读屏序列：首屏 1 次 + 无新计数 3 次，之后帧级检查，读屏次数定格在 4）
+    ok = await wait_for(lambda: len(reader.calls) >= 4, timeout=3.0)
+    assert ok, f"帧变化应触发多次读屏，实际 calls={len(reader.calls)}"
+    await asyncio.sleep(0.1)
+    assert len(collected["milestone"]) == 1, "同屏文本不得重复上报"
+    calls_at_pause = len(reader.calls)
+    await asyncio.sleep(0.3)  # 足够跑两轮以上，验证读屏已停
+    assert len(reader.calls) == calls_at_pause, "暂停后不应继续消耗 VLM"
+    assert len(collected["milestone"]) == 1
+    await agent.set_auto(False)
 
 
 # =============================================================================
-# StubContentEngine 默认行为
+# 错误分流
 # =============================================================================
 
 
-async def test_stub_content_engine_round_trip() -> None:
-    """StubContentEngine：start/send_input/stop/get_state 全部正常。"""
-    from src.agents.text_adv.content_engine import (
-        StubContentEngine,
-        ContentInput,
-    )
-
-    engine = StubContentEngine(engine_kind="stub")
-    await engine.start()
-    status = await engine.status()
-    assert status.running is True
-    assert status.engine_kind == "stub"
-
-    res = await engine.send_input(ContentInput(kind="key", key="enter"))
-    assert res.accepted is True
-    assert "stub:key" in res.echoed
-    assert len(engine.sent_inputs) == 1
-
-    await engine.stop()
-    status2 = await engine.status()
-    assert status2.running is False
+async def test_perception_failure_quiet_loop_survives() -> None:
+    """感知失败（capture 抛异常）：无 game.error，循环仍存活继续后续轮次。"""
+    agent, collected = make_agent(capture=BoomCapture())
+    await agent.set_auto(True)
+    await asyncio.sleep(0.4)
+    assert collected["error"] == [], "感知失败不得发 game.error"
+    assert agent.auto is True
+    task = agent._observe_task
+    assert task is not None and not task.done(), "感知失败后循环应继续存活"
+    await agent.set_auto(False)
 
 
-async def test_content_engine_rejects_when_not_started() -> None:
-    """引擎未启动时 send_input → 拒绝（accepted=False）。"""
-    from src.agents.text_adv.content_engine import (
-        StubContentEngine,
-        ContentInput,
-    )
+async def test_loop_death_emits_error_once_and_auto_falls_back() -> None:
+    """循环整体死亡：game.error 恰好一条 + auto 回落 False。"""
+    agent, collected = make_agent(reader=BoomReader())
+    await agent.set_auto(True)
+    ok = await wait_for(lambda: len(collected["error"]) >= 1)
+    assert ok, "循环死亡应发 game.error"
+    await asyncio.sleep(0.1)
+    assert len(collected["error"]) == 1
+    assert agent.auto is False
+    task = agent._observe_task
+    assert task is not None and task.done(), "循环应已退出"
+    await agent.set_auto(False)
 
-    engine = StubContentEngine()
-    res = await engine.send_input(ContentInput(kind="key", key="enter"))
-    assert res.accepted is False
-    assert "未启动" in res.error_message
+
+async def test_focus_loss_stops_loop_with_single_error() -> None:
+    """窗口失焦：停循环 + 恰好一条 game.error（连跑多轮不刷屏）。"""
+    window = FakeWindowBackend()
+    agent, collected = make_agent(window=window)
+    await agent.set_auto(True)
+    ok = await wait_for(lambda: len(collected["milestone"]) >= 1)
+    assert ok, "失焦前首屏应已上报"
+    window.set_foreground(False)
+    ok = await wait_for(lambda: len(collected["error"]) >= 1)
+    assert ok, "失焦应触发一条 game.error"
+    await asyncio.sleep(0.3)  # 足够跑多轮，验证不刷屏
+    assert len(collected["error"]) == 1, "护栏失败只报一次"
+    assert agent.auto is False
+    task = agent._observe_task
+    assert task is not None and task.done(), "失焦后循环应退出"
+    await agent.set_auto(False)
+
+
+async def test_window_not_found_stops_with_single_error() -> None:
+    """窗口未找到：停循环 + 恰好一条 game.error。"""
+    window = FakeWindowBackend(found=False)
+    agent, collected = make_agent(window=window)
+    await agent.set_auto(True)
+    ok = await wait_for(lambda: len(collected["error"]) >= 1)
+    assert ok
+    await asyncio.sleep(0.1)
+    assert len(collected["error"]) == 1
+    assert agent.auto is False
+    await agent.set_auto(False)
 
 
 # =============================================================================
-# AgentManager 集成（验证与框架的零摩擦集成）
+# 生命周期
 # =============================================================================
 
 
-async def test_agent_manager_lifecycle_for_text_adv() -> None:
-    """AgentManager 集成：register → start_all → 全部 RUNNING → stop_all。"""
-    manager = AgentManager()
-    agent = build_text_adv_agent(
-        config=TextAdvConfig(),
-        agent_manager=manager,
-    )
-    await manager.start_all()
-    assert "text_adv" in manager.list_running()
-    await manager.stop_all()
-    assert agent.state == AgentState.STOPPED
-
-
-async def test_game_tools_audited_when_registered_via_registry() -> None:
-    """AgentManager.audit_tools：Agent 自身把工具注册到 registry 后，audit 不报告缺失。
-
-    反向验证：换空 registry → audit 应报告 game 工具。
-    """
-    registry = ToolRegistry()
-    manager = AgentManager(tool_registry=registry)
-    agent = build_text_adv_agent(
-        config=TextAdvConfig(),
-        agent_manager=manager,
-        content_engine=FakeContentEngine(),
-        tool_registry=registry,
-    )
-
+async def test_on_stop_cancels_observe_loop() -> None:
+    """_on_stop：取消观察循环。"""
+    agent, _ = make_agent()
     await agent.start()
-    assert registry.has("text_adv_choose_option")
-    assert registry.has("text_adv_get_story")
-
-    assert manager.audit_tools(registry) == []
-
-    empty_registry = ToolRegistry()
-    assert sorted(manager.audit_tools(empty_registry)) == ["text_adv_choose_option", "text_adv_get_story"]
-
+    await agent.set_auto(True)
+    task = agent._observe_task
+    assert task is not None
     await agent.stop()
+    assert task.done() or task.cancelled()
+    assert agent.auto is False
+
+
+async def test_state_snapshot_carries_auto_flag() -> None:
+    """状态快照键集恰为 {text, options, auto, updated_at_ms}，auto 由 Agent 注入。"""
+    agent, _ = make_agent()
+    snap = agent.get_state_snapshot()
+    assert set(snap.keys()) == {"text", "options", "auto", "updated_at_ms"}
+    assert snap["auto"] is False
 
 
 # =============================================================================
-# 异常路径（不抛异常，遵循"工具失败 → failure result"语义）
+# 屏幕线既有契约（原样保留：感知失败不外抛、不发业务事件）
 # =============================================================================
 
 
-async def test_choose_option_with_missing_option_id_returns_failure(
-    started_agent: Dict[str, object],
-) -> None:
-    """text_adv_choose_option 缺 option_id → 失败 result，不抛。"""
-    registry: ToolRegistry = started_agent["registry"]  # type: ignore[assignment]
-
-    from src.modules.tools.models import ToolInvocation
-
-    res = await registry.invoke(ToolInvocation(tool_name="text_adv_choose_option", arguments={}, source="test"))
-    assert res.success is False
-    assert "option_id" in res.error_message
-
-
-async def test_look_at_screen_capture_failure_has_error_in_structured(
-    started_agent: Dict[str, object],
-) -> None:
+async def test_look_at_screen_capture_failure_has_error_in_structured() -> None:
     """契约直接断言：look_at_screen capture 抛异常 → success=True + error 字段含 'capture_failed'。
 
     屏幕感知重推后的契约：capture 异常 / 空图 → 工具内降级为 ``success=True`` +
@@ -596,12 +358,9 @@ async def test_look_at_screen_capture_failure_has_error_in_structured(
     不发 ``game.error`` 事件（新契约：感知失败不外抛、不发业务事件，错误信号在结构化内容里）。
     """
     from src.modules.tools.models import ToolInvocation
+    from src.modules.tools.registry import ToolRegistry
 
     registry = ToolRegistry()
-
-    class BoomCapture:
-        def capture(self, monitor_index, region=None, max_width=None):
-            raise RuntimeError("screen unavailable")
 
     provider = LookAtScreenProvider(config={}, screen_capture=BoomCapture())
     registry.register_provider(provider)
