@@ -47,11 +47,6 @@ class CoreEvents:
     GAME_ERROR = "game.error"
     GAME_REPORT = "game.report"
 
-    # ========== v2 语义域事件（perception.* 主播感知流） ==========
-    # 主播 Agent 对直播内容的感知（视觉等），非观众行为、非房间消息——
-    # 不落 live_chat（避免"屏幕内容当弹幕"的数据污染）。
-    PERCEPTION_SCREEN = "perception.screen"
-
     # ========== 流程单（Rundown）子系统事件 ==========
     # 唯一发布者：``RundownState`` 变更边界。``rundown.changed`` 涵盖
     # load / goto / next（含 finish）/ pause / resume 五种状态变更；

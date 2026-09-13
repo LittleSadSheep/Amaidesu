@@ -888,21 +888,6 @@ async def test_partner_speech_persists_without_viewer_stats(
     assert viewers == [], "联动对象发言不应计入观众统计"
 
 
-@pytest.mark.asyncio
-async def test_perception_screen_not_persisted(
-    ledger: StorageLedger, store: SQLiteDatabase, event_bus: EventBus
-) -> None:
-    """perception.screen 不在 room.message.# 通配内：不落 live_chat，无伪观众。"""
-    from src.modules.events.payloads.perception import ScreenDescriptionPayload
-
-    payload = ScreenDescriptionPayload(content="主播正在玩《双人成行》")
-    await event_bus.emit(CoreEvents.PERCEPTION_SCREEN, payload, source="screen")
-    await asyncio.sleep(0.05)
-
-    assert await store.execute("SELECT * FROM live_chat") == []
-    assert await store.execute("SELECT * FROM viewers") == []
-
-
 # =============================================================================
 # 回复关联：reply_to_message_id 落库（"主播回应了哪条弹幕"可查询）
 # =============================================================================

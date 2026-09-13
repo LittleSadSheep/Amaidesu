@@ -39,7 +39,6 @@ from src.modules.events.event_bus import EventBus
 from src.modules.events.names import CoreEvents
 from src.modules.events.payloads.live import LiveEndedPayload, LiveStartedPayload
 from src.modules.events.payloads.game import GamePayload
-from src.modules.events.payloads.perception import ScreenDescriptionPayload
 from src.modules.logging import get_logger
 from src.modules.tools import ToolSpec
 from src.modules.tools.registry import ToolRegistry
@@ -521,13 +520,6 @@ class StreamerAgent(BaseAgent):
                 self._on_room_message_received,
                 model_class=RoomMessagePayload,
             )
-        # 主播视觉感知（屏幕采集器 emit）：画面描述进 RoomState，
-        # 经环境参考进决策上下文——不进弹幕缓冲、不落 live_chat
-        self._event_bus.on(
-            CoreEvents.PERCEPTION_SCREEN,
-            self._on_screen_description,
-            model_class=ScreenDescriptionPayload,
-        )
         # 游戏叙事（三通道·事件）：游戏 Agent（如 MinecraftAgent）emit game.*
         # → 主播侧收集最近叙事，进 Planner 上下文（按 payload.game 过滤可扩展到多游戏）
         self._event_bus.on(
@@ -607,16 +599,6 @@ class StreamerAgent(BaseAgent):
     def _game_narrative_text(self) -> str:
         """导出最近游戏叙事摘要文本（Planner 上下文用）。"""
         return "\n".join(self._game_narrative_blocks)
-
-    async def _on_screen_description(
-        self,
-        event_name: str,
-        payload: ScreenDescriptionPayload,
-        source: str,
-    ) -> None:
-        """屏幕画面描述回调：记录进 RoomState 环境参考（非观众行为、不落库）。"""
-        self._room_state.set_screen_context(payload.content)
-        self._logger.debug(f"屏幕画面已更新（来源 {source}）: {payload.content[:50]}")
 
     async def _on_room_message_received(
         self,

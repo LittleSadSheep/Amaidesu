@@ -48,13 +48,13 @@ def test_registry_consistent_with_core_events():
 
 def test_missing_registration_raises():
     """反向：移除一个注册 → 检查报错并指出缺失事件名"""
-    saved = EVENT_REGISTRY.pop("perception.screen")
+    saved = EVENT_REGISTRY.pop("game.milestone")
 
     try:
-        with pytest.raises(RuntimeError, match="perception.screen"):
+        with pytest.raises(RuntimeError, match="game.milestone"):
             ensure_registry_consistency()
     finally:
-        EVENT_REGISTRY["perception.screen"] = saved
+        EVENT_REGISTRY["game.milestone"] = saved
 
 
 def test_extra_registration_raises():

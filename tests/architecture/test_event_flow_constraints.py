@@ -6,7 +6,6 @@
 事件约定（src/modules/events/names.py 定义）：
 - 行为流（Input Domain emit）：
     - room.message.danmaku / gift / super_chat / enter / partner_speech
-    - perception.screen（主播感知流，进决策环境参考，不落 live_chat）
 - Agent Domain subscribe：
     - room.message.*（消费弹幕驱动 Planner）
 - Agent Domain emit：
@@ -27,11 +26,10 @@ INPUT_EVENTS = {
     "room.message.super_chat",
     "room.message.enter",
     "room.message.partner_speech",
-    "perception.screen",
 }
 
 # Agent 域允许的非输入订阅：场次生命周期（主动发言场次闸门）与游戏事件族
-AGENT_ALLOWED_PREFIXES = ("live.started", "live.ended", "game.", "tool.result.", "perception.")
+AGENT_ALLOWED_PREFIXES = ("live.started", "live.ended", "game.", "tool.result.")
 
 DECISION_EVENTS = {
     "planner.checkpoint",

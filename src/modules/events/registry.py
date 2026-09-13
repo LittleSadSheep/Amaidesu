@@ -245,7 +245,7 @@ def register_core_events() -> None:
     该函数本身不维护任何事件→Payload 映射。Payload 模块一旦被 import，
     其内部的 ``@register_event`` 装饰器即把对应类登记到 :data:`EVENT_REGISTRY`。
 
-    触发各语义域 Payload 模块（live/room/game/perception/rundown/planner 等）
+    触发各语义域 Payload 模块（live/room/game/rundown/planner 等）
     的导入，让 ``@register_event`` 装饰器执行；同时登记动态事件族
     （``tool.result.*`` / ``tool.health.*``）。
     """
@@ -254,7 +254,6 @@ def register_core_events() -> None:
         core as _core_payloads,  # noqa: F401
         game as _game_payloads,  # noqa: F401
         live as _live_payloads,  # noqa: F401
-        perception as _perception_payloads,  # noqa: F401
         planner as _planner_payloads,  # noqa: F401
         room as _room_payloads,  # noqa: F401
         rundown as _rundown_payloads,  # noqa: F401
