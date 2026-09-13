@@ -60,4 +60,4 @@ uv run pytest tests/architecture/ -q # 架构约束
 
 ## 相关文档
 
-- [测试指南](../docs/development/testing-guide.md) - 测试规范和最佳实践
+- [测试指南](../docs/guides/testing.md) - 测试规范和最佳实践
