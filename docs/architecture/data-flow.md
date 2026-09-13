@@ -50,14 +50,14 @@ flowchart TB
 
 subgraph StreamerAgent["StreamerAgent src/agents/streamer/"]
         MB["MessageBuffer 弹幕聚合缓冲"]
-        Planner["Planner 决策循环<br/>planner_llm = llm_fast<br/>不传 tools"]
-        Reply["Replyer 表达引擎<br/>replyer_llm = llm<br/>人设 + ProfanityFilter"]
+        Planner["Planner ReAct 决策循环<br/>profile = planner<br/>携带注册表工具列表"]
+        Reply["Replyer 表达引擎<br/>profile = replyer<br/>人设 + 敏感词过滤"]
         Rundown["Rundown 流程单子系统<br/>备忘录 + 闹钟"]
         UQ["UtteranceQueue<br/>FIFO 串行播放队列<br/>丢最旧 / 单 worker<br/>注入 speak 适配器"]
     end
 
     subgraph Tools["工具族 src/modules/tools/"]
-        RT["reply 工具<br/>ReplyToolProvider"]
+        RT["streamer_reply 工具<br/>ReplyToolProvider"]
         Other["vision / memory / agent_control<br/>+ VTS / 字幕 / OBS 等渲染工具"]
     end
 
@@ -74,19 +74,17 @@ subgraph StreamerAgent["StreamerAgent src/agents/streamer/"]
     IC --> Bus
     Bus -->|on 精确订阅| MB
     MB --> Planner
-    Planner -->|置信度门槛<br/>直接 await invoke| RT
+    Planner -->|ReAct 收尾<br/>registry.invoke| RT
     Reply -->|speech / emotion / action| RT
     Reply -->|落库| DB
-    Planner -.->|空转触发| Bus
     Planner -->|tools.invoke| Other
-    RT -.->|解析 result.content<br/>speech 入队| UQ
+    Planner -.->|reply 产出 speech<br/>经发言管线入队| UQ
     UQ -->|fire-and-forget<br/>后台 worker 串行 await speak| TTSEng
     TTSEng -.->|started / finished / failed| Bus
-    Bus -.->|on tool.result.| Planner
-    RT -.->|emotion 直接 invoke| Other
+    StreamerAgent -.->|emotion 直接 invoke| Other
 ```
 
-> 图例说明：实线箭头是当前主链路；虚线箭头是辅助通道（空转检查点、工具异步结果回传、TTS 生命周期事件广播、emotion 直调）。reply 的 speech 字段经 UtteranceQueue 串行送入装配期注入的 `tts_engine` 实例（`build_tts_infrastructure` 按 `infra.toml [tts].provider` 单选构造后直接注入 StreamerAgent），由其 `handle_speech(text, utterance_id)` 完成合成 + 播放——不再经 ToolRegistry；emotion 字段由 StreamerAgent 解析后**直接 invoke** `vts_set_expression` 工具，不经事件；TTS 引擎自身（基础模块）播放生命周期发布 `tts.utterance.*` 三事件。皮套口型同步链路已拆除（见文末"通信机制选型"末段）。
+> 图例说明：实线箭头是当前主链路；虚线箭头是辅助通道（reply 产出的发言入队、TTS 生命周期事件广播、emotion 直调）。Planner 的全部工具调用（含收尾的 streamer_reply）都经 `registry.invoke`——ReAct 循环内同步持有返回值；`tool.result.<name>` 事件是终点广播，供 Dashboard 溯源，Planner 不订阅。reply 结果的 speech 字段由 StreamerAgent 解析后经 UtteranceQueue 串行送入装配期注入的 `tts_engine` 实例（`build_tts_infrastructure` 按 `infra.toml [tts].provider` 单选构造后直接注入 StreamerAgent），由其 `handle_speech(text, utterance_id)` 完成合成 + 播放——不再经 ToolRegistry；emotion 字段由 StreamerAgent 解析后**直接 invoke** `vts_set_expression` 工具，不经事件；TTS 引擎自身（基础模块）播放生命周期发布 `tts.utterance.*` 三事件。皮套口型同步链路已拆除（见文末"通信机制选型"末段）。
 
 ---
 
@@ -99,7 +97,7 @@ subgraph StreamerAgent["StreamerAgent src/agents/streamer/"]
 - **采集器只发布不订阅下游结果事件**。采集器订阅任何下游 Agent/工具结果事件 = 禁止。采集器在 `collect()` 内自行构造 `RoomMessagePayload` 等事件载荷并 emit 到 EventBus（自产自发，基类零转换零兜底），然后退出。
 - **工具异步结果走 `tool.result.<tool_name>`，不得回流到任何采集器**。`tool.result.synthesize` 之类的结果事件由需要它的 Agent（如 Planner）订阅以驱动后续动作；任何采集器订阅 `tool.result.#` = 禁止。
 - **同步工具调用的返回值天然单向**。`await ToolRegistry.invoke(name, args)` 的返回值由调用方持有，工具实现不感知调用方后续动作，也不得反过来通过事件重新写入。
-- **Agent 内部子组件不跨子组件发"决策完成""输出完成"之类胶水事件**。`decision.intent.generated` / `output.intent.*` 一类事件在 v2 已删除（见 `names.py` Wave 6 迁移注释），因为 Planner→Replyer 是同 Agent 内部直接 await，不经事件中转。
+- **Agent 内部子组件不跨子组件发"决策完成""输出完成"之类胶水事件**。`decision.intent.generated` / `output.intent.*` 一类事件在 v2 已删除——Planner→Replyer 是同 Agent 内部直接 await，不经事件中转。
 
 这条守护的是**防环**：一旦工具结果或 Agent 内部产物能重新写入触发新决策，就会形成"输出→决策→输出"的无限循环。
 
@@ -146,7 +144,7 @@ v2 不再有"插件系统"。所有新功能通过 Agent 包内聚实现，框�
 
 | 禁止模式 | 原因 | 替代方案 |
 |---------|------|---------|
-| 把 Agent 内部件注册为工具（如 Planner/Replyer） | 插件换皮 | 内部件留在 Agent 包内，经 `BaseAgent.list_tools()` 暴露 Agent 自有工具（如 StreamerAgent 暴露 `reply` / `should_speak_proactively` / `parse_command`） |
+| 把 Agent 内部件注册为工具（如 Planner/Replyer） | 插件换皮 | 内部件留在 Agent 包内；LLM 可调的自有工具经 `BaseAgent.list_tools()` 声明并注册进 ToolRegistry（如 StreamerAgent 的 `streamer_reply` 与 `rundown_control`）；`parse_command` 等代码直连原语不是工具、不注册 |
 | 内容逻辑写进框架层（`src/modules/`） | 破坏"加包不加框架"红线 | `src/agents/<name>/` 自包含包；框架只保留协议、抽象、跨组件基础设施 |
 | 采集器订阅 Agent/工具结果事件（如 `tool.result.#` / `planner.decision`） | 防环；采集器角色定位为"数据生产者" | 采集器只 emit `room.message.*`，订阅交给 Agent 与 Observer |
 | Agent import 具体工具实现类 | 耦合到具体实现 | 经 `ToolRegistry.invoke(name, args)` 调用；能力发现走 `ToolRegistry.list_tools()` 或 `CapabilitiesProvider` Protocol |
@@ -179,40 +177,41 @@ v2 不再有"插件系统"。所有新功能通过 Agent 包内聚实现，框�
       └─ self._buffer.add(msg, arrival_ms=…, forced=forced)
 
 4. 后台 flush 循环（周期性 tick）
-   └─ _flush_loop                                   (L519)
+   └─ _flush_loop                                   (streamer_agent.py)
       └─ await asyncio.sleep(tick_interval_ms / 1000)
       └─ await self._maybe_flush()
          └─ MessageBuffer.should_flush 判定（条数/时间窗口/forced）
-         └─ 命中 → 取批次 → Planner.plan(planner_llm="llm_fast", 不传 tools)
-            └─ 客户端：LLMManager.chat(prompt, client_type=planner_llm)  (planner.py L199)
+         └─ 命中 → 取批次 → Planner.plan(profile="planner", tools=注册表工具列表)
 
-5. Planner 决策出口
-   └─ 结构化 JSON 输出 → DecisionPlan(should_reply, target, confidence, …)
-   └─ 置信度 ≥ 0.3 → 进入回复路径
-   └─ 直接 await self._reply_tool.invoke(…)         (经 ReplyToolProvider.invoke, reply_tool.py L170)
-      └─ Replyer.generate(plan, persona, history, agenda_text)   (replyer.py)
-         └─ 客户端：LLMManager.chat(prompt, client_type=replyer_llm="llm", 不传 tools)  (L148)
-         └─ 解析 {speech, emotion, action} 三元组
-         └─ ProfanityFilter 敏感词净化（替换/丢弃/放行三策略）
+5. Planner ReAct 循环（查 → 想 → 说）
+   └─ llm_service.generate(messages, tools=工具列表, profile="planner")
+   └─ 循环：LLM 调注册表工具 → 经 registry.invoke 执行 → 观察以 tool 消息写回 → 再生成
+      （有界：planner_max_steps 防失控；自然终止 = LLM 无工具调用 = 本轮不说话）
+   └─ 调 streamer_reply → registry.invoke 收尾（ReplyToolProvider 执行）
+      └─ Replyer.generate(persona, history, rundown_text)   (replyer.py)
+         └─ llm_service.generate(tools=[reply 函数定义], profile="replyer")——LLM 只见 reply
+         └─ 解析 {speech, emotion, actions} 三元组
+         └─ 敏感词净化（替换/丢弃/放行三策略）
+   └─ 无 DecisionPlan / 无置信度门槛：说与不说由 ReAct 循环内的工具调用行为直接表达
 
 6. 结果落库 + 发言管线分发
-   └─ ToolExecutionResult.success=True，content 为 JSON 字符串（`{speech, emotion, action, metadata}`）
+   └─ ToolExecutionResult.success=True，structured_content 为 dict（`{speech, emotion, actions, metadata}`）
    └─ 存储层写入 live_chat 表（danmaku → message；reply → 同表关联 user=bot）
    └─ 空转检测信号由 ProactiveTrigger 承载（BackgroundMaintainer 轻循环供周期 tick；流程单超时提醒走 rundown_overdue 触发源）
-   └─ **StreamerAgent 消费 `result.content` 触发发言管线（v2.0.12 §8 修正后）**（`streamer_agent.py` _dispatch_speech_and_emotion）：
+   └─ **StreamerAgent 消费 reply 结构化结果触发发言管线**（`streamer_agent.py` _dispatch_speech_and_emotion）：
       ├─ speech 非空 → 生成 `utt_{epoch_ms}_{seq}` → UtteranceQueue.enqueue（fire-and-forget）→ 后台 worker 串行 `await speak(text, utterance_id)`（`speak` 是构造期注入的适配器，绑定 `tts_engine.handle_speech`）
       │  └─ `tts_engine` 是装配期由 `build_tts_infrastructure(core [tts], event_bus)` 按 `[tts].provider` 选中的唯一引擎实例（edge_tts / gptsovits / voicebox / omni_tts），构造期直接注入 StreamerAgent
       │     └─ 引擎播放时按 `tts.utterance.*` 三事件发布生命周期（started / finished / failed）；事件是终点广播，消费者不得触发新决策
       └─ emotion 非空 → **直接 invoke** `vts_set_expression`（不经事件，不入 UtteranceQueue；VTS 仍是 ToolRegistry 中的工具，TTS 不再是）
-      └─ action 字段：当前范围明确不接入（独立议题，解析但不消费）
+      └─ actions 列表：逐条经 registry.invoke fire-and-forget 执行（Replyer 输出的动作类工具调用，失败仅记日志不影响决策循环）
 ```
 
 链路关键性质：
 
-- **每一步都是单向流动**。控制台输入 → EventBus → StreamerAgent → 工具调用 → 返回值，全程无环。Planner→Replyer 是同 Agent 内 await，不经事件中转（v2 删除 `decision.intent.generated` 的原因）。
+- **每一步都是单向流动**。控制台输入 → EventBus → StreamerAgent → 工具调用 → 返回值，全程无环。Planner→Replyer 是同 Agent 内 await（经 registry 调用而非事件中转）。
 - **拦截器层是全局单点**。RateLimit/SimilarFilter 作用于 `room.message.*`，所有订阅者共享净化后的结果。`core.*` / `live.*` / `planner.*` / `tts.utterance.*` 等不经过拦截器。
-- **TTS 是基础模块而非工具**（v2.0.12 §8 修正）。每句 reply 落库即发声——`reply.result.content` 的 `speech` 字段由 StreamerAgent 主动入 UtteranceQueue，不依赖 LLM 决策调用 TTS 工具（事实上 TTS 已提升为基础设施、移出 ToolRegistry）；装配期 `build_tts_infrastructure(core [tts], event_bus)` 按 `[tts].provider` 单选构造引擎实例并直接注入 StreamerAgent，运行时由 UtteranceQueue 通过注入的 `speak` 适配器调 `engine.handle_speech`——零 Facade 路由层、零 ToolRegistry 条目。`infra.toml [tts]` 自包含（行为参数 + 四引擎子段），`tools.toml` 无任何 TTS 段，详见 ADR-007。
-- **空转提醒不经事件**。独立调度循环与旧检查点事件已随流程单重设计删除（ADR-011）；空闲提醒职责归 ProactiveTrigger 自身（流程单超时提醒是其触发源之一）。
+- **TTS 是基础模块而非工具**。每句 reply 落库即发声——reply 结构化结果的 `speech` 字段由 StreamerAgent 主动入 UtteranceQueue，不依赖 LLM 决策调用 TTS 工具（TTS 已提升为基础设施、移出 ToolRegistry）；装配期 `build_tts_infrastructure(core [tts], event_bus)` 按 `[tts].provider` 单选构造引擎实例并直接注入 StreamerAgent，运行时由 UtteranceQueue 通过注入的 `speak` 适配器调 `engine.handle_speech`——零 Facade 路由层、零 ToolRegistry 条目。`infra.toml [tts]` 自包含（行为参数 + 四引擎子段），`tools.toml` 无任何 TTS 段，详见 ADR-007。
+- **空转提醒不经事件**。独立调度循环与旧检查点事件已随流程单重设计删除；空闲提醒职责归 ProactiveTrigger 自身（流程单超时提醒是其触发源之一）。
 
 ---
 
@@ -246,7 +245,20 @@ v2 中不同数据走不同通道，不要混用：
 
 ---
 
-## 7. 与其他文档的分工
+## 7. 装配纪律（两段装配）
+
+组合根 `create_app_components`（`main.py`）把装配显式分为两段，这是启动顺序的硬约束：
+
+| 段 | 职责 | 边界 |
+|----|------|------|
+| **第 ① 段 构造 + 接线** | 存储/LLM/EventBus/拦截器/场次管理/事件历史/StorageLedger/Collector、AgentManager 与全部工具 Provider 的 `event_bus.on` 订阅就位 | **不得改变业务运行态**——不发 `live.started` 等边界事件，不触发任何决策循环 |
+| **第 ② 段 启动/触发** | `agent_manager.start_all()`（Agent 订阅生效）→ `simulator_service.setup()`（条件装配，末步 auto_start 可开播）→ DashboardServer | 触发类组件只能在本段启动 |
+
+守护的问题：**边界事件不得漏订阅**。回放模式 `simulator.start()` 经 `open_session` 发 `live.started`——若它发生在 Agent 订阅之前，主播 Agent 的场次进行位（`_live_active`）不会置位，主动发言闸状态即错。因此触发源（simulator 开播、Dashboard 手动开播之外的任何启动期触发）必须排在 `start_all()` 之后；组合根内不允许出现"先触发后订阅"的装配顺序，也不允许组件用"启动时补读全局状态"来兜这类顺序窟窿。
+
+---
+
+## 8. 与其他文档的分工
 
 本文档**只**约束数据怎么走、边界在哪里，不复制事件全表与组件清单。需要查表请走以下链接：
 

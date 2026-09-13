@@ -33,10 +33,10 @@ flowchart TB
     end
 
     subgraph Streamer["StreamerAgent (src/agents/streamer/)"]
-        Planner["Planner ReAct 循环<br/>(planner_llm 默认 llm, 全局工具列表 + reply)"]
-        Reply["Replyer 表达引擎<br/>(replyer_llm, ProfanityFilter)<br/>= reply 工具的"]
+        Planner["Planner ReAct 循环<br/>(profile=planner, 注册表工具列表)"]
+        Reply["Replyer 表达引擎<br/>(profile=replyer, 敏感词过滤)<br/>= reply 工具的执行引擎"]
         Rundown["Rundown 流程单子系统<br/>备忘录 + 闹钟（推进权归 Agent）"]
-        Tools["自带工具<br/>reply / should_speak_proactively<br/>+ 观众命令（代码直连，非工具）"]
+        Tools["自带工具<br/>streamer_reply / rundown_control<br/>+ 观众命令（代码直连，非工具）"]
         UQ["UtteranceQueue<br/>FIFO 串行播放队列<br/>丢最旧 / 单 worker / 渲染超时"]
     end
 
@@ -155,12 +155,11 @@ sequenceDiagram
     Main->>Int: 3) register_event_interceptors（rate_limit + similar_filter）
     Main->>Rec: 3) EventHistoryRecorder.start
     Main->>Col: 4) CollectorManager + _register_collectors_from_config + start_all
-    Main->>Sim: 4b) SimulatorService.setup(auto_start=not args.dry)<br/>（条件：[simulator].enabled=true；--dry 强制 auto_start=False 不产生 LLM 调用）
     Main->>Agt: 5) AgentManager + _register_agents_from_config
     Main->>TTS: 5a0) build_tts_infrastructure(core [tts], event_bus=bus)：按 [tts].provider 构造选中引擎实例（Provider 实例 or None），StreamerAgent 构造期注入（v2.0.12 起 TTS 已基础模块化，不再走 ToolRegistry）
     Main->>Reg: 5a) bind_core_tools(registry, tools 配置)（按域开关 [tools.avatar.*] / [tools.studio.obs] 的 enabled 驱动各域 Provider 自注册：vts / vrchat / warudo / obs）
-    Main->>Reg: 5b) bind_pending_tools(registry)（flush L1 @tool pending）
     Main->>Agt: 5c) start_all（触发各 Agent._register_tools 自注册；StreamerAgent 收到 `speech_config`（来自 `core [tts]`）+ 注入的 `tts_engine` 实例，按 `_tts_enabled` 双闸门决定是否构造 UtteranceQueue）
+    Main->>Sim: 5c2) SimulatorService.setup(auto_start=not args.dry)<br/>（条件：[simulator].enabled=true；--dry 强制 auto_start=False 不产生 LLM 调用；<br/>开播经 open_session 发 live.started——两段装配纪律：晚于 5c 的 Agent 订阅生效，见 data-flow.md §7）
     Main->>Agt: 5d) audit_tools(registry)（只读审计 + 未实现声明 warning）
     Main->>Log: 6) LogStreamer.start（持久化实时日志）
     Main->>Dash: 7) DashboardServer.start（仅 observer；ImportError 降级 warning）
@@ -233,15 +232,15 @@ sequenceDiagram
 | 角色 | 模块 |
 |------|------|
 | **入口与编排** | `streamer_agent.py`（继承 `BaseAgent`，编排子组件）、`__init__.py` |
-| **决策循环（Planner）** | `planner.py`（planner_llm 调 `chat()` 不传 tools，结构化 JSON 输出）、`plan.py`（plan 数据结构） |
-| **表达引擎（Replyer）** | `replyer.py`（replyer_llm 调 `chat()` 不传 tools，纯文本 JSON + ProfanityFilter） |
+| **决策循环（Planner）** | `planner.py`（ReAct 循环：`generate` 携带注册表工具列表，查信息 → 说与不说由工具调用行为表达）、`plan.py`（plan 数据结构） |
+| **表达引擎（Replyer）** | `replyer.py`（`generate` 只见 reply 函数定义，纯文本 JSON + 敏感词过滤） |
 | **主动发言规则** | `proactive_trigger.py`（ProactiveTrigger 代码直连内部件，非 LLM 工具；主循环直接驱动） |
 | **流程单（Rundown）** | `rundown/` 子包：`rundown.py`（数据契约 + 内置默认流程单）/ `rundown_state.py`（游标 + 计时 + 唯一变更边界）/ `rundown_tool.py`（Agent 推进工具）；备忘录 + 闹钟——环节推进由 Agent 经工具自主决定，超时闹钟并入 ProactiveTrigger 只提醒不执法 |
 | **房间与消息** | `room_state.py`（直播间状态聚合）、`message_buffer.py`（弹幕聚合窗口：默认 3s/20 条） |
 | **对话映射与参考段** | `canonical.py`（live_chat 行/弹幕批 → 原生消息的单一序列化点 + 成块丢最旧截断）、`planner_context.py`（Planner 参考段纯函数组装，固定在消息序列尾部） |
 | **后台维护** | `background.py`（双任务 BackgroundMaintainer 取代旧 RoomStateLoop） |
 | **发言管线** | `utterance_queue.py`（v2.0.10 新增：`UtteranceQueue` FIFO 串行队列，丢最旧 / 单 worker / 渲染超时看门狗；构造期注入 `speak` 可调用对象（绑定 `tts_engine.handle_speech`），后台串行直接 `await speak(text, utterance_id)`，不再经 ToolRegistry） |
-| **工具壳层** | `tools/` 子包：`reply_tool.py`（`streamer_reply`）、`rundown_tool.py`（`rundown_control`，流程单激活时追加）——Agent 专属工具入口，只包装顶层内部件，不含决策/表达逻辑；`should_speak_proactively` 属 ProactiveTrigger 代码直连内部件，非 LLM 工具 |
+| **工具壳层** | `tools/` 子包：`reply_tool.py`（`streamer_reply`）、`rundown_tool.py`（`rundown_control`，流程单推进）——Agent 专属工具入口，注册进 ToolRegistry 由 Planner ReAct 循环统一调用，只包装顶层内部件，不含决策/表达逻辑 |
 | **时序门** | `timing_gate.py` |
 | **命令解析** | `command/command.py` + `command/command_parser.py` + `command/command_registry.py`——观众 `/命令` 经代码直连解析 + `mappings` 白名单 + 限频后经 `framework_delegate` 委派游戏 Agent（最小接线：玩法待扩展；命令不是 LLM 工具，不进 ToolRegistry） |
 | **提示词** | `prompts/amaidesu_planner_react.md` + `prompts/amaidesu_replyer.md` + `prompts/summary_system.md` |

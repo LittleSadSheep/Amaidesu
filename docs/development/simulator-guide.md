@@ -1,5 +1,3 @@
-*最后更新：2026-09-06（录制回放数据源迁移：`data/events/*.jsonl` 文件 → SQLite `event_history` 表；读回 API 由模块级函数改为 `SQLiteStore.list_event_dates()` / `get_day_events(date, event_name=...)`，历史 JSONL 已全量导入真实库后文件退役）*
-
 # 世界模拟器开发基础设施
 
 > **世界发射器统一（ADR-006 修订版）**：`SimulatorService` 是唯一的模拟消息发射器，三模式切换——
@@ -12,7 +10,7 @@
 **模拟器 = 开发基础设施**（与 Dashboard / `--dry` / 日志系统同类），不属于生产直播组件：
 
 - **默认关闭**：`[simulator].enabled = false`（生产零沾染）；
-- **按需装配**：组合根 `main.create_app_components` 在步骤 4b（CollectorManager 之后、AgentManager 之前）实例化 `SimulatorService` 并挂入生命周期，注入存储仓储；
+- **按需装配**：组合根 `main.create_app_components` 第 ① 段（构造+接线）实例化 `SimulatorService` 并挂入生命周期，注入存储仓储；启动（setup/auto_start）在第 ② 段——Agent 订阅生效之后（两段装配纪律见 data-flow.md §7）；
 - **数据二等**：模拟器产生的事件 payload `simulated=True` 溯源标记贯穿，统计与入库一律排除（详见 §5）。
 
 **主体性判据检验**（AGENTS.md 红线）：模拟器不采集任何东西（不是采集器），不被调才干活（不是工具）；四态节奏与人设池自我驱动——按判据是 Agent 形态，但服务于开发者而非观众，故归入**开发工具分类**以可选装配的开发服务形态存在。
@@ -21,14 +19,13 @@
 
 ### 2.1 启用方式
 
-在 `config/core.toml` 的 `[simulator]` 段设 `enabled = true`：
+在 `config/infra.toml` 的 `[simulator]` 段设 `enabled = true`：
 
 ```toml
-# config/core.toml
+# config/infra.toml
 [simulator]
 enabled = true                                  # 启用模拟器（开发期临时开启）
 mode = "generate"                               # generate=LLM 生成 / replay=录制回放 / off
-llm_client_type = "llm_fast"                    # 用 llm_fast profile（便宜/快）
 llm_temperature = 0.9                           # 创造性稍高
 token_budget_per_hour = 50000                   # 1 小时滑动窗口 token 硬上限
 ```
@@ -74,7 +71,6 @@ replay 模式的录制日期可在启动时通过配置 `replay_date` 指定，�
 | `idle_rate_multiplier` | `0.2` | IDLE 态生成率倍率 |
 | `warmup_duration_s` | `300.0` | 启动暖场期时长 |
 | `max_message_chars` | `50` | 单条消息最大字符数 |
-| `llm_client_type` | `"llm_fast"` | LLM profile（`llm` / `llm_fast` / `vlm` 等） |
 | `llm_temperature` | `0.9` | LLM 采样温度 |
 | `token_budget_per_hour` | `50000` | 1 小时滑动窗口 token 硬上限 |
 | `max_concurrent_llm` | `8` | 最大并发 LLM 请求数 |
@@ -140,7 +136,3 @@ replay 模式的录制日期可在启动时通过配置 `replay_date` 指定，�
 - [ADR-006：LLM 模拟器是官方开发基础设施](../architecture/adr/006-simulator-is-dev-infrastructure.md) — 定位与修订记录
 - [事件系统](../architecture/event-system.md) — `room.message.*` / `streamer.speech` 事件表
 - [数据流规则](../architecture/data-flow.md) — 模拟数据在数据面的二等地位
-
----
-
-*最后更新：2026-09-05（世界发射器统一重写：三模式架构（generate/replay/off）替代"simulator + MockCollector 互补"叙事；运行时数据迁 SQLite（sim_personas/sim_gifts + 内置种子，删 TOML 数据文件说明）；新增世界窗口（观众上下文）节；replay 控制参数与 Dashboard 工作台说明；删除 mock vs simulator 对照表与 stats_persistence 死字段）*

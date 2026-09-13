@@ -216,23 +216,24 @@ uv run python main.py --dry
 
 | 名称 | 用途 | 关键子配置 |
 |------|------|-----------|
-| `streamer` | 主播 Agent（Planner + Replyer 两阶段决策） | `[agents.streamer]` 子树（persona / context / proactive / background / command / word_filter） |
+| `streamer` | 主播 Agent（Planner ReAct 决策循环 + Replyer 表达引擎） | `[agents.streamer]` 子树（persona / context / proactive / background / command / word_filter） |
 | `minecraft` | 游戏 Agent（MCP 工具玩 Minecraft，事件驱动 ReAct） | `[agents.minecraft]`（max_steps / execute_* / mcp） |
 
 > `text_adv`（文字冒险示例，零依赖开箱可玩）同属 Agent 清单；完整名单见 `src/modules/agents/factory.py` 的 `SUPPORTED_AGENTS`。
 
 #### 工具（按族列举，代表工具名）
 
-工具注册走 `src/modules/tools/registry.py` 的 `ToolRegistry`。主播 Agent 自带 `streamer_reply`（包装 Replyer 表达引擎；流程单激活时另有 `rundown_control`）；主动发言判定与观众命令是代码直连内部件，不经工具面。通用工具由装配根按分类开关注入（`query_memory` 记忆检索默认启用）。
+工具注册走 `src/modules/tools/registry.py` 的 `ToolRegistry`。StreamerAgent 自带 `streamer_reply`（发言出口）与 `rundown_control`（流程单推进，随 rundown 注册项），均只对 `streamer` Agent 可见；`query_memory`（记忆检索）由 `[tools.memory]` 开关注册（默认配置启用）。主动发言判定与观众 `/命令` 解析是代码直连的内部件，不是工具。其他族系需要启用对应 `[tools.<pack>]` 包才会注入。
 
 | 工具包（`[tools.<pack>]`） | 代表工具 | 说明 |
 |----------------------------|---------|------|
 | `perception` | `look_at_screen` | 屏幕感知（VLM 调用） |
 | `output` | `push_subtitle` / `vts_trigger_hotkey` / `obs_switch_scene` | 渲染族：字幕 / 皮套控制 / OBS 场景切换（TTS 已提升为基础设施，迁至 `src/modules/tts/` 基础模块） |
+| Streamer 自带 | `streamer_reply` / `rundown_control` | 主播自有工具（开 `streamer` 即生效；`rundown_control` 随 rundown 注册项声明） |
 | `framework`（AgentControl） | `delegate` / `task_status` | 框架级委派与任务状态查询（随任一 Agent 启用生效） |
-| `memory` | `query_memory` | 记忆检索（默认启用） |
+| `memory` | `query_memory` | 记忆检索（`[tools.memory]` 开关，默认开启） |
 | `game` | （由具体游戏 Agent 注入） | 游戏专属推进工具（如 text_adv 的截图+点击） |
-| `external` | （预留） | 外部工具源（v2.0.9 收编：MCP 桥接已移除，schema 保留供未来重启） |
+| `external` | （预留） | 外部工具源（MCP 桥接经 `[tools.mcp]` 启用） |
 
 ### 3.4 事件拦截器
 
