@@ -682,6 +682,7 @@ async def create_app_components(
             simulator_service,
             event_recorder,
             session_manager,
+            llm_repo=database.llm,
         )
 
     # Dashboard 字幕后端注册：StreamerAgent 与 Dashboard 共享同一
@@ -918,6 +919,7 @@ async def _start_dashboard(
     simulator_service: Optional["SimulatorService"] = None,
     event_recorder: Optional["EventHistoryRecorder"] = None,
     session_manager: Optional["LiveSessionManager"] = None,
+    llm_repo=None,
 ):
     """启动 DashboardServer（仅作为 WebUI observer，不参与决策数据流）。"""
     try:
@@ -937,6 +939,7 @@ async def _start_dashboard(
             log_streamer=log_streamer,
             simulator_service=simulator_service,
             session_manager=session_manager,
+            llm_repo=llm_repo,
             # 事件历史服务所有权在 EventHistoryRecorder，这里共享引用供
             # REST（/events、/traces）与 WS（events.history 推送）读取
             event_history=(event_recorder.event_history if event_recorder else None),

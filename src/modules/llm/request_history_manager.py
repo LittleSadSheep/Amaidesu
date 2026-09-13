@@ -523,6 +523,8 @@ class RequestHistoryManager:
                 "count": int(row.get("count", 0)),
                 "total_tokens": int(row.get("total_tokens", 0)),
                 "total_cost": float(row.get("total_cost", 0.0)),
+                "cache_hit_tokens": int(row.get("cache_hit_tokens", 0)),
+                "cache_miss_tokens": int(row.get("cache_miss_tokens", 0)),
             }
 
         client_stats: Dict[str, int] = {
@@ -538,6 +540,8 @@ class RequestHistoryManager:
             "total_completion_tokens": int(overall.get("completion_tokens", 0)),
             "total_tokens": int(overall.get("total_tokens", 0)),
             "total_cost": float(overall.get("total_cost", 0.0)),
+            "cache_hit_tokens": int(overall.get("cache_hit_tokens", 0)),
+            "cache_miss_tokens": int(overall.get("cache_miss_tokens", 0)),
             "avg_latency_ms": float(overall.get("avg_latency", 0.0)),
             "model_stats": model_stats,
             "client_stats": client_stats,

@@ -10,6 +10,10 @@ export interface LLMUsageStats {
   total_tokens: number;
   total_calls: number;
   total_cost: number;
+  /** 缓存命中 token；0 可能代表"未上报"而非真实零命中（落库口径把未上报记 0） */
+  cache_hit_tokens: number;
+  /** 缓存未命中 token；0 可能代表"未上报"而非真实零命中 */
+  cache_miss_tokens: number;
   first_call_time: number | null;
   last_call_time: number | null;
   last_updated: number | null;
@@ -22,6 +26,10 @@ export interface LLMUsageSummary {
   total_completion_tokens: number;
   total_tokens: number;
   total_calls: number;
+  /** 缓存命中 token；0 可能代表"未上报"而非真实零命中 */
+  cache_hit_tokens: number;
+  /** 缓存未命中 token；0 可能代表"未上报"而非真实零命中 */
+  cache_miss_tokens: number;
   model_count: number;
 }
 
@@ -86,7 +94,20 @@ export interface LLMHistoryStatistics {
   total_tokens: number;
   total_cost: number;
   avg_latency_ms: number;
-  model_stats: Record<string, { count: number; total_tokens: number; total_cost: number }>;
+  model_stats: Record<
+    string,
+    {
+      count: number;
+      total_tokens: number;
+      total_cost: number;
+      /** 0 可能代表"未上报"而非真实零命中（落库口径把未上报记 0） */
+      cache_hit_tokens: number;
+      cache_miss_tokens: number;
+    }
+  >;
+  /** 缓存命中 token 总量；0 可能代表"未上报"而非真实零命中 */
+  cache_hit_tokens: number;
+  cache_miss_tokens: number;
   client_stats: Record<string, number>;
   /** 统计窗口起止；全量统计时两端均为 null */
   time_range: { start: number | null; end: number | null };

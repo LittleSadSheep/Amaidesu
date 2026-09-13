@@ -26,6 +26,8 @@ class LLMUsageStatsResponse(BaseModel):
     total_tokens: int = 0
     total_calls: int = 0
     total_cost: float = 0.0
+    cache_hit_tokens: int = 0
+    cache_miss_tokens: int = 0
     first_call_time: Optional[int] = None
     last_call_time: Optional[int] = None
     last_updated: Optional[int] = None
@@ -39,6 +41,8 @@ class LLMUsageSummaryResponse(BaseModel):
     total_completion_tokens: int = 0
     total_tokens: int = 0
     total_calls: int = 0
+    cache_hit_tokens: int = 0
+    cache_miss_tokens: int = 0
     model_count: int = 0
 
 
@@ -76,11 +80,14 @@ class LLMHistoryStatisticsModelStats(BaseModel):
     count: int = 0
     total_tokens: int = 0
     total_cost: float = 0.0
+    cache_hit_tokens: int = 0
+    cache_miss_tokens: int = 0
 
 
 class LLMHistoryStatisticsResponse(BaseModel):
     """LLM 请求历史统计响应"""
 
+    # cache 两列：上游未上报缓存用量时入库记 0，因此 0 可能代表"未上报"而非真实零命中
     total_requests: int = 0
     successful_requests: int = 0
     failed_requests: int = 0
@@ -89,6 +96,8 @@ class LLMHistoryStatisticsResponse(BaseModel):
     total_completion_tokens: int = 0
     total_tokens: int = 0
     total_cost: float = 0.0
+    cache_hit_tokens: int = 0
+    cache_miss_tokens: int = 0
     avg_latency_ms: float = 0.0
     model_stats: Dict[str, LLMHistoryStatisticsModelStats] = {}
     client_stats: Dict[str, int] = {}

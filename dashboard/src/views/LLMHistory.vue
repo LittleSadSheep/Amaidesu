@@ -7,6 +7,14 @@
         <p class="page-subtitle">查看和分析 LLM 请求记录</p>
       </div>
       <div class="header-actions">
+        <el-tooltip
+          content="缓存命中来自上游上报，0 可能代表「未上报」而非真实零命中"
+          placement="bottom"
+        >
+          <el-tag type="warning" effect="plain" size="small">
+            缓存命中 {{ formatCacheTokens(statistics?.cache_hit_tokens ?? 0) }}
+          </el-tag>
+        </el-tooltip>
         <el-tag type="info" effect="plain" size="small"> 共 {{ totalRecords }} 条记录 </el-tag>
       </div>
     </header>
@@ -41,7 +49,7 @@ import { ref, reactive, onMounted, watch } from 'vue';
 import { useRoute } from 'vue-router';
 import { ElMessage } from 'element-plus';
 import { llmApi } from '@/api';
-import type { LLMRequestHistory, LLMHistoryQueryParams } from '@/types';
+import type { LLMRequestHistory, LLMHistoryQueryParams, LLMHistoryStatistics } from '@/types';
 import HistoryFilter from '@/components/llm-history/HistoryFilter.vue';
 import HistoryTable from '@/components/llm-history/HistoryTable.vue';
 import HistoryDetail from '@/components/llm-history/HistoryDetail.vue';
@@ -53,6 +61,26 @@ const totalRecords = ref(0);
 const detailVisible = ref(false);
 const currentDetail = ref<LLMRequestHistory | null>(null);
 const availableModels = ref<string[]>([]);
+// 统计视图数据：页头展示当前时间窗内的缓存命中总量（随筛选联动）
+const statistics = ref<LLMHistoryStatistics | null>(null);
+
+function formatCacheTokens(num: number): string {
+  return num.toLocaleString();
+}
+
+async function fetchStatistics() {
+  try {
+    const params =
+      queryParams.start_time !== undefined || queryParams.end_time !== undefined
+        ? { start_time: queryParams.start_time, end_time: queryParams.end_time }
+        : undefined;
+    const response = await llmApi.getStatistics(params);
+    statistics.value = response.data;
+  } catch {
+    // 统计仅是辅助信息，拉取失败不打断历史列表主流程
+    statistics.value = null;
+  }
+}
 const dateRange = ref<[number, number] | null>(null);
 
 // 查询参数
@@ -82,6 +110,9 @@ async function fetchHistory() {
     const response = await llmApi.getHistory(queryParams);
     historyData.value = response.data.items;
     totalRecords.value = response.data.total;
+
+    // 历史列表与统计共用筛选时间窗，列表刷新后同步刷新统计
+    void fetchStatistics();
 
     // 提取可用模型列表
     const models = new Set<string>();

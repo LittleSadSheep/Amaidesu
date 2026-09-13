@@ -333,14 +333,18 @@ class LLMRepo(BaseRepo):
                     " COALESCE(SUM(completion_tokens), 0) AS completion_tokens,"
                     " COALESCE(SUM(total_tokens), 0) AS total_tokens,"
                     " COALESCE(SUM(cost), 0) AS total_cost,"
-                    " COALESCE(AVG(latency_ms), 0) AS avg_latency"
+                    " COALESCE(AVG(latency_ms), 0) AS avg_latency,"
+                    " COALESCE(SUM(cache_hit_tokens), 0) AS cache_hit_tokens,"
+                    " COALESCE(SUM(cache_miss_tokens), 0) AS cache_miss_tokens"
                     f" FROM llm_requests{where}",  # noqa: S608 子句为代码内常量
                     tuple(params),
                 ).fetchone()
                 model_rows = conn.execute(
                     "SELECT model_name, COUNT(*) AS count,"
                     " COALESCE(SUM(total_tokens), 0) AS total_tokens,"
-                    " COALESCE(SUM(cost), 0) AS total_cost"
+                    " COALESCE(SUM(cost), 0) AS total_cost,"
+                    " COALESCE(SUM(cache_hit_tokens), 0) AS cache_hit_tokens,"
+                    " COALESCE(SUM(cache_miss_tokens), 0) AS cache_miss_tokens"
                     f" FROM llm_requests{where} GROUP BY model_name",  # noqa: S608 子句为代码内常量
                     tuple(params),
                 ).fetchall()
@@ -353,6 +357,48 @@ class LLMRepo(BaseRepo):
                     "by_model": [dict(row) for row in model_rows],
                     "by_client": [dict(row) for row in client_rows],
                 }
+
+        return await self._run_in_executor(_exec)
+
+    async def llm_usage_by_model(self) -> List[Dict[str, Any]]:
+        """按模型聚合 ``llm_usage`` 全量用量（dashboard /usage 数据源）。
+
+        每行含 prompt/completion/total token 与费用/调用次数聚合、cache 两列
+        聚合，以及首次/最后调用时间与最后更新时间（毫秒时间戳，无记录时为 None）。
+        """
+        rows = await self._execute(
+            "SELECT model_name,"
+            " COALESCE(SUM(prompt_tokens), 0) AS total_prompt_tokens,"
+            " COALESCE(SUM(completion_tokens), 0) AS total_completion_tokens,"
+            " COALESCE(SUM(total_tokens), 0) AS total_tokens,"
+            " COUNT(*) AS total_calls,"
+            " COALESCE(SUM(cost), 0) AS total_cost,"
+            " COALESCE(SUM(cache_hit_tokens), 0) AS cache_hit_tokens,"
+            " COALESCE(SUM(cache_miss_tokens), 0) AS cache_miss_tokens,"
+            " MIN(timestamp_ms) AS first_call_time,"
+            " MAX(timestamp_ms) AS last_call_time,"
+            " MAX(timestamp_ms) AS last_updated"
+            " FROM llm_usage GROUP BY model_name ORDER BY total_cost DESC"
+        )
+        return [dict(row) for row in rows]
+
+    async def llm_usage_summary(self) -> Dict[str, Any]:
+        """聚合 ``llm_usage`` 全量摘要（dashboard /usage/summary 数据源）。"""
+
+        def _exec() -> Dict[str, Any]:
+            with self._manager.transaction() as conn:
+                row = conn.execute(
+                    "SELECT COALESCE(SUM(cost), 0) AS total_cost,"
+                    " COALESCE(SUM(prompt_tokens), 0) AS total_prompt_tokens,"
+                    " COALESCE(SUM(completion_tokens), 0) AS total_completion_tokens,"
+                    " COALESCE(SUM(total_tokens), 0) AS total_tokens,"
+                    " COUNT(*) AS total_calls,"
+                    " COUNT(DISTINCT model_name) AS model_count,"
+                    " COALESCE(SUM(cache_hit_tokens), 0) AS cache_hit_tokens,"
+                    " COALESCE(SUM(cache_miss_tokens), 0) AS cache_miss_tokens"
+                    " FROM llm_usage"
+                ).fetchone()
+                return dict(row) if row else {}
 
         return await self._run_in_executor(_exec)
 

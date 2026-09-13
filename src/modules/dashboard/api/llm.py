@@ -4,10 +4,11 @@ LLM 管理 API
 提供 LLM 用量统计和请求历史的查询接口。
 """
 
-from typing import Annotated, Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Annotated, Any, Dict, List, Optional
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Depends, Query
 
+from src.modules.dashboard.dependencies import get_dashboard_server
 from src.modules.dashboard.schemas.llm import (
     LLMHistoryListResponse,
     LLMHistoryStatisticsModelStats,
@@ -17,48 +18,65 @@ from src.modules.dashboard.schemas.llm import (
     LLMUsageSummaryResponse,
     TokenUsageSchema,
 )
-from src.modules.llm.clients.token_usage_manager import get_global_token_manager
 from src.modules.llm.request_history_manager import get_global_request_history_manager
+
+if TYPE_CHECKING:
+    from src.modules.dashboard.server import DashboardServer
 
 router = APIRouter()
 
+# 类型别名，用于依赖注入
+ServerDep = Annotated["DashboardServer", Depends(get_dashboard_server)]
+
 
 @router.get("/usage", response_model=Dict[str, LLMUsageStatsResponse])
-async def get_all_models_usage() -> Dict[str, LLMUsageStatsResponse]:
-    """获取所有模型的用量统计"""
-    token_manager = get_global_token_manager()
-    all_usage = token_manager.get_all_models_usage()
+async def get_all_models_usage(server: ServerDep) -> Dict[str, LLMUsageStatsResponse]:
+    """获取所有模型的用量统计（SQLite ``llm_usage`` 聚合）。
 
+    库空（冷启动）返回空对象而非报错；旧 JSON 账本历史不迁移，切换后从零计账。
+    """
+    llm_repo = server.llm_repo
+    if llm_repo is None:
+        return {}
+
+    rows = await llm_repo.llm_usage_by_model()
     result: Dict[str, LLMUsageStatsResponse] = {}
-    for model_name, usage_data in all_usage.items():
+    for row in rows:
+        model_name = row.get("model_name") or "unknown"
         result[model_name] = LLMUsageStatsResponse(
-            model_name=usage_data.get("model_name", model_name),
-            total_prompt_tokens=usage_data.get("total_prompt_tokens", 0),
-            total_completion_tokens=usage_data.get("total_completion_tokens", 0),
-            total_tokens=usage_data.get("total_tokens", 0),
-            total_calls=usage_data.get("total_calls", 0),
-            total_cost=usage_data.get("total_cost", 0.0),
-            first_call_time=usage_data.get("first_call_time"),
-            last_call_time=usage_data.get("last_call_time"),
-            last_updated=usage_data.get("last_updated"),
+            model_name=model_name,
+            total_prompt_tokens=int(row.get("total_prompt_tokens", 0)),
+            total_completion_tokens=int(row.get("total_completion_tokens", 0)),
+            total_tokens=int(row.get("total_tokens", 0)),
+            total_calls=int(row.get("total_calls", 0)),
+            total_cost=float(row.get("total_cost", 0.0)),
+            cache_hit_tokens=int(row.get("cache_hit_tokens", 0)),
+            cache_miss_tokens=int(row.get("cache_miss_tokens", 0)),
+            first_call_time=row.get("first_call_time"),
+            last_call_time=row.get("last_call_time"),
+            last_updated=row.get("last_updated"),
         )
 
     return result
 
 
 @router.get("/usage/summary", response_model=LLMUsageSummaryResponse)
-async def get_usage_summary() -> LLMUsageSummaryResponse:
-    """获取总费用摘要"""
-    token_manager = get_global_token_manager()
-    summary = token_manager.get_total_cost_summary()
+async def get_usage_summary(server: ServerDep) -> LLMUsageSummaryResponse:
+    """获取总费用摘要（SQLite ``llm_usage`` 聚合；库空返回全零）。"""
+    llm_repo = server.llm_repo
+    if llm_repo is None:
+        return LLMUsageSummaryResponse()
 
+    summary = await llm_repo.llm_usage_summary()
     return LLMUsageSummaryResponse(
-        total_cost=summary.get("total_cost", 0.0),
-        total_prompt_tokens=summary.get("total_prompt_tokens", 0),
-        total_completion_tokens=summary.get("total_completion_tokens", 0),
-        total_tokens=summary.get("total_tokens", 0),
-        total_calls=summary.get("total_calls", 0),
-        model_count=summary.get("model_count", 0),
+        total_cost=float(summary.get("total_cost", 0.0)),
+        total_prompt_tokens=int(summary.get("total_prompt_tokens", 0)),
+        total_completion_tokens=int(summary.get("total_completion_tokens", 0)),
+        total_tokens=int(summary.get("total_tokens", 0)),
+        total_calls=int(summary.get("total_calls", 0)),
+        cache_hit_tokens=int(summary.get("cache_hit_tokens", 0)),
+        cache_miss_tokens=int(summary.get("cache_miss_tokens", 0)),
+        model_count=int(summary.get("model_count", 0)),
     )
 
 
@@ -97,18 +115,6 @@ async def get_history(
     )
 
 
-@router.get("/history/{request_id}", response_model=Optional[LLMRequestHistoryResponse])
-async def get_request_by_id(request_id: str) -> Optional[LLMRequestHistoryResponse]:
-    """获取单个请求详情"""
-    history_manager = get_global_request_history_manager()
-    record = await history_manager.get_request_by_id(request_id)
-
-    if not record:
-        return None
-
-    return _convert_record_to_response(record)
-
-
 @router.get("/history/dates", response_model=List[str])
 async def get_available_dates() -> List[str]:
     """获取有记录的日期列表（降序）"""
@@ -132,6 +138,8 @@ async def get_statistics(
             count=model_data.get("count", 0),
             total_tokens=model_data.get("total_tokens", 0),
             total_cost=model_data.get("total_cost", 0.0),
+            cache_hit_tokens=model_data.get("cache_hit_tokens", 0),
+            cache_miss_tokens=model_data.get("cache_miss_tokens", 0),
         )
 
     return LLMHistoryStatisticsResponse(
@@ -143,11 +151,25 @@ async def get_statistics(
         total_completion_tokens=stats.get("total_completion_tokens", 0),
         total_tokens=stats.get("total_tokens", 0),
         total_cost=stats.get("total_cost", 0.0),
+        cache_hit_tokens=stats.get("cache_hit_tokens", 0),
+        cache_miss_tokens=stats.get("cache_miss_tokens", 0),
         avg_latency_ms=stats.get("avg_latency_ms", 0.0),
         model_stats=model_stats,
         client_stats=stats.get("client_stats", {}),
         time_range=stats.get("time_range"),
     )
+
+
+@router.get("/history/{request_id}", response_model=Optional[LLMRequestHistoryResponse])
+async def get_request_by_id(request_id: str) -> Optional[LLMRequestHistoryResponse]:
+    """获取单个请求详情"""
+    history_manager = get_global_request_history_manager()
+    record = await history_manager.get_request_by_id(request_id)
+
+    if not record:
+        return None
+
+    return _convert_record_to_response(record)
 
 
 def _convert_record_to_response(record: Dict[str, Any]) -> LLMRequestHistoryResponse:

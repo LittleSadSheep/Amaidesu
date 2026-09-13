@@ -133,6 +133,29 @@
           </template>
         </el-table-column>
 
+        <el-table-column width="140" align="right">
+          <template #header>
+            <span class="cache-header">
+              缓存命中
+              <el-tooltip
+                content="来自上游上报的缓存用量；0 可能代表「未上报」而非真实零命中"
+                placement="top"
+              >
+                <el-icon class="cache-help"><QuestionFilled /></el-icon>
+              </el-tooltip>
+            </span>
+          </template>
+          <template #default="{ row }">
+            <span class="cache-value">{{ formatNumber(row.cache_hit_tokens) }}</span>
+          </template>
+        </el-table-column>
+
+        <el-table-column prop="cache_miss_tokens" label="缓存未命中" width="130" align="right">
+          <template #default="{ row }">
+            <span class="cache-value">{{ formatNumber(row.cache_miss_tokens) }}</span>
+          </template>
+        </el-table-column>
+
         <el-table-column prop="total_cost" label="费用" width="110" align="right">
           <template #default="{ row }">
             <span class="cost-value">¥{{ row.total_cost.toFixed(4) }}</span>
@@ -162,7 +185,7 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue';
-import { Refresh, Document } from '@element-plus/icons-vue';
+import { Refresh, Document, QuestionFilled } from '@element-plus/icons-vue';
 import { ElMessage } from 'element-plus';
 import { llmApi } from '@/api';
 import type { LLMUsageStats, LLMUsageSummary } from '@/types';
@@ -450,6 +473,24 @@ onMounted(() => {
 .calls-value {
   font-family: var(--font-mono);
   color: var(--text-primary);
+}
+
+/* 缓存列：表头说明图标与数值样式 */
+.cache-header {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.cache-help {
+  font-size: 13px;
+  color: var(--text-secondary);
+  cursor: help;
+}
+
+.cache-value {
+  font-family: var(--font-mono);
+  color: var(--text-secondary);
 }
 
 .cost-value {
