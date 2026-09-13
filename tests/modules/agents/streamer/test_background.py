@@ -64,6 +64,9 @@ def _make_maintainer(
 
     room_state / llm / context 都给最简实现（_summarize_topic 走真实路径
     不需要——本测试只盯 §1.50 写入面）。
+
+    prompt_manager 注入满足 ``render() -> str`` 的最小 fake：摘要渲染路径
+    在本测试集合内不被触达，避免被动加载全仓模板。
     """
     room_state = MagicMock()
     rs_snap = MagicMock()
@@ -80,12 +83,16 @@ def _make_maintainer(
     else:
         memory.ingest = AsyncMock(return_value=None)
 
+    prompt_manager = MagicMock()
+    prompt_manager.render = MagicMock(return_value="PROMPT")
+
     return (
         BackgroundMaintainer(
             config={},
             room_state=room_state,
             memory=memory,
             event_bus=event_bus,
+            prompt_manager=prompt_manager,
         ),
         memory,
     )

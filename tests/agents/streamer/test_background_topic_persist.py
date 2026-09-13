@@ -14,6 +14,7 @@ import shutil
 import tempfile
 from pathlib import Path
 from typing import AsyncGenerator, Generator
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -48,6 +49,9 @@ class _FakeSessionManager:
 def _make_maintainer(store: SQLiteDatabase, pk: int = 777) -> BackgroundMaintainer:
     room_state = RoomState()
     room_state.set_topic_summary("占位", now_ms=1)
+    # 摘要渲染路径在 _persist_topic_snapshot 内不被触达：注入满足 render() -> str 的最小 fake
+    prompt_manager = MagicMock()
+    prompt_manager.render = MagicMock(return_value="PROMPT")
     return BackgroundMaintainer(
         {"summary_interval_ms": 60_000},
         room_state=room_state,
@@ -55,6 +59,7 @@ def _make_maintainer(store: SQLiteDatabase, pk: int = 777) -> BackgroundMaintain
         chat_repo=store.chat,
         topic_repo=store.topics,
         session_manager=_FakeSessionManager(pk),
+        prompt_manager=prompt_manager,
     )
 
 
@@ -102,10 +107,14 @@ async def test_persist_refreshes_topics_snapshot(store: SQLiteDatabase) -> None:
 
 @pytest.mark.asyncio
 async def test_persist_skipped_without_store() -> None:
+    # 摘要渲染路径在 _persist_topic_snapshot 早返回前不被触达：注入满足 render() -> str 的最小 fake
+    prompt_manager = MagicMock()
+    prompt_manager.render = MagicMock(return_value="PROMPT")
     maintainer = BackgroundMaintainer(
         {},
         room_state=RoomState(),
         topic_repo=None,
+        prompt_manager=prompt_manager,
     )
     # 不注入 topic_repo：整体跳过，不抛异常
     await maintainer._persist_topic_snapshot("摘要", now_ms=1_000, previous_summary_ms=0)

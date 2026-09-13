@@ -31,7 +31,7 @@ from src.modules.events.event_bus import EventBus
 from src.modules.events.names import CoreEvents
 from src.modules.events.payloads.room import RoomMessagePayload
 from src.modules.logging import get_logger
-from src.modules.prompts import PromptManager, get_prompt_manager
+from src.modules.prompts import PromptManager
 from src.modules.time_utils import now_ms as _real_now_ms
 
 from .canonical import canonical_content
@@ -94,7 +94,7 @@ class BackgroundMaintainer:
         session_manager: Optional[Any] = None,
         memory: Optional[Any] = None,
         event_bus: Optional[EventBus] = None,
-        prompt_manager: Optional[PromptManager] = None,
+        prompt_manager: PromptManager,
     ) -> None:
         """初始化。
 
@@ -120,9 +120,8 @@ class BackgroundMaintainer:
                 最近观众行（``sender_role="viewer"``）。
             topic_repo: 可选 ``TopicRepo``；提供时每次摘要成功后写
                 ``timeline_summary``（摘要历史）与 ``topics``（当前话题快照投影）。
-            prompt_manager: ``PromptManager`` 实例（摘要系统提示词经其渲染）。
-                ``None`` 时回退全局单例 ``get_prompt_manager()``（惰性、仅首次
-                使用时触发，避免未触达摘要路径的测试被动加载全仓模板）。
+            prompt_manager: ``PromptManager`` 实例（必填；摘要系统提示词经其渲染）。
+                由 StreamerAgent 构造透传，调用方负责装配其扫描根与模板。
         """
         self._config = config
         self._room_state = room_state
@@ -134,7 +133,7 @@ class BackgroundMaintainer:
         self._memory = memory
         self._event_bus = event_bus
         self._topic_repo = topic_repo
-        # 提示词面——prompt_manager 由 StreamerAgent 构造透传；None 时首次使用回退全局单例
+        # 提示词面——prompt_manager 由 StreamerAgent 构造透传（必填）
         self._prompt_manager = prompt_manager
         # 摘要系统提示词渲染缓存（零变量模板，渲染结果恒定）
         self._summary_system_prompt: Optional[str] = None
@@ -471,12 +470,12 @@ class BackgroundMaintainer:
     def _get_summary_system_prompt(self) -> str:
         """渲染摘要系统提示词（零变量模板，结果缓存复用）。
 
-        PromptManager 构造注入；未注入时回退全局单例 ``get_prompt_manager()``
-        （该单例启用 src/**/prompts/ 约定扫描，可发现包内 summary_system 模板）。
+        ``PromptManager`` 由 StreamerAgent 构造透传：调用方负责装配其扫描根
+        与模板（启用 ``src/**/prompts/`` 约定扫描时可发现包内 summary_system
+        模板）。
         """
         if self._summary_system_prompt is None:
-            manager = self._prompt_manager or get_prompt_manager()
-            self._summary_system_prompt = manager.render(_SUMMARY_SYSTEM_TEMPLATE)
+            self._summary_system_prompt = self._prompt_manager.render(_SUMMARY_SYSTEM_TEMPLATE)
         return self._summary_system_prompt
 
     async def _persist_topic_snapshot(self, summary: str, *, now_ms: int, previous_summary_ms: int) -> None:

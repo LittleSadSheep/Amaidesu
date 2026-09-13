@@ -24,6 +24,7 @@ from src.agents.streamer.streamer_agent import StreamerAgent
 from src.agents.streamer.config import StreamerConfig
 from src.modules.llm.client import LLMResponse
 from src.modules.llm.payload import Response
+from src.modules.prompts import PromptManager
 from src.modules.storage.database import SQLiteDatabase
 
 
@@ -168,12 +169,21 @@ async def test_read_history_returns_turns_in_chronological_order(store: SQLiteDa
 # ---------------------------------------------------------------------------
 
 
-def _make_maintainer(store: SQLiteDatabase) -> tuple[BackgroundMaintainer, MagicMock]:
+def _make_maintainer(
+    store: SQLiteDatabase,
+    *,
+    prompt_manager: PromptManager | None = None,
+) -> tuple[BackgroundMaintainer, MagicMock]:
     room_state = RoomState()
     llm = MagicMock()
     llm.generate = AsyncMock(return_value=Response(success=True, content="观众在聊新版本更新"))
     memory = MagicMock()
     memory.ingest = AsyncMock(return_value=None)
+    # 不触达摘要渲染路径时，传满足 render() -> str 的最小 fake；调用方若需
+    # 真实渲染可显式传入 ``PromptManager(auto_scan_src=True).load_all()``
+    if prompt_manager is None:
+        prompt_manager = MagicMock()
+        prompt_manager.render = MagicMock(return_value="PROMPT")
     maintainer = BackgroundMaintainer(
         {"enabled": True},
         room_state=room_state,
@@ -181,6 +191,7 @@ def _make_maintainer(store: SQLiteDatabase) -> tuple[BackgroundMaintainer, Magic
         session_manager=_FakeSessionManager(1),
         memory=memory,
         chat_repo=store.chat,
+        prompt_manager=prompt_manager,
     )
     return maintainer, llm
 
@@ -188,7 +199,10 @@ def _make_maintainer(store: SQLiteDatabase) -> tuple[BackgroundMaintainer, Magic
 @pytest.mark.asyncio
 async def test_summarize_topic_reads_live_chat_viewer_rows(store: SQLiteDatabase) -> None:
     """seed live_chat viewer 行 → 摘要 LLM 收到弹幕文本，topic_summary 被写入。"""
-    maintainer, llm = _make_maintainer(store)
+    # 真实 PromptManager：完整摘要路径会调 manager.render("summary_system")，需模板被加载
+    real_prompt_manager = PromptManager(auto_scan_src=True)
+    real_prompt_manager.load_all()
+    maintainer, llm = _make_maintainer(store, prompt_manager=real_prompt_manager)
     await store.chat.insert_live_chat(
         live_session_id=1,
         timestamp_ms=100,
@@ -214,12 +228,16 @@ async def test_summarize_topic_no_active_session_is_noop(store: SQLiteDatabase) 
     room_state = RoomState()
     llm = MagicMock()
     llm.generate = AsyncMock(return_value=Response(success=True, content="x"))
+    # 早返回路径不走 render：满足 render() -> str 的最小 fake 即可
+    prompt_manager = MagicMock()
+    prompt_manager.render = MagicMock(return_value="PROMPT")
     maintainer = BackgroundMaintainer(
         {"enabled": True},
         room_state=room_state,
         llm_service=llm,
         session_manager=_FakeSessionManager(None),
         chat_repo=store.chat,
+        prompt_manager=prompt_manager,
     )
 
     await maintainer._summarize_topic(now_ms=200_000)

@@ -15,7 +15,8 @@ from __future__ import annotations
 import shutil
 import tempfile
 from pathlib import Path
-from typing import Any, AsyncGenerator, Generator
+from typing import Any, Generator
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -203,11 +204,15 @@ async def test_list_live_sessions_orders_desc_with_counts(store: SQLiteDatabase)
 async def test_background_light_tick_persists_stats_via_session_manager(store: SQLiteDatabase) -> None:
     pk = await store.sessions.insert_live_session(started_at_ms=1_000)
     room_state = RoomState()
+    # 轻 tick 不走摘要渲染路径：满足 render() -> str 的最小 fake 即可
+    prompt_manager = MagicMock()
+    prompt_manager.render = MagicMock(return_value="PROMPT")
     maintainer = BackgroundMaintainer(
         {},
         room_state=room_state,
         sessions_repo=store.sessions,
         session_manager=_FakeSessionManager(pk),
+        prompt_manager=prompt_manager,
     )
     await maintainer._light_tick(now_ms=5_000)
     await maintainer._light_tick(now_ms=10_000)
@@ -223,10 +228,14 @@ async def test_background_light_tick_persists_stats_via_session_manager(store: S
 async def test_background_tick_skipped_without_session_manager(store: SQLiteDatabase) -> None:
     """无场次管理器时心跳整体降级跳过（心跳不建行，场次行归 LiveSessionManager）。"""
     room_state = RoomState()
+    # 轻 tick 早返回不走 render：满足 render() -> str 的最小 fake 即可
+    prompt_manager = MagicMock()
+    prompt_manager.render = MagicMock(return_value="PROMPT")
     maintainer = BackgroundMaintainer(
         {},
         room_state=room_state,
         sessions_repo=store.sessions,
+        prompt_manager=prompt_manager,
     )
     await maintainer._light_tick(now_ms=5_000)
     rows = await store.execute("SELECT * FROM live_sessions")
