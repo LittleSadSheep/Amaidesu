@@ -327,6 +327,8 @@ class StreamerAgent(BaseAgent):
         self._external_proactive_pending: bool = False
         # 流程单环节切换触发 flag（RundownState 变更回调置位；装配接线）
         self._rundown_proactive_pending: bool = False
+        # 游戏待定夺触发 flag（game.report 事件置位；下次空缓冲 tick 消费）
+        self._game_decision_pending: bool = False
 
         # 统计（决策循环各分支增量；对外经 get_statistics 导出）
         self._stats = StreamerStats()
@@ -587,12 +589,20 @@ class StreamerAgent(BaseAgent):
         payload: GamePayload,
         source: str,
     ) -> None:
-        """game.* 事件回调：收集最近游戏叙事（保留 N 条，进 Planner 上下文）。"""
+        """game.* 事件回调：收集最近游戏叙事（保留 N 条，进 Planner 上下文）。
+
+        叙事行带事件类型标记（``[game·event_type]``），Planner 据此区分
+        "剧情推进"（milestone）与"需要定夺"（report）；message 本体不变。
+        ``report`` 类型（交付总结/升级决策）同时置位待定夺触发信号——游戏
+        停在选项处等主播定夺，下次空缓冲 tick 应促发一轮主动决策。
+        """
         try:
-            line = f"[{payload.game}] {payload.message}"
+            line = f"[{payload.game}·{payload.event_type}] {payload.message}"
             self._game_narrative_blocks.append(line)
             if len(self._game_narrative_blocks) > _MAX_GAME_NARRATIVE:
                 self._game_narrative_blocks = self._game_narrative_blocks[-_MAX_GAME_NARRATIVE:]
+            if payload.event_type == "report":
+                self._game_decision_pending = True
         except Exception as exc:  # noqa: BLE001 - 收集失败不阻断
             self._logger.warning(f"收集游戏叙事失败: {exc}")
 
@@ -738,12 +748,14 @@ class StreamerAgent(BaseAgent):
 
         async with self._flush_lock:
             # buffer 空时 → 主动发言判定（场次边界闸：未开播直接返回且不消费
-            # pending 信号，环节变更信号保留到开播后首个 tick 生效）
+            # pending 信号，环节变更/游戏待定夺信号保留到开播后首个 tick 生效）
             if self._buffer.is_empty:
                 if not self._live_active:
                     return
                 rundown_pending = self._rundown_proactive_pending
                 self._rundown_proactive_pending = False
+                game_pending = self._game_decision_pending
+                self._game_decision_pending = False
                 reason = self._proactive_trigger.should_trigger(
                     self._room_state,
                     now_ms(),
@@ -751,6 +763,7 @@ class StreamerAgent(BaseAgent):
                     rundown_pending=rundown_pending,
                     rundown_ready=self._is_rundown_active(),
                     rundown_overdue=self._is_rundown_overdue(),
+                    game_pending=game_pending,
                 )
                 self._external_proactive_pending = False
                 if reason is not None:

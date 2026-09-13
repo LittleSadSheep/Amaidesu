@@ -48,6 +48,40 @@ class TestProactiveTriggerRundownPending:
         assert reason is None
 
 
+class TestProactiveTriggerGamePending:
+    """game_pending（游戏待定夺）立即触发 game（仅受总开关约束，绕过三道限流）。"""
+
+    def test_game_pending_always_fires(self):
+        t = ProactiveTrigger({"enabled": True})
+        room = _MockRoomState(last_speech_ms=9_999)  # 刚说过话，仍触发（不受 min_interval 约束）
+        reason = t.should_trigger(room, now_ms=10_000, game_pending=True)
+        assert reason == "game"
+
+    def test_game_pending_respects_disabled(self):
+        t = ProactiveTrigger({"enabled": False})
+        room = _MockRoomState(last_speech_ms=None)
+        reason = t.should_trigger(room, now_ms=10_000, game_pending=True)
+        assert reason is None
+
+    def test_game_pending_bypasses_rate_limits(self):
+        """game_pending 绕过 min_interval / max_per_hour / topic_required 三道前置。"""
+        t = ProactiveTrigger(
+            {
+                "enabled": True,
+                "min_interval_ms": 120_000,
+                "max_per_hour": 6,
+                "topic_required": True,
+            }
+        )
+        # 刚说完话 + hourly 上限已满 + 无话题 → 三个拦截条件同时在场
+        room = _MockRoomState(last_speech_ms=9_999_000)
+        room._snapshot = {"topic_summary": ""}
+        for i in range(6):
+            t.record_trigger("cold", now_ms=9_000_000 + i)
+        reason = t.should_trigger(room, now_ms=10_000_000, game_pending=True)
+        assert reason == "game"
+
+
 class TestProactiveTriggerExternal:
     """external_pending 最高优先级（受 min_interval / max_per_hour / topic 约束）。"""
 

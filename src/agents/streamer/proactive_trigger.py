@@ -3,7 +3,8 @@
 职责边界（重要）
 ----------------
 本组件**只**回答"现在该不该主动开口"以及"为什么"，返回触发原因字符串
-（``"external"`` / ``"rundown"`` / ``"schedule"`` / ``"cold"``）或 ``None``。
+（``"external"`` / ``"rundown"`` / ``"game"`` / ``"schedule"`` / ``"cold"``）
+或 ``None``。
 
 **不**负责生成发言内容 —— 话题文本由 ``Planner`` 在收到 ``proactive=True``
 标志后从 ``room_state`` 快照的 ``topic_summary`` 字段（或在流程单触发时从
@@ -14,9 +15,9 @@
 ----------------------------------------------
 - **无 I/O、无 LLM 调用、无 EventBus、无 asyncio**：所有时间通过参数注入
   （``now_ms``），便于确定性测试，禁止 ``time.sleep``。
-- **触发优先级**：``external > rundown_pending > rundown_overdue >
-  rundown_ready > schedule > cold``（同一 tick 多触发条件同时满足时只取
-  优先级最高的一个）。
+- **触发优先级**：``external > rundown_pending > game_pending >
+  rundown_overdue > rundown_ready > schedule > cold``（同一 tick 多触发条件
+  同时满足时只取优先级最高的一个）。
 - **公共频率限制**（对 ``external`` / ``schedule`` / ``cold`` 生效）：
     - ``min_interval_ms``（防接龙，对照 ``room_state.last_speech_ms``；
       ``None`` 视为 0/从未发言，恒通过）。
@@ -47,6 +48,14 @@
   ``last_speech_ms``，刚发过言不立即提醒）。Agent 被唤醒后自行决定推进或
   继续——闹钟只提醒不执法。
 - 仅受总开关约束（``enabled=False`` 时不触发任何 rundown）。
+
+**游戏待定夺触发源（game_pending）的限流独立性**
+------------------------------------
+游戏 Agent 主动上报（``game.report``，交付总结/升级决策）往往停在选项处
+等主播定夺——不触发则剧情无限卡住。这与流程单同理：**内容推进**而非救场，
+不应被"防接龙/冷场救场"的低频限流卡死。``game_pending=True`` 仅受总开关
+约束，立即返回 ``"game"``，绕过 ``min_interval_ms`` / ``max_per_hour`` /
+``topic_required`` 三道前置。一次性信号由调用方（StreamerAgent）消费后复位。
 
 使用方契约（StreamerAgent 接入）
 ---------------------------------
@@ -154,11 +163,12 @@ class ProactiveTrigger:
         rundown_pending: bool = False,
         rundown_ready: bool = False,
         rundown_overdue: bool = False,
+        game_pending: bool = False,
     ) -> str | None:
         """判定当前 tick 是否应触发主动发言。
 
-        优先级顺序：``external > rundown_pending > rundown_overdue >
-        rundown_ready > schedule > cold``。
+        优先级顺序：``external > rundown_pending > game_pending >
+        rundown_overdue > rundown_ready > schedule > cold``。
 
         公共前置条件（仅对 ``external`` / ``schedule`` / ``cold`` 生效）：
         - ``enabled=False`` → 永不触发（含 rundown）
@@ -210,10 +220,14 @@ class ProactiveTrigger:
             rundown_overdue: 当前环节停留已超预期（超时闹钟信号）。绕过
                 公共三道前置，双重冷却后返回 ``"rundown"``——Agent 醒来
                 自行决定推进或继续。
+            game_pending: 游戏 Agent 是否有待定夺上报（``game.report``）。
+                ``True`` 时仅受总开关约束，立即返回 ``"game"``，绕过
+                ``min_interval_ms`` / ``max_per_hour`` / ``topic_required``
+                三道前置（内容推进而非救场，剧情不能无限卡在选项处）。
 
         Returns:
-            ``"external"`` / ``"rundown"`` / ``"schedule"`` / ``"cold"`` ——
-            表示应触发并给出原因；``None`` —— 表示不触发。
+            ``"external"`` / ``"rundown"`` / ``"game"`` / ``"schedule"`` /
+            ``"cold"`` —— 表示应触发并给出原因；``None`` —— 表示不触发。
         """
         # 总开关（所有源适用，含 rundown）
         if not self._enabled:
@@ -223,6 +237,11 @@ class ProactiveTrigger:
         # （新环节开场白必须马上说，不等任何间隔）
         if rundown_pending:
             return "rundown"
+
+        # game_pending：游戏待定夺即时信号——同 rundown_pending，只受总开关
+        # 约束，立即触发（游戏停在选项处等主播定夺，不等任何间隔）
+        if game_pending:
+            return "game"
 
         last_speech_ms = getattr(room_state, "last_speech_ms", None)
 
