@@ -1,16 +1,16 @@
-"""look_at_screen 工具 —— 屏幕快照同步工具
+"""look_at_screen 工具 —— 屏幕快照异步工具
 
 定位：
-- 屏幕画面 = **快照型** → 同步工具（gather 等齐结果）
+- 屏幕画面 = **快照型** → 工具内异步调用（gather 等齐结果）
 - 任何 Agent 都可调用（公共工具，放 ``tools/perception/``）
 - 后端（屏幕采集 / 文本识别）通过 Protocol 注入
 - 后端缺失时**优雅降级**：返回成功 + 空文本 + 警告 block（不抛）
 
 数据流：
     Agent → ToolRegistry.invoke("look_at_screen")
-        → LookAtScreenProvider.invoke(invocation)
-        → ScreenCapture.capture(region)  (PIL Image or None)
-        → TextReader.read(image)         (str or None, 可选)
+        → LookAtScreenProvider.invoke(invocation)        (async)
+        → ScreenCapture.capture(region)                  (PIL Image or None)
+        → TextReader.read(image, question=...)           (async; str 或空，可选)
         → ToolExecutionResult (text content + image block)
 
 落地形态：
@@ -27,6 +27,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import time
 from dataclasses import dataclass
@@ -35,7 +36,9 @@ from typing import Any, Dict, Iterable, List, Optional, Protocol, Tuple
 from pydantic import Field
 
 from src.modules.config.schemas.base import BaseConfig
+from src.modules.llm.bootstrap import ProfileNames
 from src.modules.logging import get_logger
+from src.modules.prompts.manager import PromptManager
 from src.modules.tools.models import (
     ResultBlock,
     ToolExecutionResult,
@@ -45,6 +48,14 @@ from src.modules.tools.models import (
 from src.modules.tools.provider import BaseToolProvider
 
 logger = get_logger("look_at_screen")
+
+# VLM 调用的默认超时（秒）。下游契约重写任务可能改为可配置，本模块先以常量
+# 形式钉住，避免调用点散落魔数。失败/超时一律降级为空串，不抛。
+DEFAULT_VLM_TIMEOUT_S: float = 15.0
+
+# LlmVisionTextReader 的 VLM 调用模板键（由 Task 3 迁移到 vision/prompts/）。
+SCREEN_VLM_PROMPT_KEY = "screen_vlm_prompt"
+SCREEN_VLM_SYSTEM_KEY = "screen_vlm_system"
 
 
 # ---------------------------------------------------------------------------
@@ -96,20 +107,29 @@ class ScreenCapture(Protocol):
 
 
 class TextReader(Protocol):
-    """图像→文本 协议（OCR / VLM 均可实现）。
+    """图像→文本 协议（OCR / VLM 均可实现，异步）。
 
     可选注入：不注入时 ``look_at_screen`` 只返回图像块，不含文本。
+    异步契约是 VLM/OCR 等 I/O 调用的硬要求，避免阻塞事件循环。
     """
 
-    def read(self, image_bytes: bytes, *, mime_type: str = "image/png") -> str:
+    async def read(
+        self,
+        image_bytes: bytes,
+        *,
+        mime_type: str = "image/png",
+        question: Optional[str] = None,
+    ) -> str:
         """从图像提取文本（OCR / VLM 描述）。
 
         Args:
             image_bytes: 图像字节（PNG/JPEG 等）
             mime_type: 图像 MIME
+            question: 调用方对本次识别的提问（如"屏幕上显示什么"）；
+                None = 实现自行决定使用默认提示
 
         Returns:
-            提取的文本（空串表示无可读文本）
+            提取的文本（空串表示无可读文本或识别失败）
         """
         ...
 
@@ -301,11 +321,18 @@ class LookAtScreenProvider(BaseToolProvider):
                 duration_ms=int(time.time() * 1000) - started_ms,
             )
 
-        # 可选 OCR/VLM 文本提取
+        # 可选 OCR/VLM 文本提取（异步：避免阻塞事件循环；reader.read 内部负责超时/降级）
         text = ""
         if self._reader is not None:
             try:
-                text = self._reader.read(result.image, mime_type=result.mime_type or "image/png")
+                question = args.get("question")
+                if isinstance(question, str):
+                    question = question.strip() or None
+                text = await self._reader.read(
+                    result.image,
+                    mime_type=result.mime_type or "image/png",
+                    question=question,
+                )
             except Exception as exc:  # noqa: BLE001 - 边界处兜底
                 logger.warning(f"look_at_screen TextReader 失败: {exc}", exc_info=True)
                 text = ""
@@ -394,7 +421,7 @@ class FakeScreenCapture:
 
 
 class FakeTextReader:
-    """测试用 TextReader，可注入预置的文本结果序列。"""
+    """测试用 TextReader，可注入预置的文本结果序列（异步契约）。"""
 
     def __init__(self) -> None:
         self._queue: List[str] = []
@@ -403,11 +430,108 @@ class FakeTextReader:
     def queue_text(self, text: str) -> None:
         self._queue.append(text)
 
-    def read(self, image_bytes: bytes, *, mime_type: str = "image/png") -> str:
+    async def read(
+        self,
+        image_bytes: bytes,
+        *,
+        mime_type: str = "image/png",
+        question: Optional[str] = None,
+    ) -> str:
         self.calls += 1
         if self._queue:
             return self._queue.pop(0)
         return ""
+
+
+# ---------------------------------------------------------------------------
+# VLM 实现（生产路径）：构造注入 llm_manager + prompt_manager
+# ---------------------------------------------------------------------------
+
+
+class LlmVisionTextReader:
+    """通过 LLMManager.generate_vision 把图像转文本（异步，15s 超时降级）。
+
+    降级语义（与 LookAtScreenProvider 的"空快照"约定一致）：
+    - 成功 → 返回 response.content（已 strip）
+    - 超时 → 返回 ``""`` + warning 日志
+    - success=False → 返回 ``""`` + warning 日志
+    - 异常 → 返回 ``""`` + warning 日志
+
+    不抛、不缓存、不重试；契约面留扩展点给下游重写。
+
+    Example:
+        >>> reader = LlmVisionTextReader(llm_manager=llm_mgr, prompt_manager=prompt_mgr)
+        >>> text = await reader.read(image_bytes, question="屏幕上有几个选项？")
+    """
+
+    def __init__(
+        self,
+        *,
+        llm_manager: Any,
+        prompt_manager: Optional[PromptManager] = None,
+        timeout_s: float = DEFAULT_VLM_TIMEOUT_S,
+    ) -> None:
+        self._llm_manager = llm_manager
+        self._prompt_manager = prompt_manager
+        self._timeout_s = float(timeout_s)
+
+    def _render_user_prompt(self, question: Optional[str]) -> str:
+        """user prompt：优先用调用方传入的 question，否则渲染默认模板。"""
+        if question:
+            return question
+        if self._prompt_manager is None:
+            return "描述屏幕上正在显示的内容。"
+        try:
+            rendered = self._prompt_manager.render(SCREEN_VLM_PROMPT_KEY)
+        except Exception as exc:  # noqa: BLE001 - 模板缺失/变量不匹配时降级到内置默认
+            logger.warning(f"LlmVisionTextReader 渲染 {SCREEN_VLM_PROMPT_KEY} 失败: {exc}; 改用内置默认")
+            return "描述屏幕上正在显示的内容。"
+        return rendered or "描述屏幕上正在显示的内容。"
+
+    def _render_system_prompt(self) -> Optional[str]:
+        """system 模板（如注入 prompt_manager）：渲染 screen_vlm_system。"""
+        if self._prompt_manager is None:
+            return None
+        try:
+            return self._prompt_manager.render(SCREEN_VLM_SYSTEM_KEY)
+        except Exception as exc:  # noqa: BLE001 - 模板缺失时降级为 None（系统无 system 也可调）
+            logger.warning(f"LlmVisionTextReader 渲染 {SCREEN_VLM_SYSTEM_KEY} 失败: {exc}; system 留空")
+            return None
+
+    async def read(
+        self,
+        image_bytes: bytes,
+        *,
+        mime_type: str = "image/png",
+        question: Optional[str] = None,
+    ) -> str:
+        """调一次 VLM；成功返回 content，失败/超时/异常返回 ``""``。"""
+        prompt = self._render_user_prompt(question)
+        system = self._render_system_prompt()
+        try:
+            response = await asyncio.wait_for(
+                self._llm_manager.generate_vision(
+                    prompt,
+                    [image_bytes],
+                    profile=ProfileNames.VISION,
+                    system=system,
+                ),
+                timeout=self._timeout_s,
+            )
+        except asyncio.TimeoutError:
+            logger.warning(f"LlmVisionTextReader VLM 调用超时 (>{self._timeout_s:.1f}s); 降级为空文本")
+            return ""
+        except Exception as exc:  # noqa: BLE001 - 边界处兜底（不抛）
+            logger.warning(f"LlmVisionTextReader VLM 调用异常: {exc}", exc_info=True)
+            return ""
+
+        if not getattr(response, "success", False):
+            err = getattr(response, "error", None)
+            logger.warning(f"LlmVisionTextReader VLM 返回失败 (error={err!r}); 降级为空文本")
+            return ""
+
+        content = getattr(response, "content", None) or ""
+        return content.strip()
 
 
 __all__ = [
@@ -419,4 +543,8 @@ __all__ = [
     "build_look_at_screen_spec",
     "FakeScreenCapture",
     "FakeTextReader",
+    "LlmVisionTextReader",
+    "DEFAULT_VLM_TIMEOUT_S",
+    "SCREEN_VLM_PROMPT_KEY",
+    "SCREEN_VLM_SYSTEM_KEY",
 ]
