@@ -129,6 +129,41 @@ async def test_disabled_command_branch_inert() -> None:
 
 
 # =============================================================================
+# 配置驱动性：mappings 白名单变化即时决定命令可用性
+# =============================================================================
+
+
+@pytest.mark.asyncio
+async def test_removed_mapping_disables_command() -> None:
+    """配置只含 /come 时，/sleep 因不在白名单被静默丢弃。"""
+    agent, registry = _build_agent(command_overrides={"mappings": {"come": "到主播身边来"}})
+    await agent.handle_message(_make_danmaku("/sleep"))  # type: ignore[arg-type]
+
+    registry.invoke.assert_not_awaited()
+    assert agent._buffer.size == 0
+
+
+@pytest.mark.asyncio
+async def test_restored_mapping_reenables_command() -> None:
+    """恢复 /sleep 映射后命令恢复委派（配置即白名单，无其他开关干预）。"""
+    agent, registry = _build_agent()
+    await agent.handle_message(_make_danmaku("/sleep"))  # type: ignore[arg-type]
+
+    registry.invoke.assert_awaited_once()
+    assert _last_invocation(registry).arguments == {"agent": "minecraft", "instruction": "回床睡觉"}
+
+
+@pytest.mark.asyncio
+async def test_config_default_enabled_with_empty_mappings_inert() -> None:
+    """默认 enabled=true：机制默认开放，但 mappings 为空时分支仍不激活。"""
+    agent, registry = _build_agent(command_overrides={"mappings": {}})
+    await agent.handle_message(_make_danmaku("/come"))  # type: ignore[arg-type]
+
+    registry.invoke.assert_not_awaited()
+    assert agent._buffer.size == 1
+
+
+# =============================================================================
 # 拒绝路径：白名单外 / 限频 / 目标未启用
 # =============================================================================
 

@@ -228,11 +228,14 @@ class StreamerCommandConfig(BaseConfig):
     mappings 即天然白名单：映射表里没有的命令一律静默丢弃。
     """
 
-    enabled: bool = Field(default=False, description="命令接线开关（false 或段缺失时整条命令分支不激活）")
+    enabled: bool = Field(
+        default=True,
+        description="命令接线开关（接线已完成，默认开放机制；实际可用性由 mappings 白名单决定）",
+    )
     prefix: str = Field(default="/", description="命令前缀")
     mappings: Dict[str, str] = Field(
         default_factory=dict,
-        description="命令白名单映射 {命令名: 委派语义目标（framework_delegate 的 instruction）}",
+        description="命令名 → 委派语义目标（给游戏 Agent 的自然语言指令，作为 framework_delegate 的 instruction）",
     )
     target_agent: str = Field(default="minecraft", description="委派目标 Agent 注册名")
     rate_window_ms: int = Field(default=60_000, ge=1, description="限频时间窗（毫秒）")

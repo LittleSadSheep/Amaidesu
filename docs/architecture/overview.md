@@ -36,7 +36,7 @@ flowchart TB
         Planner["Planner ReAct 循环<br/>(planner_llm 默认 llm, 全局工具列表 + reply)"]
         Reply["Replyer 表达引擎<br/>(replyer_llm, ProfanityFilter)<br/>= reply 工具的"]
         Rundown["Rundown 流程单子系统<br/>备忘录 + 闹钟（推进权归 Agent）"]
-        Tools["自带工具<br/>reply / should_speak_proactively / parse_command"]
+        Tools["自带工具<br/>reply / should_speak_proactively<br/>+ 观众命令（代码直连，非工具）"]
         UQ["UtteranceQueue<br/>FIFO 串行播放队列<br/>丢最旧 / 单 worker / 渲染超时"]
     end
 
@@ -241,9 +241,9 @@ sequenceDiagram
 | **对话映射与参考段** | `canonical.py`（live_chat 行/弹幕批 → 原生消息的单一序列化点 + 成块丢最旧截断）、`planner_context.py`（Planner 参考段纯函数组装，固定在消息序列尾部） |
 | **后台维护** | `background.py`（双任务 BackgroundMaintainer 取代旧 RoomStateLoop） |
 | **发言管线** | `utterance_queue.py`（v2.0.10 新增：`UtteranceQueue` FIFO 串行队列，丢最旧 / 单 worker / 渲染超时看门狗；构造期注入 `speak` 可调用对象（绑定 `tts_engine.handle_speech`），后台串行直接 `await speak(text, utterance_id)`，不再经 ToolRegistry） |
-| **工具壳层** | `tools/` 子包：`reply_tool.py`（`reply`）、`proactive_tool.py`（`should_speak_proactively`）、`command_tool.py`（`parse_command`）——Agent 专属 builtin 工具入口，只包装顶层内部件，不含决策/表达逻辑 |
+| **工具壳层** | `tools/` 子包：`reply_tool.py`（`reply`）、`proactive_tool.py`（`should_speak_proactively`）、`rundown_tool.py`（流程单推进）——Agent 专属 builtin 工具入口，只包装顶层内部件，不含决策/表达逻辑 |
 | **时序门** | `timing_gate.py` |
-| **命令解析** | `command/command.py` + `command/command_parser.py` + `command/command_registry.py`（`tools/command_tool.py` 的底层纯解析原语） |
+| **命令解析** | `command/command.py` + `command/command_parser.py` + `command/command_registry.py`——观众 `/命令` 经代码直连解析 + `mappings` 白名单 + 限频后经 `framework_delegate` 委派游戏 Agent（最小接线：玩法待扩展；命令不是 LLM 工具，不进 ToolRegistry） |
 | **提示词** | `prompts/amaidesu_planner_react.md` + `prompts/amaidesu_replyer.md` + `prompts/summary_system.md` |
 
 `src/agents/text_adv/` 文字冒险 GameAgent 范例：`agent.py`（继承 `BaseAgent`）、`state.py`（剧情状态）、`tools.py`（游戏侧 dispatch）、`content_engine/` 子包（引擎 Protocol + Stub/Fake，**包内私有**：构造注入、Agent 与工具直连调用，不注册不暴露），构造时注入 `content_engine=StubContentEngine(engine_kind="text_adv")`。

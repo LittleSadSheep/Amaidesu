@@ -424,6 +424,9 @@ registry.register_provider(
 3. **内部件判据（哪些不是工具）**：代码直接调用的部件不算工具、不进表——
    如主动发言判定（ProactiveTrigger）、命令解析原语（command/ 包）；它们
    被特意排除在 LLM 工具列表之外，没有 `ToolSpec`、不经注册表。
+   观众 `/命令` 即走此通道：代码直连解析 + `mappings` 白名单 + 限频后，
+   由 Agent 经 `framework_delegate` 工具委派游戏 Agent（映射值为给目标
+   Agent 的自然语言指令，非 LLM 可调命令）。
 
 **红线三分**（AGENTS.md 同款表述）：
 
