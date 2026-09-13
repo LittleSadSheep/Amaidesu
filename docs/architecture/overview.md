@@ -224,7 +224,7 @@ sequenceDiagram
 | `base.py` | `BaseAgent` 协议六项（§1.49）：1.生命周期（start/stop/cleanup + 工厂重建）、2.工具提供（`list_tools()`）、3.事件上报（`emit_event` + `emits_events` 可选声明）、4.状态读写（`_state` + heartbeat）、5.健康（`note_heartbeat/is_alive/dead_threshold_ms`）、6.元数据（`name/description`）。状态机：`CREATED → STARTING → RUNNING → PAUSED → STOPPING → STOPPED → ERRORED`。 |
 | `manager.py` | `AgentManager`：注册 / 启动（LIFO） / 停止 / cleanup / 动态启停（`start_agent`/`stop_agent`/`enable_agent`/`disable_agent`）；`audit_tools(registry) -> list[str]` 启动后只读审计未实现工具声明（不参与注册） |
 | `control.py` | `AgentControl`（控制面直调接口——DashboardServer 经 `/api/v1/agents` 端点调用，不经 LLM 工具面） + `AgentControlProvider`（注册到 ToolRegistry，仅委派两件：`framework_delegate` / `framework_task_status`） |
-| `factory.py` | `SUPPORTED_AGENTS = ("streamer", "game")` + `instantiate_agent(name, config, ...)` 中央化配置名 → 类映射，供组合根与 Dashboard 动态启停共用 |
+| `factory.py` | `SUPPORTED_AGENTS = ("streamer", "minecraft", "text_adv")` + `instantiate_agent(name, config, ...)` 中央化配置名 → 类映射，供组合根与 Dashboard 动态启停共用 |
 
 #### 业务层（`src/agents/`）
 
@@ -235,13 +235,13 @@ sequenceDiagram
 | **入口与编排** | `streamer_agent.py`（继承 `BaseAgent`，编排子组件）、`__init__.py` |
 | **决策循环（Planner）** | `planner.py`（planner_llm 调 `chat()` 不传 tools，结构化 JSON 输出）、`plan.py`（plan 数据结构） |
 | **表达引擎（Replyer）** | `replyer.py`（replyer_llm 调 `chat()` 不传 tools，纯文本 JSON + ProfanityFilter） |
-| **主动发言规则** | `proactive_trigger.py`（纯规则触发器，主循环直接驱动；经 `tools/proactive_tool.py` 包装为工具供 LLM 查询） |
+| **主动发言规则** | `proactive_trigger.py`（ProactiveTrigger 代码直连内部件，非 LLM 工具；主循环直接驱动） |
 | **流程单（Rundown）** | `rundown/` 子包：`rundown.py`（数据契约 + 内置默认流程单）/ `rundown_state.py`（游标 + 计时 + 唯一变更边界）/ `rundown_tool.py`（Agent 推进工具）；备忘录 + 闹钟——环节推进由 Agent 经工具自主决定，超时闹钟并入 ProactiveTrigger 只提醒不执法 |
 | **房间与消息** | `room_state.py`（直播间状态聚合）、`message_buffer.py`（弹幕聚合窗口：默认 3s/20 条） |
 | **对话映射与参考段** | `canonical.py`（live_chat 行/弹幕批 → 原生消息的单一序列化点 + 成块丢最旧截断）、`planner_context.py`（Planner 参考段纯函数组装，固定在消息序列尾部） |
 | **后台维护** | `background.py`（双任务 BackgroundMaintainer 取代旧 RoomStateLoop） |
 | **发言管线** | `utterance_queue.py`（v2.0.10 新增：`UtteranceQueue` FIFO 串行队列，丢最旧 / 单 worker / 渲染超时看门狗；构造期注入 `speak` 可调用对象（绑定 `tts_engine.handle_speech`），后台串行直接 `await speak(text, utterance_id)`，不再经 ToolRegistry） |
-| **工具壳层** | `tools/` 子包：`reply_tool.py`（`reply`）、`proactive_tool.py`（`should_speak_proactively`）、`rundown_tool.py`（流程单推进）——Agent 专属 builtin 工具入口，只包装顶层内部件，不含决策/表达逻辑 |
+| **工具壳层** | `tools/` 子包：`reply_tool.py`（`streamer_reply`）、`rundown_tool.py`（`rundown_control`，流程单激活时追加）——Agent 专属工具入口，只包装顶层内部件，不含决策/表达逻辑；`should_speak_proactively` 属 ProactiveTrigger 代码直连内部件，非 LLM 工具 |
 | **时序门** | `timing_gate.py` |
 | **命令解析** | `command/command.py` + `command/command_parser.py` + `command/command_registry.py`——观众 `/命令` 经代码直连解析 + `mappings` 白名单 + 限频后经 `framework_delegate` 委派游戏 Agent（最小接线：玩法待扩展；命令不是 LLM 工具，不进 ToolRegistry） |
 | **提示词** | `prompts/amaidesu_planner_react.md` + `prompts/amaidesu_replyer.md` + `prompts/summary_system.md` |

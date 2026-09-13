@@ -223,13 +223,14 @@ uv run python main.py --dry
 
 #### 工具（按族列举，代表工具名）
 
-工具注册走 `src/modules/tools/registry.py` 的 `ToolRegistry`。StreamerAgent 默认自带 `reply` / `should_speak_proactively` / `parse_command` 三个工具，外加通用 `query_memory`（记忆）。其他族系需要启用对应 `[tools.<pack>]` 包才会注入。
+工具注册走 `src/modules/tools/registry.py` 的 `ToolRegistry`。主播 Agent 自带 `streamer_reply`（包装 Replyer 表达引擎；流程单激活时另有 `rundown_control`）；主动发言判定与观众命令是代码直连内部件，不经工具面。通用工具由装配根按分类开关注入（`query_memory` 记忆检索默认启用）。
 
 | 工具包（`[tools.<pack>]`） | 代表工具 | 说明 |
 |----------------------------|---------|------|
 | `perception` | `look_at_screen` | 屏幕感知（VLM 调用） |
 | `output` | `push_subtitle` / `vts_trigger_hotkey` / `obs_switch_scene` | 渲染族：字幕 / 皮套控制 / OBS 场景切换（TTS 已提升为基础设施，迁至 `src/modules/tts/` 基础模块） |
-| `builtin`（Streamer 自带） | `reply` / `query_memory` / `parse_command` / `should_speak_proactively` | 主播内置工具（开 `streamer` 即生效） |
+| `framework`（AgentControl） | `delegate` / `task_status` | 框架级委派与任务状态查询（随任一 Agent 启用生效） |
+| `memory` | `query_memory` | 记忆检索（默认启用） |
 | `game` | （由具体游戏 Agent 注入） | 游戏专属推进工具（如 text_adv 的截图+点击） |
 | `external` | （预留） | 外部工具源（v2.0.9 收编：MCP 桥接已移除，schema 保留供未来重启） |
 

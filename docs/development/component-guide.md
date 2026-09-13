@@ -379,7 +379,7 @@ registry.register_provider(
 
 | 步骤 | 位置 | 操作 |
 |------|------|------|
-| ① 放代码 | `src/modules/tools/<domain>/my_tool.py`（公用 builtin 工具）或 `src/agents/<name>/tools.py`（Agent 专属） | Provider 类 `XxxToolProvider` + `build_xxx_spec()` |
+| ① 放代码 | `src/modules/<domain>/…`（avatar/studio/vision/memory 等公用域工具）或 `src/agents/<name>/tools.py`（Agent 专属） | Provider 类 `XxxToolProvider` + `build_xxx_spec()` |
 | ② 注册（带名单） | Agent 专属：在该 Agent 的 `_register_tools` 中 `self._tool_registry.register_provider(provider, visible_to=...)`；公用：在装配根 `main.py` 注册（默认全员） | 名单是注册处代码事实（ADR-012）：值 = Agent 注册名列表或 `["*"]`；未列工具默认全员 |
 | ③ 配置（可选） | Agent 专属工具一般无独立配置段（行为由 Agent 配置决定）；公用工具按分类开关（`[tools.<domain>.<key>].enabled`） | |
 | ④ 列出与转换 | `ToolRegistry.to_llm_definitions()` 自动从 `ToolSpec.parameters_schema` 派生 OpenAI 风格 function calling 定义供 LLM 看 | |
@@ -388,7 +388,7 @@ registry.register_provider(
 **谁调用注册？**
 
 - **Agent 专属工具**：Agent 子类 `_register_tools()` 方法（参考 `StreamerAgent._register_tools`、`TextAdvGameAgent._register_tools`）。在 Agent `_on_start` 阶段调用。
-- **公用 builtin 工具**：在装配根（`main.py` 或专用 wiring 模块）调 `register_xxx_tool(registry)`，通常在 `LLMManager.setup` 之后立即注册。
+- **公用域工具**：装配根按域装配——avatar/studio 分类经 `bind_core_tools(registry, tools_cfg)` 按开关注册，memory 经 `bind_memory_tools`，vision（`look_at_screen`）由组合根注入截图依赖后注册。
 - **工具注册聚合**：生产路径下不存在任何 manager 级聚合函数——Agent 子类在 `_register_tools()` 中自己 `registry.register_provider(provider, visible_to=...)`；avatar/studio 分类工具由 `main.py` 的 `bind_core_tools(registry, tools_cfg)` 按域开关装配；启动结束后 `audit_tools(registry)` 只做只读审计（声明与注册按派生全名对账），不参与注入。
 
 ### 测试要点
@@ -746,7 +746,7 @@ class MyToolProvider(ToolProvider):
 | ① 放代码 | `src/agents/<name>/` 自包含包（`agent.py` + `tools.py` + `state.py` + 业务模块） | 类名 `XxxAgent(BaseAgent)`；`name = "<注册名>"` |
 | ② 注册工厂 | `src/modules/agents/factory.py` | `SUPPORTED_AGENTS` 元组加 `<注册名>`；加 `if name == "<注册名>":` 分支做 `instantiate_agent` |
 | ③ 写配置 | `config/agents.toml` 的 `[agents]` | `enabled = ["<注册名>"]` + `[agents.<注册名>]` 子段（参考 `StreamerAgentConfig` 字段） |
-| ④ 装配调用 | `main.py._register_agents_from_config` 或 `AgentManager.enable_agent(name, config, ...)` | 工厂实例化 → 构造器注入依赖 → `manager.register(agent, spec_provider="<builtin\|game\|mcp>")` → `manager.start_agent(name)` |
+| ④ 装配调用 | `main.py._register_agents_from_config` 或 `AgentManager.enable_agent(name, config, ...)` | 工厂实例化 → 构造器注入依赖 → `manager.register(agent, spec_provider="<注册名>")`（工具来源溯源：值 = Agent 注册名，缺省 `framework`，`mcp` 预留） → `manager.start_agent(name)` |
 | ⑤ 工具接线 | `bind_core_tools` / Agent 子类 `_register_tools()` | 装配根 `main.py` 先按域开关调 `bind_core_tools(registry, tools_cfg)` 装 avatar/studio 分类工具并启动任务跟踪循环；`start_all` 触发每个 Agent 子类 `_register_tools()` 自己 `registry.register_provider(provider, visible_to=...)`；结束后 `audit_tools(registry)` 按派生全名对账（零警告 = 声明与注册一致） |
 | ⑥ Dashboard | 自动可见 | 组件管理页从 `SUPPORTED_AGENTS` 拉清单 |
 
