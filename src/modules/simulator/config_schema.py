@@ -60,10 +60,6 @@ class SimulatorConfigSchema(BaseConfig):
     )
     warmup_duration_s: float = Field(default=300.0, ge=0.0, description="启动暖场期时长（秒）")
     max_message_chars: int = Field(default=50, ge=10, le=200, description="单条消息最大字符数")
-    llm_profile: str = Field(
-        default="simulator",
-        description="LLM profile 用途名（对应 model.toml [llm_profiles.<name>]；默认 simulator）",
-    )
     llm_temperature: float = Field(default=0.9, ge=0.0, le=2.0)
     token_budget_per_hour: int = Field(default=50000, ge=1000, description="每小时 token 硬上限")
     max_concurrent_llm: int = Field(default=8, ge=1, le=32, description="最大并发 LLM 请求数")

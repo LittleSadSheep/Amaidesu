@@ -18,13 +18,18 @@ import re
 import uuid
 from typing import Dict, Optional, Tuple
 
-from src.modules.llm.manager import LLMManager, LLMResponse
+from src.modules.llm.engine import LLMManager
+from src.modules.llm.payload import Response
 from src.modules.logging import get_logger
 from src.modules.prompts import get_prompt_manager
 from src.modules.prompts.manager import PromptManager
 
 from .config_schema import SimulatorConfigSchema
 from .types import GeneratedMessage, Persona, PersonaRole, StreamerContextSnapshot
+
+
+# 本模块消费的 LLM profile 绑定：由代码显式常量声明，配置不承载绑定
+SIMULATOR_PROFILE = "simulator"
 
 
 def _parse_persona_json(text: str) -> list[dict]:
@@ -48,7 +53,7 @@ class SimulatorLLMWrapper:
     职责范围：
     - 渲染本包 ``prompts/`` 内聚的 5 个 prompt 模板（viewer_message 等，
       键来自各模板 frontmatter 的 name）
-    - 通过 :class:`LLMManager` 发起 chat 调用，受信号量约束
+    - 通过 :class:`LLMManager` 发起 generate 调用（simulator profile），受信号量约束
     - 清洗 LLM 原始输出（去 ``<system>`` / ``think`` 标签、首尾引号、空白）
     - 按 ``max_message_chars`` 截断
     - 累加 token 用量、按预算阈值判断是否豁免
@@ -308,7 +313,7 @@ class SimulatorLLMWrapper:
 
     # === 内部：LLM 调用统一入口 ===
 
-    async def _chat_once(self, prompt: str, max_tokens: Optional[int]) -> Optional[LLMResponse]:
+    async def _chat_once(self, prompt: str, max_tokens: Optional[int]) -> Optional[Response]:
         """单次 LLM 调用（信号量约束），失败返回 None。
 
         Args:
@@ -317,9 +322,9 @@ class SimulatorLLMWrapper:
         """
         try:
             async with self._semaphore:
-                response: LLMResponse = await self._llm.chat(
+                response: Response = await self._llm.generate(
                     prompt,
-                    client_type=self._config.llm_profile,
+                    profile=SIMULATOR_PROFILE,
                     temperature=self._config.llm_temperature,
                     max_tokens=max_tokens,
                 )
@@ -330,7 +335,7 @@ class SimulatorLLMWrapper:
             return None
 
         if not response.success:
-            self._logger.warning(f"LLM 调用未成功 (client={self._config.llm_profile}, error={response.error!r})")
+            self._logger.warning(f"LLM 调用未成功 (profile={SIMULATOR_PROFILE}, error={response.error!r})")
             return None
         return response
 
@@ -343,7 +348,7 @@ class SimulatorLLMWrapper:
     ) -> Optional[Tuple[str, int]]:
         """调用 LLM 并清洗响应。
 
-        流程：等待信号量并调用 :meth:`LLMManager.chat` → 判断 ``success`` 与
+        流程：等待信号量并调用 :meth:`LLMManager.generate` → 判断 ``success`` 与
         ``content`` → 清洗（去 ``<system>`` / ``think`` 块、首尾引号、空白）→
         推理模型兜底（content 为空但存在 thinking（reasoning_content）时，视为
         模型未输出正文，保持相同参数重试一次）→ 按
@@ -396,19 +401,19 @@ class SimulatorLLMWrapper:
     # === 内部：响应清洗辅助 ===
 
     @staticmethod
-    def _extract_total_tokens(response: LLMResponse) -> int:
-        """从 :class:`LLMResponse.usage` 安全读取 ``total_tokens``。
+    def _extract_total_tokens(response: Response) -> int:
+        """从 :class:`payload.Response.usage` 安全读取 ``total_tokens``。
 
-        :attr:`LLMResponse.usage` 是 ``Optional[Dict[str, int]]``；
-        缺字段 / 类型不对 / 缺失字典都按 0 处理。
+        :attr:`payload.Response.usage` 是 ``Optional[Usage]``；
+        缺失 / 字段类型不对都按 0 处理。
         """
         usage = response.usage
-        if not isinstance(usage, dict):
+        if usage is None:
             return 0
         try:
-            value = usage.get("total_tokens", 0)
+            value = usage.total_tokens
             return int(value) if value is not None else 0
-        except (TypeError, ValueError):
+        except (AttributeError, TypeError, ValueError):
             return 0
 
     @classmethod

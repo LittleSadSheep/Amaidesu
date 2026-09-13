@@ -8,8 +8,7 @@
   与目标两个文件的 dict，变更由调度器双写并双版本同升（无独立预通道）。
 
 调度采用**区间语义**：``old < hook.target <= baseline`` 的钩子执行，链跑完
-后版本戳推进到基线。注册表当前为空表——历史钩子已随旧体系全量清除，新钩
-子随未来的结构变更在此登记。
+后版本戳推进到基线。新钩子随结构变更在此登记。
 """
 
 from __future__ import annotations
@@ -114,6 +113,18 @@ def register_cross_file_hook(
 
 # 生产钩子登记：agents.toml v2.0.32（force 段字段正名 + 死字段清理）
 register_file_hook("agents.toml", "agents_force_field_rename", "2.0.32", _upgrade_agents_force_rename)
+
+
+def _drop_simulator_llm_profile(data: Dict[str, Any]) -> List[str]:
+    """删除 ``[simulator].llm_profile``（profile 绑定改由代码显式常量声明）"""
+    simulator = data.get("simulator")
+    if isinstance(simulator, dict) and "llm_profile" in simulator:
+        del simulator["llm_profile"]
+        return ["simulator.llm_profile"]
+    return []
+
+
+register_file_hook("infra.toml", "drop_simulator_llm_profile", "2.0.32", _drop_simulator_llm_profile)
 
 
 def _version_tuple(version: str) -> tuple[int, ...]:

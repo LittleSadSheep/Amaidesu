@@ -92,7 +92,7 @@ class TestAdvanceFileVersions:
 
     def test_hooks_outside_interval_skipped(self):
         """target <= old 或 > baseline 的钩子不执行"""
-        raw = {"agents.toml": {"meta": {"version": "2.0.32"}, "agents": {"bot_name": "麦麦"}}}
+        raw = {"agents.toml": {"meta": {"version": CONFIG_BASELINE_VERSION}, "agents": {"bot_name": "麦麦"}}}
         upgrade.register_file_hook("agents.toml", "sample", "2.0.31", sample_hook_v2_0_31)
         try:
             changed = advance_file_versions(raw)

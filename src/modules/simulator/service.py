@@ -185,7 +185,7 @@ class SimulatorService:
             await self.start()
 
     def _find_llm_service(self) -> Optional[Any]:
-        """从 services_by_type 探测 LLMManager（duck-type：拥有 chat/chat_fast/setup）。
+        """从 services_by_type 探测 LLMManager（duck-type：拥有 generate/setup）。
 
         组合根在 main.py 装配时通常以 ``{LLMManager: llm_service}`` 注入；
         同时支持通过对象特征识别（不依赖具体类，避免循环导入）。
@@ -193,7 +193,7 @@ class SimulatorService:
         for service in self._services_by_type.values():
             if service is None:
                 continue
-            if hasattr(service, "chat") and hasattr(service, "setup") and hasattr(service, "chat_fast"):
+            if hasattr(service, "generate") and hasattr(service, "setup"):
                 return service
         return None
 

@@ -1,4 +1,4 @@
-﻿"""SimulatorService 集成测试（ADR-006）
+"""SimulatorService 集成测试（ADR-006）
 
 测试目标：验证 SimulatorService 作为"开发基础设施"的真实行为契约：
 
@@ -8,7 +8,7 @@
 ④ CancelledError 传播语义（stop() 期间外层 cancel 必须透传，不被吞成正常返回）
 
 LLM 注入：service.py:_find_llm_service 用 duck-type 检测 services_by_type
-（需 chat / chat_fast / setup 三属性），测试用 MagicMock 模拟。
+（需 generate / setup 等属性），测试用假服务对象模拟。
 """
 
 from __future__ import annotations
@@ -18,7 +18,6 @@ import shutil
 import tempfile
 from pathlib import Path
 from typing import Any, AsyncGenerator, Dict, Generator, List, Optional
-from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -57,19 +56,15 @@ class _FakeLLMService:
         self._tokens = tokens
         self.chat_calls: int = 0
 
-    async def chat(self, prompt: str, **kwargs: Any) -> Any:
+    async def generate(self, prompt: str, **kwargs: Any) -> Any:
         self.chat_calls += 1
-        from src.modules.llm.manager import LLMResponse
+        from src.modules.llm.payload import Response, Usage
 
-        return LLMResponse(
+        return Response(
             success=True,
             content=self._reply,
-            usage={"total_tokens": self._tokens},
-            error=None,
+            usage=Usage(total_tokens=self._tokens),
         )
-
-    async def chat_fast(self, prompt: str, **kwargs: Any) -> Any:
-        return await self.chat(prompt, **kwargs)
 
     async def setup(self, config: Any) -> None:
         pass
@@ -164,7 +159,9 @@ async def test_enabled_emits_danmaku_with_simulated_flag(sim_store: SQLiteDataba
     fake_llm = _FakeLLMService(reply="测试弹幕", tokens=5)
     service = SimulatorService(
         event_bus=event_bus,
-        sim_repo=sim_store.sim, chat_repo=sim_store.chat, event_repo=sim_store.events,
+        sim_repo=sim_store.sim,
+        chat_repo=sim_store.chat,
+        event_repo=sim_store.events,
         services_by_type={type(fake_llm): fake_llm},
     )
     await service.setup(
@@ -233,14 +230,12 @@ class TestStopCleanupIdempotent:
         fake_llm = _FakeLLMService()
         service = SimulatorService(
             event_bus=event_bus,
-            sim_repo=sim_store.sim, chat_repo=sim_store.chat, event_repo=sim_store.events,
+            sim_repo=sim_store.sim,
+            chat_repo=sim_store.chat,
+            event_repo=sim_store.events,
             services_by_type={type(fake_llm): fake_llm},
         )
-        await service.setup(
-            _FakeConfigService(
-                _enabled_config(cadence_mode="fixed", fixed_interval_s=1.0)
-            )
-        )
+        await service.setup(_FakeConfigService(_enabled_config(cadence_mode="fixed", fixed_interval_s=1.0)))
         assert service.is_running is True
         await service.stop()
         assert service.is_running is False
@@ -266,14 +261,12 @@ class TestCancelledErrorPropagation:
         fake_llm = _FakeLLMService()
         service = SimulatorService(
             event_bus=event_bus,
-            sim_repo=sim_store.sim, chat_repo=sim_store.chat, event_repo=sim_store.events,
+            sim_repo=sim_store.sim,
+            chat_repo=sim_store.chat,
+            event_repo=sim_store.events,
             services_by_type={type(fake_llm): fake_llm},
         )
-        await service.setup(
-            _FakeConfigService(
-                _enabled_config(cadence_mode="fixed", fixed_interval_s=1.0)
-            )
-        )
+        await service.setup(_FakeConfigService(_enabled_config(cadence_mode="fixed", fixed_interval_s=1.0)))
         assert service.is_running is True
 
         # 模拟 stop() 协程本身被外层 cancel 的场景：
@@ -292,14 +285,12 @@ class TestCancelledErrorPropagation:
         fake_llm = _FakeLLMService()
         service = SimulatorService(
             event_bus=event_bus,
-            sim_repo=sim_store.sim, chat_repo=sim_store.chat, event_repo=sim_store.events,
+            sim_repo=sim_store.sim,
+            chat_repo=sim_store.chat,
+            event_repo=sim_store.events,
             services_by_type={type(fake_llm): fake_llm},
         )
-        await service.setup(
-            _FakeConfigService(
-                _enabled_config(cadence_mode="fixed", fixed_interval_s=1.0)
-            )
-        )
+        await service.setup(_FakeConfigService(_enabled_config(cadence_mode="fixed", fixed_interval_s=1.0)))
         # 主动 cancel task
         assert service._task is not None
         service._task.cancel()
