@@ -40,6 +40,7 @@ from src.modules.dashboard.server import DashboardServer
 from src.modules.dashboard.stream_preview import StreamPreviewHub
 from src.modules.events import (
     EventBus,
+    ensure_registry_consistency,
     list_registered_events,
     register_core_events,
 )
@@ -269,6 +270,8 @@ def register_event_interceptors(event_bus: EventBus, config: Dict[str, Any], ses
     - rate_limit：防刷屏/防突发
     - similar_filter：相似文本合并
     - 拦截器返回 ``None`` 即丢弃该事件
+    - 执行顺序由各拦截器的 ``priority`` 决定（净化类 100 先于盖章 200），
+      与此处注册顺序无关
     """
     if session_manager is not None:
         event_bus.add_interceptor(SessionStampInterceptor(session_manager))
@@ -1141,6 +1144,8 @@ async def main() -> None:
 
     # 注册所有 @register_event 装饰器触发的 Payload 模块（必须在 EventBus 构造前）
     register_core_events()
+    # 启动硬检查：注册集合必须与 CoreEvents 定义一致，契约漂移直接拒启
+    ensure_registry_consistency()
     logger.info(f"核心事件注册完成，共 {len(list_registered_events())} 个事件")
 
     (
