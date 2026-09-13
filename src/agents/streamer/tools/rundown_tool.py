@@ -2,14 +2,14 @@
 
 **注册形态**：provider="rundown"、声明名 control → 全名 ``rundown_control``，
 经 ``build_rundown_tool_provider`` 组装后由 StreamerAgent 注册进 ToolRegistry
-（可见名单 ``["streamer"]``）。决策面的出现时机仍由 Planner 按
-``RundownControlProvider.is_active`` 条件追加（动态工具的已知例外）。
-推进权归 Agent：何时切换环节是决策脑自己的决定，本工具只提供能力通道，
-并把 ``RundownState`` 的结构化拒绝（未知环节 id / 未达最少停留）原样重新写入
-——Agent 读到拒绝原因后自纠，不走异常通道。
+（可见名单 ``["streamer"]``）。Planner 与其他工具同路径经 ``registry.invoke``
+调用；可见性随 Provider 注册/摘除进出名单。推进权归 Agent：何时切换环节是
+决策脑自己的决定，本工具只提供能力通道，并把 ``RundownState`` 的结构化拒绝
+（未知环节 id / 未达最少停留）原样重新写入——Agent 读到拒绝原因后自纠，
+不走异常通道。
 
 工具契约：
-- OpenAI function 形态（``build_rundown_control_function_def``）
+- OpenAI function 形态（``_CONTROL_SPEC`` 经 ToolSpec → function def 转换）
 - ``RundownControlProvider.invoke(args)`` 同步执行（状态机方法非阻塞），
   返回观察 JSON：成功带流程单快照；拒绝带 reason / available_segment_ids /
   remaining_ms
@@ -21,18 +21,15 @@ import json
 from typing import Any, Dict
 
 from src.modules.logging import get_logger
-from src.modules.tools.models import ToolSpec
+from src.modules.tools.models import ToolExecutionResult, ToolSpec
 from src.modules.tools.provider import ToolProvider, as_tool_impl, make_provider_from_specs
 
 from ..rundown.rundown_state import RundownState
 
 __all__ = [
-    "build_rundown_control_function_def",
     "build_rundown_tool_provider",
     "RundownControlProvider",
 ]
-
-_TOOL_NAME = "rundown_control"
 
 _PARAMETERS_SCHEMA: dict[str, Any] = {
     "type": "object",
@@ -67,25 +64,25 @@ _CONTROL_SPEC = ToolSpec(
 )
 
 
-def build_rundown_control_function_def() -> Dict[str, Any]:
-    """构造 rundown_control 的 OpenAI function 定义（Planner ReAct 工具列表）。"""
-    return {
-        "name": _TOOL_NAME,
-        "description": _CONTROL_SPEC.description,
-        "parameters": _PARAMETERS_SCHEMA,
-    }
-
-
 def build_rundown_tool_provider(provider: "RundownControlProvider") -> ToolProvider:
     """把 RundownControlProvider 包成注册形态的 ToolProvider（简单工具路径）。
 
     注册键 = 派生全名 ``rundown_control``（provider="rundown" + 声明名
-    control）；执行体复用同一 ``RundownControlProvider.invoke``——注册
-    通道与 Planner 直连通道走同一状态机，无第二事实源。
+    control）；执行体即 ``RundownControlProvider.invoke``——Planner 的调用
+    经注册表落到这唯一状态机入口，无第二事实源。
+
+    返回值带 ``structured_content``：快照/结构化拒绝（reason、remaining_ms 等）
+    完整进入观察文本与 tool.result 事件，消费方拿到的信息与直连返回一致。
     """
 
     async def _run(inv):  # type: ignore[no-untyped-def]
-        return provider.invoke(dict(inv.arguments or {}))
+        text = provider.invoke(dict(inv.arguments or {}))
+        return ToolExecutionResult(
+            tool_name=_CONTROL_SPEC.full_name,
+            success=True,
+            content=text,
+            structured_content=json.loads(text),
+        )
 
     return make_provider_from_specs(
         "rundown",
@@ -102,10 +99,6 @@ class RundownControlProvider:
     def __init__(self, state: RundownState) -> None:
         self._state = state
         self._logger = get_logger("RundownControlTool")
-
-    def is_active(self) -> bool:
-        """流程单是否激活（Planner 据此决定是否把工具放进本轮工具列表）。"""
-        return self._state.rundown is not None
 
     def invoke(self, args: Dict[str, Any]) -> str:
         """执行控制动作，返回观察 JSON 文本（成功与结构化拒绝都重新写入给 LLM）。"""

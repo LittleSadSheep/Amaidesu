@@ -298,9 +298,8 @@ class StreamerAgent(BaseAgent):
             on_changed=self._on_rundown_changed,
         )
         self._planner.bind_elapsed_live_provider(self._rundown_state.get_elapsed_live_ms)
-        # 控制执行器单实例：Planner 直连与 ToolRegistry 注册共用同一状态机
+        # 控制执行器：经 ToolRegistry 注册后供 Planner ReAct 循环调用（单实例单状态机）
         self._rundown_tool_provider = RundownControlProvider(self._rundown_state)
-        self._planner.bind_rundown_provider(self._rundown_tool_provider)
 
         # 后台维护器（双任务：轻循环 + 压缩 worker）——读包内权威配置
         bg = config.background
@@ -526,8 +525,8 @@ class StreamerAgent(BaseAgent):
           （自己的工具填自己）；Planner 经 registry 统一调用，thinking 回调
           槽位仍挂在本 Provider 实例上。
         - ``rundown_control``：注册（provider="rundown"，名单 ``["streamer"]``）
-          进 ToolRegistry 获得观测/管理条目；决策面仍由 Planner 按流程单激活
-          状态条件追加（动态工具的已知例外）。
+          进 ToolRegistry，与其他工具同一路径被 Planner 调用；可见性随
+          Provider 注册/摘除进出名单（Agent 启动即注册，无需二次开关）。
         """
 
         # reply tool（无条件构造——thinking 槽位与注册共用同一实例）

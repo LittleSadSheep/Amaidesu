@@ -111,7 +111,7 @@ def _msg(text: str = "hi", mid: str = "m1") -> Any:
 
 
 def test_tool_list_is_for_agent_registry_result() -> None:
-    """工具列表 = for_agent("streamer") 注册表结果（全名直出，统一来源）；rundown 例外条件追加。"""
+    """工具列表 = for_agent("streamer") 注册表结果（全名直出，统一来源，无二次筛选）。"""
     registry = MagicMock()
     registry.list_tools.return_value = [
         ToolSpec(
@@ -308,8 +308,6 @@ async def test_react_llm_error_outcome() -> None:
 @pytest.mark.asyncio
 async def test_screen_context_enters_environment_block() -> None:
     """RoomState.screen_context（perception.screen 通道）进环境块的"关键变化"。"""
-    from src.agents.streamer.room_state import RoomState
-
     planner, llm, prompt = _make_planner(chat_responses=[_resp()], context_enabled=True)
     planner._room_state.set_screen_context("主播正在玩《双人成行》")
 

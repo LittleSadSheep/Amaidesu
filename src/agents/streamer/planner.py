@@ -2,9 +2,9 @@
 
 职责（Agent 内部件，**不是工具**）：
 - 决策主体：每个决策窗内跑一次有界 ReAct 循环——查信息（registry 工具）
-  → 决定说不说 → 调 reply 局部工具收尾
-- reply 是循环内的局部工具（``tools/reply_tool.py`` 的 Provider 直连，
-  不进 ToolRegistry——Agent 内部件协议）
+  → 决定说不说 → 调 reply 工具收尾
+- 全部工具调用统一经 ToolRegistry（``registry.invoke``），工具列表统一
+  来自 ``list_tools(for_agent="streamer")``——单一路径，无局部直连分支
 - 自然终止（LLM 无工具调用）= 本轮不说话
 
 核心契约：
@@ -46,7 +46,6 @@ from src.modules.tools.models import ToolInvocation
 
 from .room_state import RoomState, RoomStateSnapshot
 from .thinking_stream import ThinkingStreamContext
-from .tools.rundown_tool import build_rundown_control_function_def
 
 __all__ = ["Planner"]
 
@@ -137,7 +136,6 @@ class Planner:
         behavior_style: str = "",
         reply_provider: Any = None,
         elapsed_live_provider: Optional[Callable[[], Optional[int]]] = None,
-        rundown_provider: Any = None,
     ) -> None:
         """初始化 Planner。
 
@@ -183,7 +181,6 @@ class Planner:
         self._behavior_style: str = behavior_style or ""
         self._reply_provider = reply_provider
         self._elapsed_live_provider = elapsed_live_provider
-        self._rundown_provider = rundown_provider
 
         self._assembler = PlannerAssembler()
 
@@ -201,13 +198,6 @@ class Planner:
     def bind_elapsed_live_provider(self, provider: Callable[[], Optional[int]]) -> None:
         """注入开播时长查询（StreamerAgent 构造 RundownState 后绑定，同 bind 模式）。"""
         self._elapsed_live_provider = provider
-
-    def bind_rundown_provider(self, provider: Any) -> None:
-        """注入流程单控制 Provider（StreamerAgent 装配 RundownState 后绑定）。
-
-        绑定且流程单激活时，工具列表追加 ``rundown_control``——Agent 自主推进环节。
-        """
-        self._rundown_provider = provider
 
     # ==================== 主入口 ====================
 
@@ -364,8 +354,6 @@ class Planner:
 
                 if name == "streamer_reply":
                     observation, replied = await self._invoke_reply(args, outcome, thinking=thinking, round_id=round_id)
-                elif name == "rundown_control" and self._rundown_provider is not None:
-                    observation = self._invoke_rundown_control(args)
                 else:
                     observation = await self._invoke_registry_tool(name, args, round_id=round_id)
                 messages.append(
@@ -504,26 +492,17 @@ class Planner:
     def _build_tool_list(self) -> List[Dict[str, Any]]:
         """LLM 工具列表 = 注册表按可见名单计算（for_agent="streamer"）。
 
-        唯一例外：rundown_control 是动态工具——按流程单激活状态条件追加
-        （注册表条目已在 for_agent 结果中，跳过防重）。
+        动态工具（如 rundown_control）的可见性同样由注册表承载——随
+        Provider 注册/摘除进出名单，Planner 不做二次筛选。
         """
-        tool_list: List[Dict[str, Any]] = []
-        # 流程单激活时追加 rundown_control——环节推进是决策脑的职责（推进权归 Agent）
-        if self._rundown_provider is not None and self._rundown_provider.is_active():
-            tool_list.append(build_rundown_control_function_def())
         if self._tool_registry is None:
-            return tool_list
+            return []
         try:
             specs = self._tool_registry.list_tools(for_agent="streamer")
         except Exception as e:
-            self.logger.warning(f"Planner 拉取工具列表失败（本轮仅保留 rundown_control）: {e}")
-            return tool_list
-        for spec in specs:
-            # rundown_control 由上面的激活条件追加（动态工具的已知例外，防重复条目）
-            if getattr(spec, "provider", "") == "rundown":
-                continue
-            tool_list.append(_spec_to_fn_def(spec))
-        return tool_list
+            self.logger.warning(f"Planner 拉取工具列表失败（本轮无工具）: {e}")
+            return []
+        return [_spec_to_fn_def(spec) for spec in specs]
 
     async def _invoke_reply(
         self,
@@ -587,16 +566,6 @@ class Planner:
 
         self.logger.info(f"Planner ReAct 收尾：reply 成功 (target={outcome['target']!r}, steps={outcome['steps']})")
         return json.dumps({"ok": True, "speech_delivered": True}, ensure_ascii=False), True
-
-    def _invoke_rundown_control(self, args: Dict[str, Any]) -> str:
-        """执行 rundown_control 局部工具（状态机方法同步非阻塞），返回观察 JSON 文本。"""
-        if self._rundown_provider is None:
-            return json.dumps({"ok": False, "error": "rundown_control 不可用（Provider 未绑定）"}, ensure_ascii=False)
-        try:
-            return self._rundown_provider.invoke(args)
-        except Exception as e:
-            self.logger.warning(f"rundown_control 执行异常: {e}", exc_info=True)
-            return json.dumps({"ok": False, "error": f"{type(e).__name__}: {e}"}, ensure_ascii=False)
 
     async def _invoke_registry_tool(self, name: str, args: Dict[str, Any], round_id: str = "") -> str:
         """经 ToolRegistry 执行工具调用，返回观察 JSON 文本。"""

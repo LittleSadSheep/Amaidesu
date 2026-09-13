@@ -1,20 +1,30 @@
 """RundownControlProvider 单元测试
 
 验证 Agent 内脏协议工具的调用契约：结构化拒绝回灌（unknown id / 未达
-最少停留）、成功快照、参数缺失与未知动作的防御。
+最少停留）、成功快照、参数缺失与未知动作的防御；以及经 ToolRegistry
+注册后的统一调用路径（可见名单 / Planner 分派 / 状态机变更落同一处）。
 """
 
 from __future__ import annotations
 
 import json
 from typing import Any, Dict
+from unittest.mock import AsyncMock, MagicMock
 
+import pytest
+
+from src.agents.streamer.planner import Planner
+from src.agents.streamer.room_state import RoomState
 from src.agents.streamer.rundown.rundown import Rundown, RundownSegment, DEFAULT_RUNDOWN
 from src.agents.streamer.rundown.rundown_state import RundownState
 from src.agents.streamer.tools.rundown_tool import (
     RundownControlProvider,
-    build_rundown_control_function_def,
+    build_rundown_tool_provider,
 )
+from src.modules.llm.payload import Response as PayloadResponse
+from src.modules.llm.payload import ToolCall as PayloadToolCall
+from src.modules.tools.models import ToolInvocation
+from src.modules.tools.registry import ToolRegistry
 
 
 class _FakeClock:
@@ -59,22 +69,107 @@ def _parse(text: str) -> Dict[str, Any]:
     return json.loads(text)
 
 
-def test_function_def_shape() -> None:
-    fn = build_rundown_control_function_def()
-    assert fn["name"] == "rundown_control"
-    props = fn["parameters"]["properties"]
-    assert props["action"]["enum"] == ["next", "goto", "pause", "resume"]
-    assert fn["parameters"]["required"] == ["action"]
+def _register_rundown_tool(registry: ToolRegistry, provider: RundownControlProvider) -> None:
+    """按生产口径把 rundown_control 注册进 registry（名单 ["streamer"]）。"""
+    registry.register_provider(
+        build_rundown_tool_provider(provider),
+        visible_to={"rundown_control": ["streamer"]},
+    )
 
 
-def test_is_active_reflects_state() -> None:
+def test_visible_to_streamer_with_full_function_shape() -> None:
+    """注册进 registry 后 Planner 工具列表含 rundown_control（全名直出，形状完整）。"""
     clock = _FakeClock()
     state = RundownState(clock=clock)
-    provider = RundownControlProvider(state)
-    assert provider.is_active() is False
-
     state.load(DEFAULT_RUNDOWN, now_ms=clock.now)
-    assert provider.is_active() is True
+    provider = RundownControlProvider(state)
+
+    registry = ToolRegistry()
+    _register_rundown_tool(registry, provider)
+    planner = Planner(
+        config={"planner_max_steps": 4},
+        llm_service=MagicMock(),
+        prompt_service=MagicMock(),
+        room_state=RoomState(),
+        tool_registry=registry,
+    )
+
+    fn_defs = {f["name"]: f for f in planner._build_tool_list()}
+
+    assert "rundown_control" in fn_defs
+    props = fn_defs["rundown_control"]["parameters"]["properties"]
+    assert props["action"]["enum"] == ["next", "goto", "pause", "resume"]
+    assert fn_defs["rundown_control"]["parameters"]["required"] == ["action"]
+
+
+@pytest.mark.asyncio
+async def test_registry_invoke_advances_state_machine() -> None:
+    """回归：经 registry.invoke 调 rundown_control，状态机变更落同一处。"""
+    clock = _FakeClock()
+    state = RundownState(clock=clock)
+    state.load(DEFAULT_RUNDOWN, now_ms=clock.now)
+
+    registry = ToolRegistry()
+    _register_rundown_tool(registry, RundownControlProvider(state))
+
+    result = await registry.invoke(
+        ToolInvocation(tool_name="rundown_control", arguments={"action": "next"}, source="planner-react")
+    )
+
+    assert result.success is True
+    payload = result.structured_content
+    assert payload["ok"] is True
+    assert payload["rundown"]["current"]["id"] == "self_intro"
+    assert state.get_snapshot()["current"]["id"] == "self_intro"
+
+
+@pytest.mark.asyncio
+async def test_planner_dispatches_rundown_control_via_registry() -> None:
+    """回归：Planner ReAct 循环调 rundown_control 走 registry 单一路径，观察完整回灌。
+
+    与改造前直连行为一致：观察含流程单快照（非退化占位），状态机推进由
+    同一 RundownState 承载。
+    """
+    clock = _FakeClock()
+    state = RundownState(clock=clock)
+    state.load(DEFAULT_RUNDOWN, now_ms=clock.now)
+
+    registry = ToolRegistry()
+    _register_rundown_tool(registry, RundownControlProvider(state))
+
+    llm = MagicMock()
+    llm.generate = AsyncMock(
+        side_effect=[
+            PayloadResponse(
+                success=True,
+                tool_calls=[PayloadToolCall(id="c1", name="rundown_control", arguments={"action": "next"})],
+            ),
+            PayloadResponse(success=True, content="本轮到此"),
+        ]
+    )
+    prompt = MagicMock()
+    prompt.render = MagicMock(return_value="SYSTEM_PROMPT")
+
+    planner = Planner(
+        config={"planner_max_steps": 4},
+        llm_service=llm,
+        prompt_service=prompt,
+        room_state=RoomState(),
+        tool_registry=registry,
+    )
+
+    outcome = await planner.plan([])
+
+    assert outcome["replied"] is False
+    assert outcome["tool_trace"] == ["rundown_control"]
+    assert outcome["silent_reason"] == "natural"
+    # 状态机变更落同一处：next 已推进到开场后的环节
+    assert state.get_snapshot()["current"]["id"] == "self_intro"
+    # 观察完整回灌：第二轮 messages 的 tool 观察含快照（非 {"ok": true} 退化占位）
+    second = llm.generate.await_args_list[1].args[0]
+    tool_msgs = [m for m in second if m.get("role") == "tool"]
+    assert tool_msgs and '"rundown"' in tool_msgs[0]["content"]
+    assert '"current"' in tool_msgs[0]["content"]
 
 
 def test_invoke_next_success_returns_snapshot() -> None:
