@@ -7,7 +7,7 @@ import 'element-plus/dist/index.css';
 import App from './App.vue';
 import router from './router';
 import './styles/main.css';
-import { useWebSocketStore, useEventsStore, useLogsStore, useSessionStore } from './stores';
+import { useWebSocketStore, useEventsStore, useLogsStore } from './stores';
 
 const app = createApp(App);
 
@@ -21,5 +21,4 @@ useWebSocketStore().init();
 // 显式实例化懒加载 store，让消息处理器在启动时注册（否则进入对应页面才开始接收数据）
 useEventsStore();
 useLogsStore();
-useSessionStore();
 useWebSocketStore().connect();

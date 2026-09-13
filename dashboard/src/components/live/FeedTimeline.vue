@@ -1,12 +1,12 @@
 <template>
-  <div class="feed-timeline" :class="{ 'is-compact': compact }">
+  <div class="feed-timeline" :class="{ 'is-compact': compact, 'is-chat': isChat }">
     <div v-if="entries.length === 0" class="stage-empty">
       <el-icon class="stage-empty-icon"><Monitor /></el-icon>
       <p class="stage-empty-text">{{ emptyText }}</p>
     </div>
 
     <ol v-else class="feed">
-      <li v-for="entry in entries" :key="entry.id" class="feed-row">
+      <li v-for="entry in entries" :key="entry.id" class="feed-row" :class="rowAlignClass(entry)">
         <!-- 环节推进 / 场次边界：横贯分隔行 -->
         <div v-if="entry.kind === 'rundown' || entry.kind === 'boundary'" class="beat">
           <span class="beat-rule" aria-hidden="true" />
@@ -259,6 +259,15 @@
             <p class="say">{{ entry.text }}</p>
           </div>
         </div>
+
+        <!-- 会话布局的主播侧头像：置于条件链末尾避免打断 v-else-if 链；
+             与左侧观众头像呼应，撑起发言行右对齐的对话感 -->
+        <span
+          v-if="entry.kind === 'speech' && isChat"
+          class="avatar avatar--host"
+          aria-hidden="true"
+          >主</span
+        >
       </li>
     </ol>
   </div>
@@ -271,6 +280,8 @@
  * 输入：已折叠的 ShowEntry[]（控制台走 buildLiveEntries，首页可只取最近 N 条）
  * 渲染：所有控制台当前支持的行类型——环节/边界、里程碑、阶段、进场、
  *      决策/裁决、工具调用、主播发言、弹幕/礼物/SC 气泡。
+ * 布局：timeline 单列沿脊线；chat 会话模式（观众左 / 主播右 / 过程行居中），
+ *      同一套行卡片只换对齐方式，内容渲染不分叉。
  *
  * 控制台独占能力（思考流尾部、暂停/清空、注入面板、滚动跟随）留在 LiveObserver；
  * 本组件只负责"按条目渲染"，对上游数据来源无要求，可被任何 Vue 页面复用。
@@ -298,6 +309,8 @@ interface Props {
   entries: ShowEntry[];
   /** 紧凑模式：用于首页缩略展示，缩短行距/字号 */
   compact?: boolean;
+  /** 行布局：timeline=单列沿脊线的时间线；chat=会话模式（观众左 / 主播右 / 过程行居中） */
+  layout?: 'timeline' | 'chat';
   /** 决策卡"思考过程"折叠面板的数据源；缺失则该面板永不渲染 */
   plannerThinking?: (roundId: string) => ThinkingStep[];
   /** 发言卡"生成思考"折叠面板的文本；缺失则该面板永不渲染 */
@@ -308,10 +321,31 @@ interface Props {
 
 const props = withDefaults(defineProps<Props>(), {
   compact: false,
+  layout: 'timeline',
   plannerThinking: undefined,
   replyerThinking: undefined,
   emptyText: '静候消息与决策',
 });
+
+const isChat = computed(() => props.layout === 'chat');
+
+/** 会话布局的行对齐类：观众消息默认靠左，主播发言靠右，
+ * 决策/工具/阶段等过程行居中；环节/边界/里程碑保持通栏不参与对齐 */
+function rowAlignClass(entry: ShowEntry): string {
+  if (!isChat.value) return '';
+  if (entry.kind === 'speech') return 'row-right';
+  if (
+    entry.kind === 'decision' ||
+    entry.kind === 'verdict' ||
+    entry.kind === 'tool' ||
+    entry.kind === 'stage' ||
+    entry.kind === 'enter' ||
+    entry.kind === 'game'
+  ) {
+    return 'row-center';
+  }
+  return '';
+}
 
 // 1s tick：让相对时间标签（"刚刚 / 12s 前"）每秒刷新一次；首页独立维护不依赖父组件
 const nowMs = ref(Date.now());
@@ -1203,6 +1237,40 @@ async function copyText(text: string): Promise<void> {
 }
 .feed-timeline.is-compact .stamp {
   font-size: 9px;
+}
+
+/* ============================================================ */
+/* 会话布局：观众左 / 主播右 / 过程行居中——对话流优先的显示模式      */
+/* ============================================================ */
+.feed-timeline.is-chat .feed::before {
+  display: none;
+}
+.feed-timeline.is-chat .chat {
+  max-width: min(72%, 560px);
+}
+.feed-timeline.is-chat .feed-row.row-right {
+  flex-direction: row;
+  justify-content: flex-end;
+  gap: 10px;
+  align-items: flex-start;
+}
+.feed-timeline.is-chat .feed-row.row-right .act.is-speech {
+  margin-left: 0;
+  max-width: min(78%, 560px);
+}
+.feed-timeline.is-chat .feed-row.row-center {
+  align-items: center;
+}
+.feed-timeline.is-chat .feed-row.row-center .decision,
+.feed-timeline.is-chat .feed-row.row-center .act {
+  margin-left: 0;
+  max-width: min(82%, 640px);
+}
+/* 主播侧头像：与观众头像同形，紫色系归到主播 */
+.avatar--host {
+  border-color: var(--color-agent);
+  color: var(--color-agent);
+  background: var(--color-agent-bg);
 }
 
 /* ============================================================ */

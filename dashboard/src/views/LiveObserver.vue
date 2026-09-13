@@ -146,6 +146,11 @@
                 注入弹幕
               </el-button>
               <el-button size="small" @click="testDialogVisible = true">决策测试</el-button>
+              <!-- 显示模式：时间线=单列沿脊线；会话=观众左/主播右气泡对齐（原会话调试页收编） -->
+              <el-radio-group v-model="displayMode" size="small">
+                <el-radio-button value="timeline">时间线</el-radio-button>
+                <el-radio-button value="chat">会话</el-radio-button>
+              </el-radio-group>
               <!-- 来源过滤 chips：仅过滤 Agent 产生的卡（tool/speech/decision/verdict/stage/game），
                 观众消息与场次边界始终可见；与既有 el-button 族风格一致 -->
               <span class="agent-filter">
@@ -208,6 +213,7 @@
             <div ref="scrollRef" class="stage-scroll" @scroll.passive="onScroll">
               <FeedTimeline
                 :entries="entries"
+                :layout="displayMode"
                 :planner-thinking="plannerThinkingOf"
                 :replyer-thinking="replyerThinkingOf"
                 :empty-text="
@@ -283,7 +289,8 @@
  * - 左侧场次侧边栏：当前进行中场次 + 历史场次（点击回看该场完整时间线），
  *   顶部提供开启/结束/删除开关（场次生命周期归 LiveSessionManager）
  * - 中部时间线：观众消息、主播发言、决策记录（planner.decision）、阶段状态
- *   （streamer.stage）、场次边界、节目单推进、里程碑，单列居左、靠样式区分
+ *   （streamer.stage）、场次边界、节目单推进、里程碑；显示模式二选一——
+ *   时间线（单列居左、靠样式区分）/ 会话（观众左、主播右气泡对齐）
  * - 顶栏：连接状态、决策管线阶段徽章、模拟器模式徽章
  *
  * 干预入口（复用既有 API）：注入弹幕（debug/inject-message，与真实弹幕同链路）、
@@ -771,6 +778,10 @@ const paused = ref(false);
 /** 清空水位：记下当时缓冲区里的事件 id，之后重建时永久跳过（store 仍不丢数据） */
 const hiddenIds = ref<Set<string>>(new Set());
 const liveEntries = ref<ShowEntry[]>([]);
+
+/** 时间线显示模式：timeline=单列沿脊线；chat=会话模式（观众左/主播右气泡对齐，
+ * 原独立会话调试页的显示形态） */
+const displayMode = ref<'timeline' | 'chat'>('timeline');
 
 /** 来源过滤：实时模式下按 Agent 组别过滤展示条目（观众消息与场次边界不过滤——观众始终可见）；
  *  回看模式不生效（场次条目全量呈现） */

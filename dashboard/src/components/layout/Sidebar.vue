@@ -37,10 +37,6 @@
 
         <div class="sidebar-divider" />
 
-        <el-menu-item index="/session">
-          <el-icon><ChatLineRound /></el-icon>
-          <span>会话调试</span>
-        </el-menu-item>
         <el-menu-item index="/simulator">
           <el-icon><MagicStick /></el-icon>
           <span>世界模拟器</span>
@@ -97,7 +93,6 @@ import {
   Cpu,
   TrendCharts,
   Clock,
-  ChatLineRound,
   Tickets,
   ChatLineSquare,
   ChatDotRound,

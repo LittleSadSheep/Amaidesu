@@ -44,9 +44,9 @@ const router = createRouter({
       component: () => import('@/views/DevTools.vue'),
     },
     {
+      // 会话调试页已收编为直播控制台的会话显示模式，旧路径重定向避免死链
       path: '/session',
-      name: 'session',
-      component: () => import('@/views/SessionHistory.vue'),
+      redirect: '/live',
     },
     {
       path: '/live',

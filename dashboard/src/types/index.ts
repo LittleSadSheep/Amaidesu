@@ -274,50 +274,6 @@ export interface StreamerSpeechEventData {
   timestamp_ms?: number;
 }
 
-// ==================== v2 消息与会话 ====================
-
-/**
- * v2 房间消息载荷（RoomMessagePayload.model_dump 的扁平结构）。
- *
- * 后端把 4 种 room.message.* EventBus 事件统一以 WS 类型 "room.message" 广播，
- * 消息种类由 `message_type` 判别；payload 本身无 source / message_id 字段。
- */
-export interface RoomMessageEventData {
-  live_session_id?: string;
-  message_type: 'danmaku' | 'gift' | 'super_chat' | 'enter' | string;
-  user?: { id?: string; name?: string } | null;
-  content?: string;
-  gift?: { name?: string; count?: number } | null;
-  sc?: { amount?: number } | null;
-  /** 弹幕 / SC / 礼物 message_id（来源：RoomMessagePayload.message_id；用于发言/决策卡回复引用反查）。
-   * enter 类无关联消息，该字段为空。 */
-  message_id?: string;
-  /** 模拟数据溯源（true=模拟器生成/回放；统计查询必须排除） */
-  simulated?: boolean;
-  /** Unix 毫秒 */
-  timestamp_ms?: number;
-}
-
-/**
- * v2 调试会话事件（会话调试页数据轴）——v2 对话闭环的三类观测点：
- * - 观众消息：room.message（WS 统一类型）
- * - 主播发言：streamer.speech
- * - 决策/编排/工具：rundown.changed / planner.decision / tool.result.*（摘要行）
- */
-export interface DebugSessionEvent {
-  id: string;
-  type: string;
-  /** Unix 秒（继承 WebSocketMessage / EventRecord 的 timestamp） */
-  timestamp: number;
-  kind: 'message' | 'speech' | 'system';
-  /** kind === 'message' 时的房间消息载荷 */
-  message?: RoomMessageEventData;
-  /** kind === 'speech' 时的主播发言载荷 */
-  speech?: StreamerSpeechEventData;
-  /** 原始载荷（详情展开用） */
-  data?: Record<string, unknown>;
-}
-
 // ==================== WebSocket ====================
 
 /**
