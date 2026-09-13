@@ -3,8 +3,7 @@
 设计要点
 --------
 
-- 与 ``src/agents/streamer/agenda/agenda.py`` 同类：**主播 Agent 内部契约**，
-  不跨 Agent 共享，内聚于 ``src/agents/streamer/`` 下。
+- **主播 Agent 内部契约同类**：不跨 Agent 共享，内聚于 ``src/agents/streamer/`` 下。
 - 描述一场直播的**预定义流程单**：通过 WebUI 手工建立环节清单，自驱动
   主播 Agent 拿到的是"备忘录 + 闹钟"——参考材料与超时提醒，不替 Agent
   按推进按钮。Agent 自行决定何时通过工具切换环节（切片 3 交付）。
