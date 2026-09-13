@@ -220,12 +220,6 @@ export const viewersApi = {
     api.get<ViewerStatsResponse>('/viewers', { params }),
 };
 
-// ===== Trace =====
-//
-// `traces.ts`：GET /traces（最近链路列表）+ GET /traces/{message_id}（按 message_id
-// 聚合 messages/planning/execution 三段事件；planning/execution 可能为空数组）。
-export * from './traces';
-
 // ===== Streamer 测试台（主播发言调试） =====
 //
 // `GET /streamer/status`：主播 Agent 状态 + 运行统计 + 配置摘要（agent 未注册时

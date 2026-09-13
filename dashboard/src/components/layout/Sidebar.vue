@@ -45,10 +45,6 @@
           <el-icon><Cpu /></el-icon>
           <span>开发者工具</span>
         </el-menu-item>
-        <el-menu-item index="/traces">
-          <el-icon><Opportunity /></el-icon>
-          <span>Trace 链路</span>
-        </el-menu-item>
         <el-menu-item index="/llm/usage">
           <el-icon><TrendCharts /></el-icon>
           <span>LLM 用量</span>
@@ -96,7 +92,6 @@ import {
   Tickets,
   ChatLineSquare,
   ChatDotRound,
-  Opportunity,
   VideoCamera,
   List,
   MagicStick,

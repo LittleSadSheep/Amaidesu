@@ -6,7 +6,7 @@
 的解析结果：显式场次进行中取其主键，否则保持 0（``resolve_pk()`` 返回 ``None``）。
 
 事件经过拦截器后，下游所有消费者（StorageLedger 落库 / EventHistoryRecorder
-记录 / Dashboard WS 广播 / traces）看到同一份已归属的场次 ID——单点注入，
+记录 / Dashboard WS 广播）看到同一份已归属的场次 ID——单点注入，
 全链一致。无显式场次期间消息仅在事件总线/WebUI/Agent 链路流转，落库路径
 依据 0 值由 StorageLedger 跳过。
 """

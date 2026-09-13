@@ -660,11 +660,10 @@ export interface RundownMutateResponse {
   rundown_id: string | null;
 }
 
-// ==================== 导出 settings / llm / trace 子模块 ====================
+// ==================== 导出 settings / llm 子模块 ====================
 
 export * from './settings';
 export * from './llm';
-export * from './trace';
 
 // ===== 直播场次（直播控制台） =====
 

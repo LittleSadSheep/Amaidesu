@@ -21,7 +21,6 @@ from src.modules.dashboard.api import (
     streamer,
     system,
     tools,
-    traces,
     viewers,
 )
 
@@ -48,7 +47,6 @@ def create_app() -> FastAPI:
     app.include_router(llm.router, prefix="/api/v1/llm", tags=["LLM"])
     app.include_router(tools.router, prefix="/api/v1", tags=["Tools"])
     app.include_router(events.router, prefix="/api/v1", tags=["Events"])
-    app.include_router(traces.router, prefix="/api/v1", tags=["Traces"])
     app.include_router(agenda.router, prefix="/api/v1/agenda", tags=["Agenda"])
     # 流程单库 CRUD（列表 / 模板 / upsert / 删除 / 复制 / 设为当前）
     app.include_router(rundowns.router, prefix="/api/v1/agenda", tags=["Agenda"])
