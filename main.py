@@ -61,7 +61,6 @@ from src.modules.prompts import get_prompt_manager
 from src.modules.session import LiveSessionManager
 from src.modules.simulator import SimulatorService
 from src.modules.storage.database import SQLiteDatabase
-from src.modules.storage.repos import EventRepo
 from src.modules.subtitle import build_subtitle_infrastructure
 from src.modules.subtitle.backends import DashboardBackend
 from src.modules.tts import build_tts_infrastructure
@@ -388,7 +387,7 @@ async def create_app_components(
     logger.info("事件总线已初始化，事件拦截器已挂载")
 
     # --- 事件历史（系统级）---
-    event_recorder = await _start_event_recorder(event_bus, config, database.events)
+    event_recorder = await _start_event_recorder(event_bus, config)
     logger.info("事件历史记录器已启动")
 
     # --- StorageLedger（订阅 room.message.# 落业务表）---
@@ -726,24 +725,15 @@ async def create_app_components(
 # ---------------------------------------------------------------------------
 
 
-async def _start_event_recorder(event_bus: EventBus, config: Dict[str, Any], event_repo: "EventRepo"):
+async def _start_event_recorder(event_bus: EventBus, config: Dict[str, Any]):
     """启动事件历史记录器（系统级，与 Dashboard 解耦）。"""
     events_config = config.get("events", {}) if isinstance(config, dict) else {}
     typed_events_config = EventHistoryConfig(**events_config)
     try:
-        service = EventHistoryService(
-            max_events=typed_events_config.history_size,
-            persist=typed_events_config.persist,
-            event_repo=event_repo,
-        )
+        service = EventHistoryService(max_events=typed_events_config.history_size)
         recorder = EventHistoryRecorder(event_bus=event_bus, event_history=service)
         await recorder.start()
-        if typed_events_config.persist:
-            # 启动重新写入：从 event_history 表载入当日事件（dashboard 重启不丢当日历史）
-            await service.backfill_today_from_store()
-        logger.info(
-            f"事件历史记录器已启动（size={typed_events_config.history_size}, persist={typed_events_config.persist}）"
-        )
+        logger.info(f"事件历史记录器已启动（size={typed_events_config.history_size}）")
         return recorder
     except Exception as e:
         logger.warning(f"事件历史记录器启动失败: {e}")

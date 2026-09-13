@@ -39,7 +39,7 @@ from __future__ import annotations
 from typing import List
 
 # 当前 Schema 版本——改动表结构时必须同步升级
-SCHEMA_VERSION: int = 8
+SCHEMA_VERSION: int = 9
 
 
 # =============================================================================
@@ -55,7 +55,6 @@ SCHEMA_VERSION: int = 8
 # - timeline_summary        摘要层
 # - llm_usage               LLM 调用记录
 # - llm_requests            LLM 请求历史（完整请求/响应，dashboard 历史页数据源）
-# - event_history           语义域事件流（录制回放 + dashboard 事件历史持久层）
 # - sim_personas            模拟器常驻观众人设（运行时数据，WebUI 管理）
 # - sim_gifts               模拟器礼物目录（运行时数据，WebUI 管理）
 # - rundowns                流程单（rundown 子系统）
@@ -100,9 +99,6 @@ def build_schema_sql() -> str:
         # llm_requests —— LLM 请求历史（完整请求/响应）
         + _LLM_REQUESTS_SQL
         + "\n"
-        # event_history —— 语义域事件流（录制回放 + 事件历史持久层）
-        + _EVENT_HISTORY_SQL
-        + "\n"
         # sim_personas —— 模拟器常驻观众人设
         + _SIM_PERSONAS_SQL
         + "\n"
@@ -131,7 +127,6 @@ def list_expected_tables() -> List[str]:
         "timeline_summary",
         "llm_usage",
         "llm_requests",
-        "event_history",
         "sim_personas",
         "sim_gifts",
         "schema_migrations",
@@ -349,26 +344,6 @@ CREATE TABLE IF NOT EXISTS _memory_facts (
 );
 CREATE INDEX IF NOT EXISTS idx_memory_facts_timestamp ON _memory_facts(timestamp_ms);
 CREATE INDEX IF NOT EXISTS idx_memory_facts_source ON _memory_facts(source);
-""".strip()
-
-
-# --- event_history —— 语义域事件流（EventHistoryService 落库）---
-# payload 存完整载荷 JSON（回放端按 event_name 取回后直接反序列化）；
-# 按日查询与按事件名过滤都是热路径，时间与 (事件名, 时间) 建索引。
-
-_EVENT_HISTORY_SQL = """
-CREATE TABLE IF NOT EXISTS event_history (
-    seq           INTEGER PRIMARY KEY AUTOINCREMENT,
-    record_id     TEXT NOT NULL,
-    event_name    TEXT NOT NULL,
-    timestamp_ms  INTEGER NOT NULL,
-    level         TEXT NOT NULL DEFAULT 'info',
-    source        TEXT NOT NULL DEFAULT '',
-    summary       TEXT NOT NULL DEFAULT '',
-    payload       TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_event_history_ts ON event_history(timestamp_ms);
-CREATE INDEX IF NOT EXISTS idx_event_history_name_ts ON event_history(event_name, timestamp_ms);
 """.strip()
 
 

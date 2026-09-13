@@ -90,6 +90,19 @@ def _upgrade_agents_force_rename(data: Dict[str, Any]) -> List[str]:
     return changed
 
 
+def _upgrade_infra_drop_events_persist(data: Dict[str, Any]) -> List[str]:
+    """infra.toml v2.0.33：删 [events].persist 键。
+
+    event_history 表持久化路径整体移除（表 DROP + 服务纯内存化），
+    persist 开关失去消费者。对已迁移数据零变更（幂等）。
+    """
+    events = data.get("events")
+    if not isinstance(events, dict) or "persist" not in events:
+        return []
+    del events["persist"]
+    return ["events.persist"]
+
+
 def register_file_hook(
     file_name: str, name: str, target_version: str, run: Callable[[Dict[str, Any]], List[str]]
 ) -> None:
@@ -114,6 +127,9 @@ def register_cross_file_hook(
 
 # 生产钩子登记：agents.toml v2.0.32（force 段字段正名 + 死字段清理）
 register_file_hook("agents.toml", "agents_force_field_rename", "2.0.32", _upgrade_agents_force_rename)
+
+# 生产钩子登记：infra.toml v2.0.33（[events].persist 删键，表持久化路径移除）
+register_file_hook("infra.toml", "infra_drop_events_persist", "2.0.33", _upgrade_infra_drop_events_persist)
 
 
 def _drop_simulator_llm_profile(data: Dict[str, Any]) -> List[str]:

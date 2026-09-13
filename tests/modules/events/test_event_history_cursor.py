@@ -18,7 +18,7 @@ def _record(n: int, *, session: int | None = None) -> EventRecord:
 
 
 def test_get_since_returns_gap_after_cursor() -> None:
-    svc = EventHistoryService(max_events=100, persist=False)
+    svc = EventHistoryService(max_events=100)
     for i in range(10):
         svc.record(_record(i))
     gap = svc.get_since("evt-005", limit=100)
@@ -26,7 +26,7 @@ def test_get_since_returns_gap_after_cursor() -> None:
 
 
 def test_get_since_unknown_cursor_returns_recent_window() -> None:
-    svc = EventHistoryService(max_events=100, persist=False)
+    svc = EventHistoryService(max_events=100)
     for i in range(10):
         svc.record(_record(i))
     gap = svc.get_since("evt-not-exist", limit=4)
@@ -34,7 +34,7 @@ def test_get_since_unknown_cursor_returns_recent_window() -> None:
 
 
 def test_get_by_session_filters_and_orders() -> None:
-    svc = EventHistoryService(max_events=100, persist=False)
+    svc = EventHistoryService(max_events=100)
     for i in range(10):
         svc.record(_record(i, session=7 if i % 3 == 0 else 8))
     hits = svc.get_by_session(7, limit=100)
@@ -43,7 +43,7 @@ def test_get_by_session_filters_and_orders() -> None:
 
 
 def test_ring_buffer_eviction_keeps_get_since_safe() -> None:
-    svc = EventHistoryService(max_events=5, persist=False)
+    svc = EventHistoryService(max_events=5)
     for i in range(20):
         svc.record(_record(i))
     # 游标指向已被淘汰的早期事件 → 退化为最近窗口（5 条）

@@ -56,7 +56,7 @@ def test_extract_message_id_flat_only() -> None:
 
 
 def test_find_and_build_trace() -> None:
-    history = EventHistoryService(max_events=100, persist=False)
+    history = EventHistoryService(max_events=100)
     history.record(_room_message_record("msg-1"))
     history.record(
         EventRecord(
@@ -89,7 +89,7 @@ def test_find_and_build_trace() -> None:
 
 
 def test_build_trace_returns_none_for_unknown_id() -> None:
-    history = EventHistoryService(max_events=100, persist=False)
+    history = EventHistoryService(max_events=100)
     assert _build_trace(history, "no-such-id") is None
 
 
@@ -104,7 +104,7 @@ def _fake_server(history: EventHistoryService) -> SimpleNamespace:
 
 @pytest.mark.asyncio
 async def test_list_traces_endpoint_returns_linkage() -> None:
-    history = EventHistoryService(max_events=100, persist=False)
+    history = EventHistoryService(max_events=100)
     history.record(_room_message_record("msg-1"))
     history.record(_room_message_record("msg-2", content="第二条"))
 
@@ -120,7 +120,7 @@ async def test_list_traces_endpoint_returns_linkage() -> None:
 
 @pytest.mark.asyncio
 async def test_get_trace_endpoint() -> None:
-    history = EventHistoryService(max_events=100, persist=False)
+    history = EventHistoryService(max_events=100)
     history.record(_room_message_record("msg-1"))
 
     found = await get_trace("msg-1", server=_fake_server(history))

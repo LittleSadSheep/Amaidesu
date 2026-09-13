@@ -48,7 +48,7 @@ def client(temp_db_path: Path) -> Generator[TestClient, None, None]:
         bus = EventBus()
         manager = LiveSessionManager(store.sessions, store.chat, bus)
         await manager.start()
-        event_history = EventHistoryService(max_events=100, persist=False)
+        event_history = EventHistoryService(max_events=100)
 
         server = DashboardServer(
             event_bus=bus,

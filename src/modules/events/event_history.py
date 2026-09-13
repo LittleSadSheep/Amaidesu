@@ -1,35 +1,26 @@
 """
 事件历史记录服务
 
-为 Dashboard 提供事件环形缓冲存储，并支持可选的 SQLite 持久化
-（``event_history`` 表），录制回放与跨重启的事件历史都以它为事实源。
+为 Dashboard 提供事件环形缓冲存储：事件日志定位为"运行周期观察窗"，
+纯内存、重启即清。持久观察诉求由各自的事实源承担（消息流落 live_chat
+等业务表），本服务不复制数据。
 
 设计要点:
 - 内存中只保留最近 N 条事件(``collections.deque(maxlen=...)``)，供
   Dashboard 热路径查询（recent / 游标续传 / 按场次过滤）
-- 可选持久化到 ``event_history`` 表：写入经 ``asyncio.create_task``
-  fire-and-forget，失败仅告警，不影响事件流
-- 启动时 ``backfill_today_from_store`` 从表回灌当日事件，替代旧的
-  读当日 JSONL 文件恢复
 - 不做单例，由持有者（EventBroadcaster / main 组合根）实例化并注入
 """
 
 from __future__ import annotations
 
-import asyncio
-import json
 import time
 import uuid
 from collections import deque
-from datetime import datetime
-from typing import TYPE_CHECKING, Any, Deque, Dict, List, Optional
+from typing import Any, Deque, Dict, List, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from src.modules.logging import get_logger
-
-if TYPE_CHECKING:
-    from src.modules.storage.repos import EventRepo
 
 
 # 默认参数
@@ -107,26 +98,18 @@ def infer_event_level(event_type: str) -> str:
 class EventHistoryService:
     """事件环形缓冲历史服务。
 
-    在内存中保留最近 N 条事件(默认 5000),可选择性地把每条事件写入
-    ``event_history`` 表（``persist=True`` 且注入 EventRepo 时生效）。
+    在内存中保留最近 N 条事件(默认 5000)，超限自动淘汰最旧记录。
 
     用法:
-    - 由组合根实例化并注入 EventRepo,再交给 EventHistoryRecorder
+    - 由组合根实例化，再交给 EventHistoryRecorder
     - 不是单例;多个实例相互独立
     """
 
-    def __init__(
-        self,
-        max_events: int = DEFAULT_MAX_EVENTS,
-        persist: bool = False,
-        event_repo: Optional["EventRepo"] = None,
-    ) -> None:
+    def __init__(self, max_events: int = DEFAULT_MAX_EVENTS) -> None:
         """初始化事件历史服务。
 
         Args:
             max_events: 环形缓冲容量(deque maxlen),必须为正整数
-            persist: 是否启用 ``event_history`` 表持久化
-            event_repo: 持久化目标(EventRepo);persist=True 但未注入时仅保留内存缓冲
 
         Raises:
             ValueError: 当 `max_events` 非正数
@@ -135,108 +118,18 @@ class EventHistoryService:
             raise ValueError(f"max_events must be positive, got {max_events}")
 
         self.max_events: int = max_events
-        self.persist: bool = persist
-        self._event_repo = event_repo
         self.logger = get_logger(self.__class__.__name__)
 
         # 内存环形缓冲
         self._buffer: Deque[EventRecord] = deque(maxlen=max_events)
-
-        if self.persist and event_repo is None:
-            self.logger.warning("事件历史 persist=True 但未注入 EventRepo，仅保留内存缓冲")
-
-    # ------------------------------------------------------------------ #
-    # 内部                                                                #
-    # ------------------------------------------------------------------ #
-
-    @staticmethod
-    def _date_string(timestamp: float) -> str:
-        """把 Unix 秒格式化为 `YYYY-MM-DD`（本地时区）。"""
-        return datetime.fromtimestamp(timestamp).strftime("%Y-%m-%d")
-
-    @staticmethod
-    def _resolve_timestamp_ms(event: EventRecord) -> int:
-        """事件毫秒时刻：优先 payload 带来的 timestamp_ms，否则由秒换算。"""
-        if event.timestamp_ms is not None:
-            return event.timestamp_ms
-        return int(event.timestamp * 1000)
-
-    async def _persist_event(self, event: EventRecord) -> None:
-        """写单条事件到 ``event_history`` 表；失败仅告警（记账旁路语义）。"""
-        try:
-            await self._event_repo.insert_event(
-                record_id=event.id,
-                event_name=event.event_name or event.type,
-                timestamp_ms=self._resolve_timestamp_ms(event),
-                level=event.level,
-                source=event.source,
-                summary=event.summary,
-                payload_json=json.dumps(event.data, ensure_ascii=False, default=str),
-            )
-        except Exception as exc:  # noqa: BLE001 边界处吸收 + 日志
-            self.logger.warning(f"事件历史写库失败 (event={event.event_name or event.type}): {exc}")
 
     # ------------------------------------------------------------------ #
     # 公开 API                                                            #
     # ------------------------------------------------------------------ #
 
     def record(self, event: EventRecord) -> None:
-        """记录一条事件到环形缓冲,并在 persist 生效时异步写库。
-
-        写库不阻塞调用方：事件循环内 fire-and-forget；无事件循环
-        （纯同步上下文）时仅保留内存缓冲。
-        """
-        # 1) 内存缓冲始终立即写入(deque 自动处理 maxlen 淘汰)
+        """记录一条事件到环形缓冲(deque 自动处理 maxlen 淘汰)。"""
         self._buffer.append(event)
-
-        # 2) 持久化开关或存储缺失时直接返回
-        if not self.persist or self._event_repo is None:
-            return
-
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            # 无运行中的事件循环：仅内存缓冲（buffer 已写入）
-            return
-
-        loop.create_task(self._persist_event(event))
-
-    async def backfill_today_from_store(self) -> int:
-        """启动回灌：从 ``event_history`` 表载入当日事件到环形缓冲。
-
-        替代旧实现"读当日 JSONL 文件恢复"；解析失败的行跳过。
-        返回回灌条数（persist 未生效或无存储时返回 0）。
-        """
-        if not self.persist or self._event_repo is None:
-            return 0
-        today = self._date_string(time.time())
-        try:
-            rows = await self._event_repo.get_day_events(today)
-        except Exception as exc:  # noqa: BLE001 回灌失败不阻塞启动
-            self.logger.warning(f"事件历史回灌失败 ({today}): {exc}")
-            return 0
-
-        count = 0
-        for row in rows:
-            try:
-                record = EventRecord(
-                    id=row["record_id"],
-                    type=row["event_name"],
-                    event_name=row["event_name"],
-                    timestamp=row["timestamp_ms"] / 1000,
-                    timestamp_ms=row["timestamp_ms"],
-                    level=row["level"],
-                    source=row["source"] or "",
-                    summary=row["summary"] or "",
-                    data=json.loads(row["payload"]),
-                )
-            except Exception:
-                continue
-            self._buffer.append(record)
-            count += 1
-        if count:
-            self.logger.info(f"事件历史已从库回灌 {count} 条 ({today})")
-        return count
 
     def get_recent(self, limit: int = 100) -> List[EventRecord]:
         """返回环形缓冲中最近 `limit` 条事件,按时间倒序(最新在前)。"""
@@ -339,10 +232,7 @@ class EventHistoryService:
         }
 
     def cleanup(self) -> None:
-        """释放资源:清空环形缓冲。
-
-        注意:不会删除 ``event_history`` 表中的已写入数据（由外部策略管理）。
-        """
+        """释放资源:清空环形缓冲。"""
         self._buffer.clear()
 
 
