@@ -39,6 +39,7 @@ from src.modules.llm.bootstrap import (
 from src.modules.llm.client import LLMResponse
 from src.modules.llm.clients import resolve_client_method
 from src.modules.llm.errors import FatalError, LLMError, LLMInterruptedError, LLMTimeoutError, RetryableError
+from src.modules.llm.observation import record_usage
 from src.modules.llm.payload import GenerateRequest, ImagePart, Message, Response, TextPart, ToolCall, ToolSpec, Usage
 from src.modules.logging import get_logger
 from src.modules.storage.repos import LLMRepo
@@ -933,15 +934,14 @@ class LLMManager:
             provider_name = "unknown"
             if model_name in self._models:
                 _, provider_name = self._models[model_name]
-            await self._llm_repo.insert_llm_usage(
+            # 落库统一走 observation.record_usage（llm_usage 单一写入点）；
+            # 缓存列与成本入参的处理收敛在 observation 侧
+            await record_usage(
+                self._llm_repo,
                 model_name=result.model or model_name,
                 provider_name=str(provider_name),
                 request_type=method,
-                prompt_tokens=int(usage.get("prompt_tokens", 0)),
-                completion_tokens=int(usage.get("completion_tokens", 0)),
-                total_tokens=int(usage.get("total_tokens", 0)),
-                cache_hit_tokens=int(usage.get("cache_hit_tokens", 0)),
-                cache_miss_tokens=int(usage.get("cache_miss_tokens", 0)),
+                usage=usage,
                 cost=cost,
                 duration_ms=duration_ms,
                 profile_name=profile_name,

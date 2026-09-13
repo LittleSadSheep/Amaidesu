@@ -203,6 +203,41 @@ class OpenAIClient(BaseLLMClient):
         return {"name": spec.name, "description": spec.description, "parameters": spec.parameters}
 
     @staticmethod
+    def _extract_usage(vendor_usage: Any) -> Optional[Dict[str, int]]:
+        """厂商响应 usage → 遗留 usage dict（缓存字段归一化在此完成）。
+
+        缓存上报两种风格都收：
+        - OpenAI 风格 ``prompt_tokens_details.cached_tokens`` → ``cache_hit_tokens``（miss 无对应字段，视为未上报）
+        - DeepSeek 风格 ``prompt_cache_hit_tokens`` / ``prompt_cache_miss_tokens`` 同名直取
+        未上报的字段不进 dict（下游转 payload.Usage 时映射为 None = 未上报）；
+        响应对象属性缺失一律用 getattr 兜底，兼容 SDK 模型与测试桩。
+        """
+        if vendor_usage is None:
+            return None
+
+        def _get(name: str, default: Any = None) -> Any:
+            if isinstance(vendor_usage, dict):
+                return vendor_usage.get(name, default)
+            return getattr(vendor_usage, name, default)
+
+        usage: Dict[str, int] = {
+            "prompt_tokens": int(_get("prompt_tokens", 0) or 0),
+            "completion_tokens": int(_get("completion_tokens", 0) or 0),
+            "total_tokens": int(_get("total_tokens", 0) or 0),
+        }
+        details = _get("prompt_tokens_details")
+        cached = details.get("cached_tokens") if isinstance(details, dict) else getattr(details, "cached_tokens", None)
+        if cached is not None:
+            usage["cache_hit_tokens"] = int(cached)
+        ds_hit = _get("prompt_cache_hit_tokens")
+        if ds_hit is not None:
+            usage["cache_hit_tokens"] = int(ds_hit)
+        ds_miss = _get("prompt_cache_miss_tokens")
+        if ds_miss is not None:
+            usage["cache_miss_tokens"] = int(ds_miss)
+        return usage
+
+    @staticmethod
     def _usage_to_payload(usage: Optional[Dict[str, int]]) -> Optional[Usage]:
         """遗留 usage dict → 中立 Usage（缓存键缺省视为未上报）"""
         if usage is None:
@@ -382,13 +417,7 @@ class OpenAIClient(BaseLLMClient):
                 getattr(message, "reasoning_content", None),
                 ReasoningParseMode(self.config.get("reasoning_parse_mode", "auto")),
             )
-            usage = None
-            if response.usage is not None:
-                usage = {
-                    "prompt_tokens": response.usage.prompt_tokens,
-                    "completion_tokens": response.usage.completion_tokens,
-                    "total_tokens": response.usage.total_tokens,
-                }
+            usage = self._extract_usage(response.usage)
             result = LLMResponse(
                 success=True, content=content, model=response.model, usage=usage, reasoning_content=reasoning_content
             )
@@ -463,11 +492,7 @@ class OpenAIClient(BaseLLMClient):
                 if interrupt_flag is not None and interrupt_flag.is_set():
                     break
                 if getattr(chunk, "usage", None) is not None:
-                    usage = {
-                        "prompt_tokens": chunk.usage.prompt_tokens,
-                        "completion_tokens": chunk.usage.completion_tokens,
-                        "total_tokens": chunk.usage.total_tokens,
-                    }
+                    usage = self._extract_usage(chunk.usage)
                 choices = getattr(chunk, "choices", None)
                 if not choices:
                     continue
@@ -621,13 +646,7 @@ class OpenAIClient(BaseLLMClient):
             elif self.max_tokens:
                 request_params["max_tokens"] = self.max_tokens
             response = await self.client.chat.completions.create(**request_params)
-            usage = None
-            if response.usage is not None:
-                usage = {
-                    "prompt_tokens": response.usage.prompt_tokens,
-                    "completion_tokens": response.usage.completion_tokens,
-                    "total_tokens": response.usage.total_tokens,
-                }
+            usage = self._extract_usage(response.usage)
             result = LLMResponse(
                 success=True,
                 content=response.choices[0].message.content,
