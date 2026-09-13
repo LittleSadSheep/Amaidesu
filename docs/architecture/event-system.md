@@ -94,7 +94,7 @@ src/modules/events/
     ├── base.py           # BasePayload 基类
     ├── core.py           # core.* Payload（3 个事件分别注册）
     ├── live.py           # live.* Payload（两类分别注册：LiveStartedPayload / LiveEndedPayload）
-    ├── room.py           # room.message.* Payload（一类四注册）
+    ├── room.py           # room.message.* Payload（一类多注册）
     ├── game.py           # game.* Payload（一类四注册）
     ├── rundown.py        # rundown.changed Payload
     ├── planner.py        # planner.decision / planner.verdict / streamer.stage Payload
@@ -292,7 +292,9 @@ EventBus 支持 **MQTT 风格**通配订阅（仅订阅名包含 `*` 或 `#` 时
 | `room.message.danmaku` | `RoomMessagePayload` | **6 处**：`bilibili/official/collector.py` L263（`bili_danmaku_official_collector.py`）；`bilibili/legacy/collector.py` L247（`bili_danmaku_collector.py`）；`console_input_collector.py` L193（_emit_semantic_event，L36-39 `data_type=text→danmaku` 映射）；`collectors/base.py` L157-170（兜底转发，`data_type=text→danmaku`）；`dashboard/api/debug.py` L78（debug 注入）；`simulator/service.py`（generate 生成 / replay 回放统一发射） | `StreamerAgent`（`streamer_agent.py`，priority=50）；`EventRecorder`（`event_recorder.py`）；`StorageLedger`（`storage_ledger.py`，`room.message.#` 通配 → live_chat/gifts/super_chats 落库 + viewers 统计）；`Broadcaster`（`websocket/broadcaster.py` handler_map / `_subscribe_core_events`）；`Widget`（`widget/service.py`） | 弹幕；Payload `message_type="danmaku"`，填 `content` |
 | `room.message.gift` | `RoomMessagePayload` | **4 处**：`bilibili/official/collector.py` L283；`console_input_collector.py` L193（L37 映射 `gift→gift`）；`collectors/base.py` L158（兜底，`data_type=gift→gift`） | `EventRecorder`（L57，**仅记账，决策侧未消费**） | 礼物；Payload `message_type="gift"`，填 `gift` 结构体 |
 | `room.message.super_chat` | `RoomMessagePayload` | **4 处**：`bilibili/official/collector.py` L293；`console_input_collector.py` L193（L38 映射）；`collectors/base.py` L159（兜底，`data_type=super_chat→super_chat`） | `EventRecorder`（L58-62，**仅记账，决策侧未消费**） | SuperChat；Payload `message_type="super_chat"`，填 `content` + `sc` |
-| `room.message.enter` | `RoomMessagePayload` | **4 处**：`bilibili/official/collector.py` L272；`console_input_collector.py` L193（L39 映射 `guard→enter`）；`collectors/base.py` L160（兜底，`data_type=guard→enter`，guard 大航海并入 enter 无独立事件） | `EventRecorder`（L63，**仅记账，决策侧未消费**） | 进房；Payload `message_type="enter"`。**大航海（guard）无独立事件**，按 enter 语义走（`bili_danmaku_official_collector.py` L294 注释明确） |
+| `room.message.guard` | `RoomMessagePayload` | **2 处**：`bili_danmaku_official_collector.py`（`_create_payload` GuardMessage 分支 + `_emit_semantic_event` 映射）；`console_input_collector.py`（`/guard` 命令，`_create_guard_message`） | `EventRecorder`（仅记账；决策侧消费待后续任务接入） | 上舰（舰长/提督/总督，付费消息）；Payload `message_type="guard"`，`content` 填人读描述（"<用户> 开通了<等级>"），供下游识别做优先回应 |
+
+| `room.message.enter` | `RoomMessagePayload` | **4 处**：`bilibili/official/collector.py` L272；`console_input_collector.py` L193；`collectors/base.py` L160（兜底转发） | `EventRecorder`（L63，**仅记账，决策侧未消费**） | 进房；Payload `message_type="enter"` |
 | `game.milestone` | `GamePayload` | 游戏 Agent（§1.49 BaseAgent 事件上报面） | `EventRecorder`（L75 `component_model_map`）；`Broadcaster`（通过 `event_type_map` 转发给组件 handler）；`StorageLedger`（通配订阅 `game.*` → `game_events` 表） | 游戏重大进展（挖到钻石 / 通关章节）；`event_type="milestone"` |
 | `game.attention_required` | `GamePayload` | 游戏 Agent | `EventRecorder`（L76）；`Broadcaster`（`event_type_map` 转发）；`StorageLedger`（`game.*` 通配 → `game_events`） | 安全阀偏差报告（"我先回血再去挖钻石"）；`event_type="attention_required"` |
 | `game.error` | `GamePayload` | 游戏 Agent | `EventRecorder`（L77）；`Broadcaster`（`event_type_map` 转发）；`StorageLedger`（`game.*` 通配 → `game_events`） | 游戏异常；`event_type="error"` |
@@ -317,7 +319,7 @@ EventBus 支持 **MQTT 风格**通配订阅（仅订阅名包含 `*` 或 `#` 时
 
 | Payload 类 | 注册到的事件 |
 |---|---|
-| `RoomMessagePayload` | `room.message.danmaku` / `room.message.gift` / `room.message.super_chat` / `room.message.enter`（`room.py` L81-84 四重注册，按 `message_type` 字段判别） |
+| `RoomMessagePayload` | `room.message.danmaku` / `room.message.gift` / `room.message.super_chat` / `room.message.guard` / `room.message.enter`（`room.py` 五重注册，按 `message_type` 字段判别） |
 | `GamePayload` | `game.milestone` / `game.attention_required` / `game.error` / `game.report`（`game.py` 四重注册，按 `event_type` 字段判别） |
 | `ToolResultPayload`（**不绑定**具体事件名） | `tool.result.<tool_name>`（emit 时动态填） | 工具结果回传（`ToolRegistry.invoke` 广播）；订阅者用 `tool.result.#` 通配监听后按 `tool_name` 字段分发；Payload 含 `arguments` 字段（透传自 `ToolInvocation.arguments`，供 WebUI 展示入参） |
 | `ToolHealthPayload` | **不绑定**具体 `tool.health.*` 事件名（`tool_health.py` L20-23 注释明确），emit 时用具体名 `tool.health.<tool_name>`，handler 按 `tool_name` 字段分发 |
@@ -333,7 +335,7 @@ EventBus 支持 **MQTT 风格**通配订阅（仅订阅名包含 `*` 或 `#` 时
 - `RUNDOWN_CHANGED`（流程单变更）
 - `GAME_MILESTONE` / `GAME_ATTENTION_REQUIRED` / `GAME_ERROR` / `GAME_REPORT`（`EventRecorder` 以 `GamePayload` 订阅）
 
-> **注意**：当前 `room.message.gift` / `super_chat` / `enter` 三个事件的**订阅者仅 `EventRecorder`**，记账入库但不驱动决策（决策侧仅消费 `danmaku` 高价值信号）。其他潜在订阅点（礼物感谢 / 进房欢迎 / SC 复读）尚未接入，待规划。
+> **注意**：当前 `room.message.gift` / `super_chat` / `guard` / `enter` 等事件的**订阅者仅 `EventRecorder`**，记账入库但不驱动决策（决策侧仅消费 `danmaku` 高价值信号）。其他潜在订阅点（礼物感谢 / 进房欢迎 / SC 复读）尚未接入，待规划。
 
 ---
 
@@ -396,7 +398,7 @@ classDiagram
 
 | Payload 类 | 事件名 | 用途 |
 |-----------|--------|------|
-| `RoomMessagePayload`（一类四注册） | `room.message.danmaku` / `gift` / `super_chat` / `enter` | 弹幕 / 礼物 / SC / 进房；通过 `message_type: Literal[...]` 字段判别 |
+| `RoomMessagePayload`（一类多注册） | `room.message.danmaku` / `gift` / `super_chat` / `guard` / `enter` | 弹幕 / 礼物 / SC / 上舰 / 进房；通过 `message_type: Literal[...]` 字段判别 |
 
 > `room.state.*` 是**预留层**（见 [事件命名规范 §行为 vs 状态分层](event-naming-convention.md)），当前不实现任何事件。
 

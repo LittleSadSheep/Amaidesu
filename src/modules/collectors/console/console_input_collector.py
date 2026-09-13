@@ -313,7 +313,7 @@ class ConsoleInputCollector(BaseCollector):
         )
 
     async def _create_guard_message(self, args: List[str]) -> Optional[RoomMessagePayload]:
-        """创建大航海开通事件载荷（进房语义）"""
+        """创建大航海开通事件载荷（上舰语义）"""
         username = args[0] if len(args) > 0 else "大航海"
         guard_level = args[1] if len(args) > 1 else "舰长"
 
@@ -326,7 +326,7 @@ class ConsoleInputCollector(BaseCollector):
 
         print(f"发送大航海测试: {username} 开通了{guard_level}")
         return RoomMessagePayload(
-            message_type="enter",
+            message_type="guard",
             user=RoomMessageUser(id=self.user_id, name=username),
             content=description,
             timestamp_ms=now_ms(),

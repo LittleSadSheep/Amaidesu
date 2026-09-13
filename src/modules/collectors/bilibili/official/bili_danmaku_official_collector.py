@@ -2,7 +2,7 @@
 BiliDanmakuOfficialCollector —— Bilibili 官方弹幕采集器
 
 - 继承 ``BaseCollector``（流型感知者，世界→系统入口，主动推事件）
-- 默认 emit ``room.message.*`` 语义域事件（danmaku/gift/super_chat/enter）
+- 默认 emit ``room.message.*`` 语义域事件（danmaku/gift/super_chat/guard/enter）
 - 仍保留 ``collect()`` AsyncIterator 出口，供旧 InputCollectorManager 过渡期复用
 """
 
@@ -35,6 +35,7 @@ from src.modules.types.bili import (
     GuardMessage,
     SuperChatMessage,
 )
+from src.modules.types.guard_levels import DEFAULT_GUARD_NAME, GUARD_LEVEL_NAMES
 
 from .client.websocket_client import BiliWebSocketClient
 
@@ -42,7 +43,7 @@ from .client.websocket_client import BiliWebSocketClient
 class BiliDanmakuOfficialCollector(BaseCollector):
     """Bilibili 官方弹幕采集器
 
-    使用官方 WebSocket API 实时接收弹幕/SC/礼物/进房事件，emit
+    使用官方 WebSocket API 实时接收弹幕/SC/礼物/上舰/进房事件，emit
     ``room.message.*`` 语义域事件（默认）；同时仍 yield 事件载荷
     以兼容旧 InputCollectorManager 过渡期。
     """
@@ -237,8 +238,9 @@ class BiliDanmakuOfficialCollector(BaseCollector):
                 await message_queue.put(payload)
 
         except Exception as e:
-            self.logger.error(f"处理消息时出错: {e}", exc_info=True)
-            self.logger.debug(f"失败消息数据: cmd={message_data.get('cmd')}")
+            # 异常文本可能含花括号（如校验错误的 dict repr），用占位符交给 loguru 格式化，避免二次 format 崩溃
+            self.logger.error("处理消息时出错: {}", e)
+            self.logger.debug("失败消息数据: cmd={}", message_data.get("cmd"))
 
     async def _emit_semantic_event(self, payload: RoomMessagePayload) -> None:
         """按载荷的 message_type 选事件名并 emit room.message.* 事件。"""
@@ -247,6 +249,7 @@ class BiliDanmakuOfficialCollector(BaseCollector):
             "enter": CoreEvents.ROOM_MESSAGE_ENTER,
             "gift": CoreEvents.ROOM_MESSAGE_GIFT,
             "super_chat": CoreEvents.ROOM_MESSAGE_SUPER_CHAT,
+            "guard": CoreEvents.ROOM_MESSAGE_GUARD,
         }
         event_name = event_map.get(payload.message_type)
         if event_name is None:
@@ -275,8 +278,7 @@ class BiliDanmakuOfficialCollector(BaseCollector):
         """从 B 站消息构造 room.message.* 事件载荷。
 
         场次归属（live_session_id）由事件总线的场次盖章拦截器统一注入，
-        采集器不感知"当前是哪一场"。Guard 无独立 room.message.* 事件，
-        返回 None（与既有行为一致：不进事件流）。
+        采集器不感知"当前是哪一场"。
         """
         user_id = str(getattr(bili_msg, "open_id", None) or "unknown")
         user_name = str(getattr(bili_msg, "uname", None) or "unknown")
@@ -322,6 +324,16 @@ class BiliDanmakuOfficialCollector(BaseCollector):
                 timestamp_ms=timestamp_ms,
             )
 
-        # Guard 等其余类型：无独立 room.message.* 事件
+        if isinstance(bili_msg, GuardMessage):
+            guard_name = GUARD_LEVEL_NAMES.get(bili_msg.guard_level, DEFAULT_GUARD_NAME)
+            self.logger.debug(f"[上舰] {bili_msg.uname} 开通了{guard_name}")
+            return RoomMessagePayload(
+                message_type="guard",
+                user=RoomMessageUser(id=user_id, name=user_name),
+                content=f"{bili_msg.uname} 开通了{guard_name}",
+                timestamp_ms=timestamp_ms,
+            )
+
+        # 其余未识别类型：无对应 room.message.* 事件
         self.logger.debug(f"消息类型无对应 room.message.* 事件，跳过: {type(bili_msg).__name__}")
         return None

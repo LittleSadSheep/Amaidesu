@@ -31,6 +31,8 @@ class CoreEvents:
     ROOM_MESSAGE_DANMAKU = "room.message.danmaku"
     ROOM_MESSAGE_GIFT = "room.message.gift"
     ROOM_MESSAGE_SUPER_CHAT = "room.message.super_chat"
+    # 上舰（舰长/提督/总督，付费消息），下游可按此识别做优先回应
+    ROOM_MESSAGE_GUARD = "room.message.guard"
     ROOM_MESSAGE_ENTER = "room.message.enter"
     # 联动对象发言（房间里第三个说话者——非弹幕、非主播）。落 live_chat
     # 时 sender_role="partner"，不计观众统计。
@@ -110,7 +112,7 @@ class CoreEvents:
 
     # ========== v2 语义域事件（直播间行为流通配订阅模式） ==========
     # 与 TOOL_RESULT_WILDCARD 同性质的通配订阅标识，不是被 emit 的具体事件名。
-    # 覆盖 room.message.danmaku / gift / super_chat / enter 四类；
+    # 覆盖 room.message.danmaku / gift / super_chat / guard / enter 五类；
     # 持久层订阅 `event_bus.on(CoreEvents.ROOM_MESSAGE_WILDCARD, ...)`
     # 一站式落业务表。
     ROOM_MESSAGE_WILDCARD = "room.message.#"
