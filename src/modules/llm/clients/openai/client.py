@@ -15,15 +15,30 @@ from io import BytesIO
 from typing import Any, AsyncIterator, Callable, Dict, List, Optional, Union
 
 from json_repair import repair_json
-from openai import AsyncOpenAI
+from openai import (
+    APIConnectionError,
+    APITimeoutError,
+    APIStatusError,
+    AsyncOpenAI,
+    RateLimitError,
+)
 from PIL import Image
 
 from src.modules.llm.client import BaseLLMClient, LLMResponse
 from src.modules.llm.clients.openai.compat import build_openai_compatible_client_config
+from src.modules.llm.errors import LLMError, LLMTimeoutError, FatalError, RetryableError
 from src.modules.llm.interrupt import await_with_timeout_and_interrupt
 from src.modules.llm.payload import GenerateRequest, ImagePart, Message, Response, TextPart, ToolCall, ToolSpec, Usage
 from src.modules.llm.reasoning import ReasoningParseMode, parse_reasoning
 from src.modules.logging import get_logger
+
+# 具体的 SDK 异常集合：Client 翻译处只捕获这些类型并翻译为分类异常
+_TRANSLATABLE_SDK_ERRORS = (APITimeoutError, APIConnectionError, RateLimitError, APIStatusError)
+
+# 非 SDK 契约路径的刻意兜底（流式降级 / legacy 失败包装 / 流关闭清理）：
+# 兼容端点的失败形态无法枚举，这些位置任何异常都不得逃出 legacy 语义；
+# 错误翻译路径不走此处——那里对 SDK 异常类型的捕获是具体的
+_LEGACY_FALLBACK_ERRORS = (Exception,)
 
 
 class OpenAIClient(BaseLLMClient):
@@ -63,7 +78,7 @@ class OpenAIClient(BaseLLMClient):
                     "GIF": "image/gif",
                 }
                 return format_to_mime.get(str(img.format), "image/png")
-        except Exception:
+        except (OSError, ValueError, TypeError, Image.DecompressionBombError):
             return "image/png"
 
     def _path_or_url_to_data_url(self, image: Union[str, bytes]) -> str:
@@ -124,6 +139,34 @@ class OpenAIClient(BaseLLMClient):
         return normalized
 
     # === 中立 payload 契约（Engine 入口）：payload ↔ OpenAI 协议形状的双向翻译 ===
+
+    @staticmethod
+    def _translate_sdk_error(exc: Exception) -> LLMError:
+        """把 OpenAI SDK 异常翻译为错误分类异常（分类产出只在 Client，Engine 只消费）。
+
+        - 超时 → LLMTimeoutError（切下一个模型）
+        - 限流 429 / 服务端 5xx / 网络连接失败 → RetryableError（有上限重试）
+        - 参数错误 400 / 鉴权失败 401 等其余 HTTP 状态 → FatalError（不重试）
+        """
+        if isinstance(exc, APITimeoutError):
+            return LLMTimeoutError("LLM 请求超时", original=exc)
+        if isinstance(exc, RateLimitError):
+            return RetryableError("请求过于频繁（429），稍后重试", original=exc)
+        if isinstance(exc, APIConnectionError):
+            return RetryableError("网络连接失败，请检查网络或端点可达性", original=exc)
+        if isinstance(exc, APIStatusError):
+            status = exc.status_code
+            if status == 429 or status >= 500:
+                return RetryableError(f"服务端临时性失败（HTTP {status}）", original=exc)
+            return FatalError(f"请求被服务端拒绝（HTTP {status}），重试无意义", original=exc)
+        # 防御：调用方应传入 _TRANSLATABLE_SDK_ERRORS 内的类型
+        return FatalError(f"未识别的 SDK 异常: {type(exc).__name__}", original=exc)
+
+    @staticmethod
+    def _ensure_not_empty(result: LLMResponse) -> None:
+        """空响应（无内容且无工具调用）视为临时性失败，归入 Retryable 由 Engine 重试。"""
+        if not result.content and not result.tool_calls:
+            raise RetryableError("响应内容为空（可能是临时性问题）")
 
     @staticmethod
     def _part_to_openai(part: Any) -> Dict[str, Any]:
@@ -210,7 +253,7 @@ class OpenAIClient(BaseLLMClient):
         生成参数以 Engine 传入的 profile 档位优先，请求内字段兜底。
         """
         tools = [self._tool_spec_to_openai(t) for t in request.tools] or None
-        result = await self.chat(
+        result = await self._chat_impl(
             self._request_to_openai_messages(request),
             model=model,
             temperature=temperature if temperature is not None else request.temperature,
@@ -231,8 +274,11 @@ class OpenAIClient(BaseLLMClient):
         max_tokens: Optional[int] = None,
         interrupt_flag: Optional[asyncio.Event] = None,
     ) -> Response:
-        """中立契约视觉请求：payload → OpenAI 协议翻译后复用既有 vision 能力。"""
-        result = await self.vision(
+        """中立契约视觉请求：payload → OpenAI 协议翻译后复用既有 vision 能力。
+
+        走抛分类异常的实现（``_vision_impl``），错误分类由 Engine 表驱动消费。
+        """
+        result = await self._vision_impl(
             self._request_to_openai_messages(request),
             images,
             model=model,
@@ -252,7 +298,42 @@ class OpenAIClient(BaseLLMClient):
         interrupt_flag: Optional[asyncio.Event] = None,
         on_delta: Optional[Callable[[str, str], None]] = None,
     ) -> LLMResponse:
-        """聊天调用。
+        """聊天调用（legacy 包装）：任何失败都折叠为 ``success=False`` 响应。
+
+        中断（CancelledError）原样传播语义在此折叠为失败响应是 legacy 契约；
+        错误分类消费走 ``_chat_impl``（payload 契约路径）。
+        """
+        try:
+            return await self._chat_impl(
+                messages,
+                model=model,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                tools=tools,
+                interrupt_flag=interrupt_flag,
+                on_delta=on_delta,
+            )
+        except asyncio.CancelledError as e:
+            error_msg = f"LLM 请求超时或被中断: {e}"
+            self.logger.error(error_msg)
+            return LLMResponse(success=False, content=None, error=error_msg)
+        except LLMError as e:
+            error_msg = f"LLM 请求失败: {e}"
+            self.logger.error(error_msg)
+            return LLMResponse(success=False, content=None, error=error_msg)
+
+    async def _chat_impl(
+        self,
+        messages: List[Dict[str, Any]],
+        *,
+        model: str,
+        temperature: Optional[float] = None,
+        max_tokens: Optional[int] = None,
+        tools: Optional[List[Dict[str, Any]]] = None,
+        interrupt_flag: Optional[asyncio.Event] = None,
+        on_delta: Optional[Callable[[str, str], None]] = None,
+    ) -> LLMResponse:
+        """聊天调用实现：SDK 异常翻译为错误分类异常后抛出（不自行重试）。
 
         on_delta 非 None 时走流式传输（SSE 逐帧接收、边收边回调），流结束后
         组装完整 LLMResponse 返回——传输层流式、语义层整段）。
@@ -269,11 +350,9 @@ class OpenAIClient(BaseLLMClient):
                     interrupt_flag=interrupt_flag,
                     on_delta=on_delta,
                 )
-            except (asyncio.TimeoutError, asyncio.CancelledError) as e:
-                error_msg = f"LLM 流式请求超时或被中断: {e}"
-                self.logger.error(error_msg)
-                return LLMResponse(success=False, content=None, error=error_msg)
-            except Exception as e:
+            except asyncio.CancelledError:
+                raise
+            except _LEGACY_FALLBACK_ERRORS as e:
                 self.logger.warning(f"流式请求失败，降级为非流式: {e}")
                 # 落到下方非流式路径
 
@@ -328,15 +407,15 @@ class OpenAIClient(BaseLLMClient):
                             "function": {"name": tool_call.function.name, "arguments": parsed_arguments},
                         }
                     )
+            self._ensure_not_empty(result)
             return result
-        except (asyncio.TimeoutError, asyncio.CancelledError) as e:
-            error_msg = f"LLM 请求超时或被中断: {e}"
-            self.logger.error(error_msg)
-            return LLMResponse(success=False, content=None, error=error_msg)
-        except Exception as e:
-            error_msg = f"LLM 请求失败: {str(e)}"
-            self.logger.error(error_msg)
-            return LLMResponse(success=False, content=None, error=error_msg)
+        except asyncio.CancelledError:
+            raise
+        except asyncio.TimeoutError as e:
+            # 请求级硬超时（await_with_timeout_and_interrupt）→ Timeout 分类
+            raise LLMTimeoutError("LLM 请求超时", original=e) from e
+        except _TRANSLATABLE_SDK_ERRORS as e:
+            raise self._translate_sdk_error(e) from e
 
     async def _chat_streaming(
         self,
@@ -416,7 +495,7 @@ class OpenAIClient(BaseLLMClient):
         finally:
             try:
                 await stream.aclose()
-            except Exception as e:
+            except _LEGACY_FALLBACK_ERRORS as e:
                 self.logger.debug(f"关闭流失败（已忽略）: {e}")
 
         raw_content = "".join(content_parts)
@@ -449,6 +528,7 @@ class OpenAIClient(BaseLLMClient):
                         "function": {"name": state["name"], "arguments": parsed_arguments},
                     }
                 )
+        self._ensure_not_empty(result)
         return result
 
     async def stream_chat(  # type: ignore[override]
@@ -484,15 +564,15 @@ class OpenAIClient(BaseLLMClient):
                     text_piece = getattr(chunk.choices[0].delta, "content", None)
                     if text_piece:
                         yield text_piece
-                except Exception:
+                except (IndexError, AttributeError, TypeError, KeyError):
                     yield ""
-        except Exception as e:
+        except (LLMError, OSError, ValueError, TypeError) as e:
             self.logger.error(f"流式 LLM 请求失败: {e}")
         finally:
             if stream is not None:
                 try:
                     await stream.aclose()
-                except Exception as e:
+                except _LEGACY_FALLBACK_ERRORS as e:
                     self.logger.debug(f"关闭流失败（已忽略）: {e}")
 
     async def vision(
@@ -504,7 +584,30 @@ class OpenAIClient(BaseLLMClient):
         temperature: Optional[float] = None,
         max_tokens: Optional[int] = None,
     ) -> LLMResponse:
-        """视觉理解调用。"""
+        """视觉理解调用（legacy 包装）：任何失败都折叠为 ``success=False`` 响应。"""
+        try:
+            return await self._vision_impl(
+                messages,
+                images,
+                model=model,
+                temperature=temperature,
+                max_tokens=max_tokens,
+            )
+        except _LEGACY_FALLBACK_ERRORS as e:
+            error_msg = f"VLM 请求失败: {e}"
+            self.logger.error(error_msg)
+            return LLMResponse(success=False, content=None, error=error_msg)
+
+    async def _vision_impl(
+        self,
+        messages: List[Dict[str, Any]],
+        images: List[Union[str, bytes]],
+        *,
+        model: str,
+        temperature: Optional[float] = None,
+        max_tokens: Optional[int] = None,
+    ) -> LLMResponse:
+        """视觉理解实现：SDK 异常翻译为错误分类异常后抛出（不自行重试）。"""
         try:
             user_content = self._build_vision_user_content(messages[-1]["content"], images)
             vision_messages = messages[:-1] + [{"role": "user", "content": user_content}]
@@ -525,17 +628,22 @@ class OpenAIClient(BaseLLMClient):
                     "completion_tokens": response.usage.completion_tokens,
                     "total_tokens": response.usage.total_tokens,
                 }
-            return LLMResponse(
+            result = LLMResponse(
                 success=True,
                 content=response.choices[0].message.content,
                 model=response.model,
                 usage=usage,
                 reasoning_content=getattr(response.choices[0].message, "reasoning_content", None),
             )
-        except Exception as e:
-            error_msg = f"VLM 请求失败: {str(e)}"
-            self.logger.error(error_msg)
-            return LLMResponse(success=False, content=None, error=error_msg)
+            self._ensure_not_empty(result)
+            return result
+        except asyncio.CancelledError:
+            raise
+        except asyncio.TimeoutError as e:
+            # 请求级硬超时（await_with_timeout_and_interrupt）→ Timeout 分类
+            raise LLMTimeoutError("LLM 请求超时", original=e) from e
+        except _TRANSLATABLE_SDK_ERRORS as e:
+            raise self._translate_sdk_error(e) from e
 
     def get_info(self) -> Dict[str, Any]:
         return {

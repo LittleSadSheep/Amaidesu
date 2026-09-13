@@ -38,6 +38,7 @@ from src.modules.llm.bootstrap import (
 )
 from src.modules.llm.client import LLMResponse
 from src.modules.llm.clients import resolve_client_method
+from src.modules.llm.errors import FatalError, LLMError, LLMInterruptedError, LLMTimeoutError, RetryableError
 from src.modules.llm.payload import GenerateRequest, ImagePart, Message, Response, TextPart, ToolCall, ToolSpec, Usage
 from src.modules.logging import get_logger
 from src.modules.storage.repos import LLMRepo
@@ -51,6 +52,20 @@ class RetryConfig(BaseModel):
     max_retries: int = 3
     base_delay: float = 1.0
     max_delay: float = 10.0
+
+
+# 错误分类 → 单模型内重试决策（分类异常由 Client 产出，Engine 只消费分类，
+# 不解析异常内容做二次判定）
+_RETRY_DECISION_RETRY = "retry"
+_RETRY_DECISION_FAILOVER = "failover"
+_RETRY_DECISION_ABORT = "abort"
+
+_RETRY_POLICY: Dict[type, str] = {
+    RetryableError: _RETRY_DECISION_RETRY,
+    FatalError: _RETRY_DECISION_FAILOVER,
+    LLMTimeoutError: _RETRY_DECISION_FAILOVER,
+    LLMInterruptedError: _RETRY_DECISION_ABORT,
+}
 
 
 # === 契约归一化与新旧响应适配（Engine 的固定职责：消费方输入 → payload → Client）===
@@ -776,6 +791,10 @@ class LLMManager:
     ) -> Tuple[Optional[LLMResponse], Optional[str]]:
         """单模型上的重试 + 慢调用告警 + 硬超时。
 
+        重试决策按 ``_RETRY_POLICY`` 分类表执行：Retryable 在本模型有上限
+        重试；Fatal / Timeout 立即交还故障切换（切下一个模型）；Interrupted
+        整体中止并向调用方传播中断。
+
         Returns:
             (response, error)：成功 → (LLMResponse, None)；失败 → (None, 错误描述)
         """
@@ -825,7 +844,19 @@ class LLMManager:
                 last_error = response.error or "未知客户端错误"
             except asyncio.CancelledError:
                 raise
+            except LLMError as exc:
+                # 分类表驱动：按 Client 产出的分类查决策表，不解析异常内容
+                decision = _RETRY_POLICY.get(type(exc), _RETRY_DECISION_FAILOVER)
+                last_error = f"{type(exc).__name__}: {exc}"
+                if decision == _RETRY_DECISION_ABORT:
+                    # 中断整体中止，向调用方传播
+                    raise
+                if decision == _RETRY_DECISION_FAILOVER:
+                    # Fatal / Timeout 不在同一模型上重试，直接切下一个模型
+                    return None, last_error
+                # retry：落到底部退避后继续下一轮
             except (asyncio.TimeoutError, Exception) as exc:  # noqa: BLE001
+                # 未分类异常兜底（legacy 客户端/测试桩直接抛裸异常）：维持既有重试行为
                 last_error = f"{type(exc).__name__}: {exc}"
 
             if attempt < total_attempts - 1:
