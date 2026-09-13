@@ -18,11 +18,10 @@ from json_repair import repair_json
 from openai import AsyncOpenAI
 from PIL import Image
 
-from src.modules.llm.clients.base import BaseLLMClient, register_client
-from src.modules.llm.clients.interrupt import await_with_timeout_and_interrupt
-from src.modules.llm.clients.openai_compat import build_openai_compatible_client_config
-from src.modules.llm.clients.reasoning import ReasoningParseMode, parse_reasoning
-from src.modules.llm.manager import LLMResponse
+from src.modules.llm.client import BaseLLMClient, LLMResponse, register_client
+from src.modules.llm.clients.openai.compat import build_openai_compatible_client_config
+from src.modules.llm.interrupt import await_with_timeout_and_interrupt
+from src.modules.llm.reasoning import ReasoningParseMode, parse_reasoning
 from src.modules.logging import get_logger
 
 

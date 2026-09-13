@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from src.modules.llm.clients.openai_client import OpenAIClient
+from src.modules.llm.clients.openai.client import OpenAIClient
 
 
 MESSAGES = [{"role": "user", "content": "hello"}]
@@ -41,7 +41,7 @@ def _make_client(config: dict[str, object] | None = None) -> tuple[OpenAIClient,
     if config:
         merged_config.update(config)
 
-    with patch("src.modules.llm.clients.openai_client.AsyncOpenAI") as openai_class:
+    with patch("src.modules.llm.clients.openai.client.AsyncOpenAI") as openai_class:
         sdk_client = MagicMock()
         sdk_client.chat.completions.create = AsyncMock()
         openai_class.return_value = sdk_client
@@ -218,7 +218,7 @@ async def test_reasoning_none():
 
 
 def test_auth_bearer():
-    with patch("src.modules.llm.clients.openai_client.AsyncOpenAI") as openai_class:
+    with patch("src.modules.llm.clients.openai.client.AsyncOpenAI") as openai_class:
         OpenAIClient({"api_key": "secret", "base_url": "https://api.example.com/v1"})
 
     openai_class.assert_called_once_with(
@@ -230,7 +230,7 @@ def test_auth_bearer():
 
 
 def test_auth_header():
-    with patch("src.modules.llm.clients.openai_client.AsyncOpenAI") as openai_class:
+    with patch("src.modules.llm.clients.openai.client.AsyncOpenAI") as openai_class:
         OpenAIClient(
             {
                 "api_key": "secret",
@@ -250,7 +250,7 @@ def test_auth_header():
 
 
 def test_auth_query():
-    with patch("src.modules.llm.clients.openai_client.AsyncOpenAI") as openai_class:
+    with patch("src.modules.llm.clients.openai.client.AsyncOpenAI") as openai_class:
         OpenAIClient(
             {
                 "api_key": "secret",
@@ -269,7 +269,7 @@ def test_auth_query():
 
 
 def test_auth_none():
-    with patch("src.modules.llm.clients.openai_client.AsyncOpenAI") as openai_class:
+    with patch("src.modules.llm.clients.openai.client.AsyncOpenAI") as openai_class:
         OpenAIClient(
             {
                 "api_key": "secret",
@@ -287,7 +287,7 @@ def test_auth_none():
 
 
 def test_base_url_normalization():
-    with patch("src.modules.llm.clients.openai_client.AsyncOpenAI") as openai_class:
+    with patch("src.modules.llm.clients.openai.client.AsyncOpenAI") as openai_class:
         client = OpenAIClient({"api_key": "secret", "base_url": "localhost:8080/v1///", "model": "info-model"})
 
     assert openai_class.call_args.kwargs["base_url"] == "http://localhost:8080/v1"

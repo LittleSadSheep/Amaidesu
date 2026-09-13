@@ -46,7 +46,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from src.modules.llm.clients.base import _client_impls
+from src.modules.llm.client import _client_impls
 from src.modules.llm.manager import (
     ClientType,  # 向后兼容别名
     LLMManager,

@@ -18,8 +18,9 @@ import pytest
 
 from src.modules.config.model_schemas import ModelRootConfig, REQUIRED_PROFILE_NAMES
 from src.modules.config.multi_file_loader import generate_default_configs, load_config_dir
-from src.modules.llm.clients.base import _client_impls
+from src.modules.llm.client import _client_impls
 from src.modules.llm.manager import LLMManager
+
 
 @pytest.fixture
 def loaded_model_config(tmp_path: Path) -> Dict[str, Any]:
@@ -55,18 +56,14 @@ class TestScenarioAConfigRetainsSummary:
         assert "model_list" in summary_profile, "summary.model_list 缺失"
         assert summary_profile["model_list"], "summary.model_list 为空"
 
-    def test_loaded_model_config_summary_models_reference_valid_providers(
-        self, loaded_model_config: Dict[str, Any]
-    ):
+    def test_loaded_model_config_summary_models_reference_valid_providers(self, loaded_model_config: Dict[str, Any]):
         """加载后 summary.model_list 引用的 model 必须存在且 api_provider 合法。"""
         summary_models = loaded_model_config["llm_profiles"]["summary"]["model_list"]
         model_objs = {m["name"]: m for m in loaded_model_config.get("llm_models", [])}
         provider_names = {p["name"] for p in loaded_model_config.get("llm_providers", [])}
 
         for model_name in summary_models:
-            assert model_name in model_objs, (
-                f"summary 引用未知 model {model_name!r}"
-            )
+            assert model_name in model_objs, f"summary 引用未知 model {model_name!r}"
             api_provider = model_objs[model_name].get("api_provider")
             assert api_provider in provider_names, (
                 f"summary.model {model_name!r} 的 api_provider={api_provider!r} 不在 llm_providers 中"
@@ -78,9 +75,7 @@ class TestScenarioAConfigRetainsSummary:
         generate_default_configs(config_dir)
         _config, report = load_config_dir(config_dir)
         redundant_keys = [r for r in report.redundant if "summary" in r]
-        assert not redundant_keys, (
-            f"summary 被标记为冗余配置项: {redundant_keys}"
-        )
+        assert not redundant_keys, f"summary 被标记为冗余配置项: {redundant_keys}"
 
     def test_summary_independent_profile_entry(self, loaded_model_config: Dict[str, Any]):
         """summary 必须独立于其它 profile（如 replyer），即使共享 provider/model。"""
@@ -139,9 +134,7 @@ class TestScenarioBLLMManagerParsesSummary:
         """summary 与 replyer 等 profile 共享同一 provider 时复用同一连接。"""
         manager, _, _ = setup_manager_with_real_config
         # 同一 provider 的客户端应是同一实例（共享连接池）
-        providers_used_by_summary = {
-            m["provider_name"] for m in manager.get_client_config("summary")["models"]
-        }
+        providers_used_by_summary = {m["provider_name"] for m in manager.get_client_config("summary")["models"]}
         # 至少验证 has_provider
         for provider_name in providers_used_by_summary:
             assert manager.has_provider(provider_name) if hasattr(manager, "has_provider") else True

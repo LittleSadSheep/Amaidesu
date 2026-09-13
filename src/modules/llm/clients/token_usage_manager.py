@@ -15,6 +15,7 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
+from src.modules.llm.observation import calculate_cost, get_model_price
 from src.modules.logging import get_logger
 from src.modules.time_utils import now_ms
 
@@ -101,58 +102,12 @@ class TokenUsageManager:
             self.logger.info("模型价格表为空（[[llm_models]] 未配置价格），无法计算费用")
 
     def _get_model_price(self, model_name: str) -> Optional[Dict[str, float]]:
-        """按模型标识精确匹配价格配置（不做模糊匹配——误匹配会算错费用）
-
-        Args:
-            model_name: 模型标识（[[llm_models]].model_identifier）
-
-        Returns:
-            价格配置字典，未登记则返回 None
-        """
-        return self.model_prices.get(model_name)
+        """按模型标识精确匹配价格配置（计算逻辑在 observation 模块，此处薄委托）"""
+        return get_model_price(self.model_prices, model_name)
 
     def _calculate_cost(self, model_name: str, prompt_tokens: int, completion_tokens: int) -> Dict[str, Any]:
-        """计算token使用费用
-
-        Args:
-            model_name: 模型名称
-            prompt_tokens: 输入token数量
-            completion_tokens: 输出token数量
-
-        Returns:
-            费用计算信息字典
-        """
-        price_config = self._get_model_price(model_name)
-
-        if not price_config:
-            return {
-                "has_price": False,
-                "cost": 0.0,
-                "cost_usd": 0.0,
-                "price_in": 0.0,
-                "price_out": 0.0,
-                "message": f"模型 {model_name} 未找到价格配置",
-            }
-
-        # 价格单位：每1000000个token的价格（通常是美元）
-        price_in = price_config.get("price_in", 0.0)
-        price_out = price_config.get("price_out", 0.0)
-
-        # 计算费用（转换为每token的价格）
-        cost_in = (prompt_tokens / 1000000.0) * price_in
-        cost_out = (completion_tokens / 1000000.0) * price_out
-        total_cost = cost_in + cost_out
-
-        return {
-            "has_price": True,
-            "cost": total_cost,
-            "cost_usd": total_cost,  # 假设价格单位为美元
-            "price_in": price_in,
-            "price_out": price_out,
-            "cost_in": cost_in,
-            "cost_out": cost_out,
-            "message": "费用计算成功",
-        }
+        """计算token使用费用（计算逻辑在 observation 模块，此处薄委托）"""
+        return calculate_cost(self.model_prices, model_name, prompt_tokens, completion_tokens)
 
     def _get_usage_file_path(self, model_name: str) -> Path:
         """获取指定模型的使用量文件路径

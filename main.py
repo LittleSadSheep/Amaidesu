@@ -52,7 +52,7 @@ from src.modules.events.interceptors import (
 )
 from src.modules.events.names import CoreEvents
 from src.modules.events.payloads import CoreShutdownPayload, CoreStartupPayload
-from src.modules.llm.manager import LLMManager
+from src.modules.llm.engine import LLMManager
 from src.modules.llm.request_history_manager import get_global_request_history_manager
 from src.modules.logging import configure_from_config, get_logger
 from src.modules.logging.log_streamer import LogStreamer

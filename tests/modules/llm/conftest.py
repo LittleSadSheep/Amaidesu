@@ -49,7 +49,7 @@ def patch_client_registry():
     """
     from contextlib import contextmanager
 
-    from src.modules.llm.clients.base import _client_impls
+    from src.modules.llm.client import _client_impls
 
     @contextmanager
     def _patcher(client_type: str, mock_class):
