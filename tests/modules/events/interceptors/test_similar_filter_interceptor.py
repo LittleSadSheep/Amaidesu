@@ -18,9 +18,11 @@ from src.modules.events.interceptors.similar_filter import SimilarFilterIntercep
 
 
 def _payload(text: str, user_id: str = "u1") -> dict:
+    """真实 RoomMessagePayload 形状：user 嵌套、文本在 content"""
     return {
-        "user_id": user_id,
-        "text": text,
+        "message_type": "danmaku",
+        "user": {"id": user_id, "name": f"观众{user_id}"},
+        "content": text,
         "timestamp_ms": 0,
     }
 

@@ -14,10 +14,8 @@ from collections import defaultdict, deque
 from typing import Any, Deque, Dict, Optional, Tuple
 
 from src.modules.events.interceptors.base import EventInterceptor
+from src.modules.events.interceptors.lookup import extract_text, extract_user_id
 from src.modules.logging import get_logger
-
-_USER_ID_KEYS = ("user_id", "open_id", "uid", "sender_id")
-_TEXT_KEYS = ("text", "content", "msg", "message")
 
 
 class SimilarFilterInterceptor(EventInterceptor):
@@ -73,12 +71,12 @@ class SimilarFilterInterceptor(EventInterceptor):
         payload: Dict[str, Any],
         source: str,
     ) -> Optional[Dict[str, Any]]:
-        text = self._extract_text(payload)
+        text = extract_text(payload)
         if not text or len(text) < self._min_text_length:
             self.logger.debug(f"文本长度 {len(text) if text else 0} 小于最小要求 {self._min_text_length}，跳过过滤")
             return payload
 
-        user_id = self._extract_user_id(payload)
+        user_id = extract_user_id(payload)
         group_id = source or "default"
         now = time.time()
 
@@ -136,27 +134,6 @@ class SimilarFilterInterceptor(EventInterceptor):
                 contained_similarity = shorter / longer
                 similarity = max(similarity, contained_similarity)
         return similarity
-
-    @staticmethod
-    def _extract_user_id(payload: Dict[str, Any]) -> str:
-        for key in _USER_ID_KEYS:
-            value = payload.get(key)
-            if value is not None and value != "":
-                return str(value)
-        return "unknown"
-
-    @staticmethod
-    def _extract_text(payload: Dict[str, Any]) -> str:
-        for key in _TEXT_KEYS:
-            value = payload.get(key)
-            if isinstance(value, str):
-                return value
-        user = payload.get("user")
-        if isinstance(user, dict):
-            name = user.get("name", "")
-            if name:
-                return f"[{name}]"
-        return ""
 
     async def reset(self) -> None:
         """重置缓存（便于测试）"""

@@ -17,10 +17,11 @@ from src.modules.events.interceptors.rate_limit import RateLimitInterceptor
 
 
 def _payload(user_id: str = "u1", text: str = "hello") -> dict:
-    """构造测试用事件 payload"""
+    """构造测试用事件 payload（真实 RoomMessagePayload 形状：user 嵌套）"""
     return {
-        "user_id": user_id,
-        "text": text,
+        "message_type": "danmaku",
+        "user": {"id": user_id, "name": f"观众{user_id}"},
+        "content": text,
         "timestamp_ms": 0,
     }
 
@@ -96,10 +97,30 @@ async def test_rate_limit_reset() -> None:
     assert (await interceptor.intercept("room.message.danmaku", _payload("u1"), "test")) is not None
 
 
+def test_rate_limit_extract_user_id_nested_shape() -> None:
+    """真实房间消息形状：用户取自嵌套 user.id，不同用户分桶限流"""
+    from src.modules.events.interceptors.lookup import extract_user_id
+
+    assert extract_user_id(_payload("alice")) == "alice"
+    assert extract_user_id(_payload("bob")) == "bob"
+
+
 def test_rate_limit_extract_user_id_fallback() -> None:
-    """无 user_id 时回退到 unknown_user"""
-    interceptor = RateLimitInterceptor()
-    assert interceptor._extract_user_id({}) == "unknown_user"
-    assert interceptor._extract_user_id({"text": "hi"}) == "unknown_user"
-    assert interceptor._extract_user_id({"user_id": "alice"}) == "alice"
-    assert interceptor._extract_user_id({"open_id": "bob"}) == "bob"
+    """非房间消息形状：回退顶层候选键，再取不到为 unknown_user"""
+    from src.modules.events.interceptors.lookup import extract_user_id
+
+    assert extract_user_id({}) == "unknown_user"
+    assert extract_user_id({"text": "hi"}) == "unknown_user"
+    assert extract_user_id({"user_id": "alice"}) == "alice"
+    assert extract_user_id({"open_id": "bob"}) == "bob"
+
+
+async def test_rate_limit_real_shape_per_user_independent() -> None:
+    """真实弹幕形状下两个不同用户各自独立限流"""
+    interceptor = RateLimitInterceptor(global_rate_limit=100, user_rate_limit=2, window_size=60)
+    # alice 两条用完配额
+    assert (await interceptor.intercept("room.message.danmaku", _payload("alice", "m1"), "test")) is not None
+    assert (await interceptor.intercept("room.message.danmaku", _payload("alice", "m2"), "test")) is not None
+    assert (await interceptor.intercept("room.message.danmaku", _payload("alice", "m3"), "test")) is None
+    # bob 不受 alice 配额影响
+    assert (await interceptor.intercept("room.message.danmaku", _payload("bob", "m1"), "test")) is not None

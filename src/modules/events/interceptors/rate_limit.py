@@ -16,12 +16,8 @@ from collections import defaultdict, deque
 from typing import Any, Deque, Dict, Optional
 
 from src.modules.events.interceptors.base import EventInterceptor
+from src.modules.events.interceptors.lookup import extract_text, extract_user_id
 from src.modules.logging import get_logger
-
-# user_id 在 payload 中的查找候选键（兼容多种 payload 形状）
-_USER_ID_KEYS = ("user_id", "open_id", "uid", "sender_id")
-# text 在 payload 中的查找候选键
-_TEXT_KEYS = ("text", "content", "msg", "message")
 
 
 class RateLimitInterceptor(EventInterceptor):
@@ -76,13 +72,13 @@ class RateLimitInterceptor(EventInterceptor):
         payload: Dict[str, Any],
         source: str,
     ) -> Optional[Dict[str, Any]]:
-        user_id = self._extract_user_id(payload)
+        user_id = extract_user_id(payload)
         current_time = time.time()
 
         await self._clean_expired_timestamps(current_time)
 
         if await self._is_throttled(user_id):
-            text_preview = self._extract_text(payload)
+            text_preview = extract_text(payload)
             self.logger.info(
                 f"消息限流: user_id={user_id}, event={event_name}, "
                 f"text_preview='{text_preview[:50]}{'...' if len(text_preview) > 50 else ''}'"
@@ -131,28 +127,6 @@ class RateLimitInterceptor(EventInterceptor):
         async with self._lock:
             self._global_timestamps.append(current_time)
             self._user_timestamps[user_id].append(current_time)
-
-    @staticmethod
-    def _extract_user_id(payload: Dict[str, Any]) -> str:
-        for key in _USER_ID_KEYS:
-            value = payload.get(key)
-            if value is not None and value != "":
-                return str(value)
-        return "unknown_user"
-
-    @staticmethod
-    def _extract_text(payload: Dict[str, Any]) -> str:
-        for key in _TEXT_KEYS:
-            value = payload.get(key)
-            if isinstance(value, str):
-                return value
-        # 嵌套 user.name 之类（room.message.* payload 的形状）
-        user = payload.get("user")
-        if isinstance(user, dict):
-            name = user.get("name", "")
-            if name:
-                return f"[{name}]"
-        return ""
 
     async def reset(self) -> None:
         """重置所有计数器（便于测试）"""
