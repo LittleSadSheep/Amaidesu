@@ -7,16 +7,14 @@ screen 采集器测试（v2.0.9 D1 VLM 收编）
 - ScreenAnalyzer 差异检测逻辑（缩略图哈希）
 - ScreenReader VLM 缓存去重（同一 image 不重复调用 VLM）
 - 集成：未注入 llm_manager 时不调用 VLM（仅缓存去重生效）
-- v2.0.9：注入 mock llm_manager 后 chat_vision 被调；chat_vision 抛异常时降级不崩
+- 注入 mock llm_manager 后 generate_vision 被调；generate_vision 抛异常时降级不崩
 """
 
 from __future__ import annotations
 
 import asyncio
-from typing import Any
 from unittest.mock import AsyncMock
 
-import pytest
 
 from src.modules.collectors.base import BaseCollector
 from src.modules.collectors.screen import (
@@ -24,7 +22,7 @@ from src.modules.collectors.screen import (
     ScreenChangeCollector,
     ScreenReader,
 )
-from src.modules.llm.manager import LLMResponse
+from src.modules.llm.payload import Response, Usage
 
 
 def test_screen_change_inherits_base_collector() -> None:
@@ -93,11 +91,11 @@ def test_screen_change_collector_config_defaults() -> None:
     assert not hasattr(cfg, "model_name")
 
 
-def test_screen_reader_calls_chat_vision_with_mock_llm_manager() -> None:
-    """注入 mock llm_manager 后：chat_vision 被调用且结果正确解析进 ScreenAnalysisResult。"""
-    response = LLMResponse(success=True, content="屏幕打开了浏览器", model="vlm-test", usage={"total_tokens": 42})
+def test_screen_reader_calls_generate_vision_with_mock_llm_manager() -> None:
+    """注入 mock llm_manager 后：generate_vision 被调用且结果正确解析进 ScreenAnalysisResult。"""
+    response = Response(success=True, content="屏幕打开了浏览器", model="vlm-test", usage=Usage(total_tokens=42))
     llm_manager = AsyncMock()
-    llm_manager.chat_vision = AsyncMock(return_value=response)
+    llm_manager.generate_vision = AsyncMock(return_value=response)
 
     reader = ScreenReader(max_cached_images=5, llm_manager=llm_manager)
 
@@ -109,23 +107,24 @@ def test_screen_reader_calls_chat_vision_with_mock_llm_manager() -> None:
     assert result is not None
     assert result.new_current_context == "屏幕打开了浏览器"
     assert result.raw_response["model"] == "vlm-test"
-    assert result.raw_response["usage"] == {"total_tokens": 42}
+    assert result.raw_response["usage"] == Usage(total_tokens=42)
 
-    # chat_vision 被调一次，参数正确（client_type=vision、images=bytes 列表、prompt/system_message 非空）
-    llm_manager.chat_vision.assert_awaited_once()
-    call_kwargs = llm_manager.chat_vision.await_args.kwargs
-    assert call_kwargs["client_type"] == "vision"
-    assert isinstance(call_kwargs["images"], list)
-    assert len(call_kwargs["images"]) == 1
-    assert isinstance(call_kwargs["images"][0], (bytes, bytearray))
-    assert isinstance(call_kwargs["prompt"], str) and call_kwargs["prompt"]
-    assert isinstance(call_kwargs["system_message"], str) and call_kwargs["system_message"]
+    # generate_vision 被调一次，参数正确（profile=vision、images=bytes 列表、prompt/system 非空）
+    llm_manager.generate_vision.assert_awaited_once()
+    args, call_kwargs = llm_manager.generate_vision.await_args
+    assert call_kwargs["profile"] == "vision"
+    prompt, images = args[0], args[1]
+    assert isinstance(images, list)
+    assert len(images) == 1
+    assert isinstance(images[0], (bytes, bytearray))
+    assert isinstance(prompt, str) and prompt
+    assert isinstance(call_kwargs["system"], str) and call_kwargs["system"]
 
 
-def test_screen_reader_chat_vision_exception_does_not_crash() -> None:
-    """注入的 chat_vision 抛异常时，process_screen_change 走降级返回 None，不崩。"""
+def test_screen_reader_generate_vision_exception_does_not_crash() -> None:
+    """注入的 generate_vision 抛异常时，process_screen_change 走降级返回 None，不崩。"""
     llm_manager = AsyncMock()
-    llm_manager.chat_vision = AsyncMock(side_effect=RuntimeError("网络异常"))
+    llm_manager.generate_vision = AsyncMock(side_effect=RuntimeError("网络异常"))
 
     reader = ScreenReader(max_cached_images=5, llm_manager=llm_manager)
 
@@ -136,14 +135,14 @@ def test_screen_reader_chat_vision_exception_does_not_crash() -> None:
 
     # 异常分支：返回 None（process_screen_change 已知失败语义）
     assert result is None
-    llm_manager.chat_vision.assert_awaited_once()
+    llm_manager.generate_vision.assert_awaited_once()
 
 
-def test_screen_reader_chat_vision_unsuccessful_returns_none() -> None:
-    """注入的 chat_vision 返回 success=False 时，降级为不返回分析结果（缓存已记录不重复）。"""
-    response = LLMResponse(success=False, content=None, error="rate limit")
+def test_screen_reader_generate_vision_unsuccessful_returns_none() -> None:
+    """注入的 generate_vision 返回 success=False 时，降级为不返回分析结果（缓存已记录不重复）。"""
+    response = Response(success=False, content=None, error="rate limit")
     llm_manager = AsyncMock()
-    llm_manager.chat_vision = AsyncMock(return_value=response)
+    llm_manager.generate_vision = AsyncMock(return_value=response)
 
     reader = ScreenReader(max_cached_images=5, llm_manager=llm_manager)
 
@@ -153,7 +152,7 @@ def test_screen_reader_chat_vision_unsuccessful_returns_none() -> None:
     result = asyncio.run(reader.process_screen_change({"image": img}))
 
     assert result is None
-    llm_manager.chat_vision.assert_awaited_once()
+    llm_manager.generate_vision.assert_awaited_once()
 
 
 def test_screen_change_collector_constructor_accepts_llm_manager() -> None:

@@ -43,8 +43,8 @@ class ScreenChangeCollector(BaseCollector):
     class ConfigSchema(BaseConfig):
         """屏幕变化采集器配置
 
-        VLM 调用统一走 :class:`LLMManager.chat_vision(client_type="vision")`；
-        key/model/重试/日志全部走 ``config/model.toml`` 的 ``[llm_profiles.vision]`` +
+        VLM 调用统一走 :class:`LLMManager.generate_vision`（封闭 vision 档位）；
+        key/model/重试/日志全部走 ``config/model.toml`` 的 vision 档位 +
         ``[[llm_providers]]`` 池，本 Schema 不含 VLM 连接字段。
         """
 
