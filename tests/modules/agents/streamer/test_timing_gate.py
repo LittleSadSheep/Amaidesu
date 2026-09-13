@@ -2,7 +2,7 @@
 
 TimingGate 当前职责仅为按 message_type 判定强制触发（is_forced / batch_is_forced），
 条数阈值与时间窗判定已归属 MessageBuffer（见 test_message_buffer.py）。
-测试使用 RoomMessagePayload 的 Literal 枚举：danmaku / gift / super_chat / enter / partner_speech。
+测试使用 RoomMessagePayload 的 Literal 枚举：danmaku / gift / super_chat / guard / enter / partner_speech。
 """
 
 from __future__ import annotations
@@ -53,7 +53,7 @@ def test_default_config_types_force() -> None:
     gate = _gate(["super_chat", "guard", "gift"])
     assert gate.is_forced(_msg("super_chat")) is True
     assert gate.is_forced(_msg("gift")) is True
-    # "guard" 不在 RoomMessagePayload 的 Literal 枚举内，集合含它不影响其余判定
+    # "guard" 同为 Literal 合法值，且属于付费强制集合
     assert gate.is_forced(_msg("danmaku")) is False
 
 
