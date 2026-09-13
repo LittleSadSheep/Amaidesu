@@ -71,11 +71,57 @@ class RundownControlResponse(BaseModel):
     snapshot: Optional[Dict[str, Any]] = None
 
 
+# ---------------------------------------------------------------------------
+# 流程单库 CRUD（/api/v1/agenda/rundowns*）
+# ---------------------------------------------------------------------------
+
+
+class RundownDefinition(BaseModel):
+    """流程单完整定义——库列表项与 upsert 请求体共用同一形状。
+
+    完整性校验（环节 id 唯一、``min_duration_ms <= expected_ms``、时长下界）
+    由后端 ``Rundown`` 模型负责，本层只做形状与非空约束。
+    """
+
+    rundown_id: str = Field(..., min_length=1, description="流程单唯一标识（存储主键、配置引用同一 id）")
+    title: str = Field(..., min_length=1, description="流程单标题")
+    segments: List[RundownSegmentView] = Field(..., min_length=1, description="环节列表，非空")
+
+
+class RundownListResponse(BaseModel):
+    """``GET /api/v1/agenda/rundowns`` 响应。"""
+
+    success: bool
+    message: str = ""
+    rundowns: List[RundownDefinition] = Field(default_factory=list)
+    current_id: str = Field(default="", description="配置当前指向的流程单 id；空 = 使用内置默认流程单")
+
+
+class RundownTemplateResponse(BaseModel):
+    """``GET /api/v1/agenda/rundowns/template`` 响应（新建预填模板）。"""
+
+    success: bool
+    message: str = ""
+    definition: Optional[RundownDefinition] = None
+
+
+class RundownMutateResponse(BaseModel):
+    """流程单库写操作的统一响应（upsert / delete / duplicate / activate）。"""
+
+    success: bool
+    message: str = ""
+    rundown_id: Optional[str] = None
+
+
 __all__ = [
     "RundownControlAction",
     "RundownControlRequest",
     "RundownControlResponse",
     "RundownConfigView",
+    "RundownDefinition",
+    "RundownListResponse",
+    "RundownMutateResponse",
     "RundownSegmentView",
     "RundownStateResponse",
+    "RundownTemplateResponse",
 ]
