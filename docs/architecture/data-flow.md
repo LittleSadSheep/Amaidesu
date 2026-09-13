@@ -105,7 +105,9 @@ subgraph StreamerAgent["StreamerAgent src/agents/streamer/"]
 
 跨包只经共享抽象。具体规则：
 
-- **业务包 `src/agents/` 与框架模块 `src/modules/` 不反向 import**。`src/agents/streamer/` 内的 Agent 可以从 `src/modules/` 导入（事件、工具、配置、LLM、存储），但 `src/modules/` 不得 import 任何 `src/agents/` 的实现。
+- **业务包 `src/agents/` 与框架模块 `src/modules/` 不形成运行期反向依赖**。`src/agents/` 可向下 import `src/modules/`，反向运行时不允许——`src/modules/` 不得在 import 时或运行时持有 `src/agents/` 任何实现的实例。两个显式例外：
+  - **组合根装配**：装配函数（如 `src/modules/agents/factory.py:instantiate_agent`）在函数体内延迟 import 具体 Agent 实现，仅在构造期执行一次调用，不进入持续运行时依赖。
+  - **配置 Schema 聚合**：Schema 聚合层（如 `src/modules/config/agents_schemas.py`）需在模块级 import 各 Agent 的 `Config` 类，以满足 Pydantic `model_rebuild()` 前向引用解析；Schema 仅作为类型引用持有，不实例化 Agent。
 - **事件载荷是唯一的跨组件消息模型**：直播间消息统一用 `RoomMessagePayload`（`src/modules/events/payloads/`），采集器产出与 Agent 缓冲/决策消费同一形状，无中间转换。其余共享契约（`CapabilitiesProvider` Protocol / `Emotion` 枚举 / `ToolProvider` 协议等）仍在 `src/modules/types/`。
 - **框架层不得含直播/游戏内容特有逻辑**。"MC 怎么挖矿""主播怎么读弹幕"这类内容逻辑必须内聚到 `src/agents/<name>/` 包内（目录名 = Agent 注册名）。框架层只定义协议与基础设施，加新内容=加新 Agent 包+改配置，框架零改动。
 
