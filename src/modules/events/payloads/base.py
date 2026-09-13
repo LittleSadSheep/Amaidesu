@@ -7,7 +7,7 @@
 import uuid
 from typing import Any, Optional, Tuple
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class BasePayload(BaseModel):
@@ -98,3 +98,19 @@ class BasePayload(BaseModel):
             formatted_value = self._format_field_value(value)
             parts.append(f"{field_name}={formatted_value}")
         return f"{class_name}({', '.join(parts)})"
+
+
+class OpenPayload(BasePayload):
+    """
+    开放载荷：原样保留 emit 传入的全部字段
+
+    ``BasePayload`` 只声明 ``id`` 字段，经 ``model_dump → model_validate``
+    往返会把其余字段全部丢弃——通用消费者（如订阅全部事件的记录器）用它
+    作 ``model_class``，才能拿到完整载荷。``extra="allow"`` 使未知字段进入
+    ``model_extra``，``model_dump()`` 时原样输出。
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+
+__all__ = ["BasePayload", "OpenPayload"]

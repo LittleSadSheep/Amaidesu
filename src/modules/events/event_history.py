@@ -36,8 +36,8 @@ class EventRecord(BaseModel):
 
     字段说明:
     - `id`: 唯一标识,默认 uuid4()
-    - `type`: 事件类型名,如 "room.message" / "system.status"（广播兼容名,
-      同类事件可能共用一个粗粒度 type）
+    - `type`: 事件类型名,如 "room.message" / "planner.decision"（广播兼容名;
+      事件名直通,唯一例外 room.message.* 折叠）
     - `event_name`: EventBus 精确事件名（如 ``room.message.danmaku``）；
       空字符串表示未知,落库时退回 `type`
     - `timestamp`: 事件时刻(Unix 秒),默认 `time.time()`
@@ -49,7 +49,7 @@ class EventRecord(BaseModel):
     """
 
     id: str = Field(default_factory=lambda: str(uuid.uuid4()), description="事件唯一 ID(uuid4)")
-    type: str = Field(..., description="事件类型名,如 room.message / system.status")
+    type: str = Field(..., description="事件类型名,如 room.message / planner.decision")
     event_name: str = Field(default="", description="EventBus 精确事件名;空则落库退回 type")
     timestamp: float = Field(default_factory=time.time, description="事件时刻,Unix 秒(time.time())")
     timestamp_ms: Optional[int] = Field(default=None, description="事件时刻,Unix 毫秒;空则由 timestamp 换算")
@@ -82,7 +82,7 @@ def infer_event_level(event_type: str) -> str:
     - 其它 -> "info"
 
     Args:
-        event_type: 事件类型名,如 "system.error" / "collector.disconnected"
+        event_type: 事件类型名,如 "core.error" / "collector.disconnected"
 
     Returns:
         三个允许的级别之一。

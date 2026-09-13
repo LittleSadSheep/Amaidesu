@@ -411,7 +411,7 @@ interface Verdict {
 }
 
 const verdict = computed<Verdict>(() => {
-  // a) 异常：工具熔断 或 最近 5 分钟内的 system.error
+  // a) 异常：工具熔断 或 最近 5 分钟内的 core.error
   const tripped = tools.value.filter(t => t.health?.state === 'tripped');
   if (tripped.length > 0) {
     const head = tripped[0];
@@ -419,7 +419,7 @@ const verdict = computed<Verdict>(() => {
   }
   const nowSec = Date.now() / 1000;
   const recentError = (eventsStore.events as unknown as FeedEvent[]).find(event => {
-    if (event.type !== 'system.error') return false;
+    if (event.type !== 'core.error') return false;
     const ts = event.timestamp > 1e12 ? event.timestamp / 1000 : event.timestamp;
     return nowSec - ts <= ERROR_WINDOW_SEC;
   });
