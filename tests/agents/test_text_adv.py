@@ -18,13 +18,22 @@ import asyncio
 import time
 from typing import Callable, Dict, List, Optional, Tuple
 
-from src.agents.text_adv import TextAdvConfig, TextAdvGameAgent, build_text_adv_agent
+from src.agents.text_adv import (
+    MonitorGeometry,
+    TextAdvConfig,
+    TextAdvGameAgent,
+    TextAdvToolProvider,
+    build_text_adv_agent,
+    build_text_adv_visible_to,
+)
 from src.agents.text_adv.input import FakeInputBackend
 from src.agents.text_adv.vlm import FakeVisionReader, ScreenReading
 from src.agents.text_adv.window import FakeWindowBackend
 from src.modules.events.event_bus import EventBus
 from src.modules.events.names import CoreEvents
 from src.modules.events.payloads.game import GamePayload
+from src.modules.tools.models import ToolInvocation
+from src.modules.tools.registry import ToolRegistry
 from src.modules.vision import LookAtScreenProvider
 from src.modules.vision.look_at_screen import ScreenCaptureResult
 
@@ -178,10 +187,7 @@ def test_build_text_adv_agent_returns_agent() -> None:
 
 def test_factory_enables_tools_for_streamer_and_stop_removes() -> None:
     """工厂装配接线：注册进 registry 的 Agent 启动后主播可见四工具；stop 后摘除。"""
-    import asyncio
-
     from src.modules.agents.factory import instantiate_agent
-    from src.modules.tools.registry import ToolRegistry
 
     registry = ToolRegistry()
     agent = instantiate_agent(
@@ -389,9 +395,6 @@ async def test_look_at_screen_capture_failure_has_error_in_structured() -> None:
     ``text=""`` + ``structured_content["error"]="capture_failed: ..."``，调用方据此继续；
     不发 ``game.error`` 事件（新契约：感知失败不外抛、不发业务事件，错误信号在结构化内容里）。
     """
-    from src.modules.tools.models import ToolInvocation
-    from src.modules.tools.registry import ToolRegistry
-
     registry = ToolRegistry()
 
     provider = LookAtScreenProvider(config={}, screen_capture=BoomCapture())
@@ -407,14 +410,6 @@ async def test_look_at_screen_capture_failure_has_error_in_structured() -> None:
 # =============================================================================
 # 工具面（text_adv_advance / choose / set_auto / get_state）
 # =============================================================================
-
-from src.agents.text_adv import (  # noqa: E402 - 工具面测试段统一引用
-    MonitorGeometry,
-    TextAdvToolProvider,
-    build_text_adv_visible_to,
-)
-from src.modules.tools.models import ToolInvocation  # noqa: E402 - 工具面测试段统一引用
-from src.modules.tools.registry import ToolRegistry  # noqa: E402
 
 
 def geometry_resolver(geom: MonitorGeometry | None) -> Callable[[int], MonitorGeometry | None]:
@@ -584,6 +579,35 @@ async def test_choose_verify_failure_no_second_click() -> None:
     assert result.success is False
     assert "画面未变化" in (result.error_message or "")
     assert len([c for c in input_backend.calls if c.startswith("click:")]) == 1
+    await asyncio.sleep(0.05)
+    assert collected["error"] == []
+
+
+async def test_advance_success_presses_and_records_screen() -> None:
+    """advance 成功：按下推进键、记录新屏并返回快照（键集与快照一致、零事件）。"""
+    reader = FakeVisionReader(REPLY_PLAIN)
+    agent, provider, input_backend, collected = make_tools(reader=reader)
+    result = await provider.invoke(ToolInvocation(tool_name="text_adv_advance", arguments={}, source="test"))
+    assert result.success is True
+    assert "press:space" in input_backend.calls
+    assert result.content == "风静静地吹着。"
+    assert result.structured_content is not None
+    assert set(result.structured_content.keys()) == {"text", "options", "auto", "updated_at_ms"}
+    assert result.structured_content["text"] == "风静静地吹着。"
+    assert agent.get_state_snapshot()["text"] == "风静静地吹着。"
+    await asyncio.sleep(0.05)
+    assert collected["error"] == []
+    assert collected["milestone"] == []
+    assert collected["report"] == []
+
+
+async def test_advance_rejection_window_guard_fails() -> None:
+    """advance 拒绝：窗口护栏未通过（窗口未找到）——失败可读、未按键、零事件。"""
+    agent, provider, input_backend, collected = make_tools(window=FakeWindowBackend(found=False))
+    result = await provider.invoke(ToolInvocation(tool_name="text_adv_advance", arguments={}, source="test"))
+    assert result.success is False
+    assert "未找到游戏窗口" in (result.error_message or "")
+    assert input_backend.calls == []
     await asyncio.sleep(0.05)
     assert collected["error"] == []
 
