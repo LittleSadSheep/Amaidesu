@@ -223,20 +223,20 @@ class StreamerWordFilterConfig(BaseConfig):
 class StreamerCommandConfig(BaseConfig):
     """[agents.streamer.command] 段
 
-    parse_command 工具的命令前缀与映射。
+    观众弹幕命令接线（最小接线：玩法待扩展）。命令解析是代码直连的
+    内部件，不是 LLM 工具；本段只承载解析前缀、白名单映射与安全闸参数。
+    mappings 即天然白名单：映射表里没有的命令一律静默丢弃。
     """
 
+    enabled: bool = Field(default=False, description="命令接线开关（false 或段缺失时整条命令分支不激活）")
     prefix: str = Field(default="/", description="命令前缀")
     mappings: Dict[str, str] = Field(
-        default_factory=lambda: {
-            "chat": "chat",
-            "say": "chat",
-            "聊天": "chat",
-            "attack": "attack",
-            "攻击": "attack",
-        },
-        description="命令映射 {name: action}",
+        default_factory=dict,
+        description="命令白名单映射 {命令名: 委派语义目标（framework_delegate 的 instruction）}",
     )
+    target_agent: str = Field(default="minecraft", description="委派目标 Agent 注册名")
+    rate_window_ms: int = Field(default=60_000, ge=1, description="限频时间窗（毫秒）")
+    rate_max: int = Field(default=3, ge=1, description="同一用户在时间窗内允许的命令条数上限")
 
 
 class StreamerThinkingStreamConfig(BaseConfig):
@@ -317,7 +317,7 @@ class StreamerConfig(BaseConfig):
     )
     command: StreamerCommandConfig = Field(
         default_factory=StreamerCommandConfig,
-        description="parse_command 工具配置",
+        description="观众命令接线配置（代码直连，非 LLM 工具）",
     )
     thinking_stream: StreamerThinkingStreamConfig = Field(
         default_factory=StreamerThinkingStreamConfig,

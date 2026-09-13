@@ -69,6 +69,7 @@ from .utterance_queue import (
     DEFAULT_RENDER_TIMEOUT_MS,
     UtteranceQueue,
 )
+from .command import CommandParser, CommandRegistry
 from .config import StreamerConfig
 
 if TYPE_CHECKING:
@@ -351,6 +352,31 @@ class StreamerAgent(BaseAgent):
 
         # 游戏叙事摘要（订阅 game.* 收集，最多保留 N 条；进 Planner 上下文）
         self._game_narrative_blocks: List[str] = []
+
+        # 观众命令接线（最小接线：玩法待扩展）。enabled + mappings 非空才激活；
+        # mappings 即白名单，限频窗口/次数 config 化。命令解析是代码直连的
+        # 内部件，不进 ToolRegistry。
+        cmd_cfg = config.command
+        if cmd_cfg.enabled and cmd_cfg.mappings:
+            self._command_parser = CommandParser(command_prefix=cmd_cfg.prefix)
+            self._command_registry = CommandRegistry()
+            self._command_registry.load_from_config(dict(cmd_cfg.mappings))
+            self._command_target_agent = cmd_cfg.target_agent
+            self._command_rate_window_ms = cmd_cfg.rate_window_ms
+            self._command_rate_max = cmd_cfg.rate_max
+            # 限频状态：用户 id → 窗口内命令时间戳（毫秒）
+            self._command_hits: Dict[str, List[int]] = {}
+            self._logger.info(
+                f"观众命令接线已激活: 前缀='{cmd_cfg.prefix}' "
+                f"白名单={self._command_registry.get_supported_commands()} 目标='{cmd_cfg.target_agent}'"
+            )
+        else:
+            self._command_parser = None
+            self._command_registry = None
+            self._command_target_agent = ""
+            self._command_rate_window_ms = 0
+            self._command_rate_max = 0
+            self._command_hits = {}
 
         # 工具 Provider 实例（用于 invoke）
         self._reply_provider: Optional[ReplyToolProvider] = None
@@ -674,6 +700,10 @@ class StreamerAgent(BaseAgent):
 
     async def handle_message(self, msg: RoomMessagePayload) -> None:
         """处理一条弹幕（collectors → Agent 入口；测试也可直接调）。"""
+        # 命令分支（仅弹幕类型）：命中白名单 → 委派后短路，不进决策链；
+        # 非命令按原路径继续（行为不变）
+        if msg.message_type == "danmaku" and await self._try_dispatch_command(msg):
+            return
         self._total_messages += 1
         # RoomState 热度信号
         self._room_state.update(msg, now_ms=now_ms())
@@ -681,6 +711,63 @@ class StreamerAgent(BaseAgent):
         forced = self._timing_gate.is_forced(msg)
         # 入缓冲
         self._buffer.add(msg, arrival_ms=now_ms(), forced=forced)
+
+    async def _try_dispatch_command(self, msg: RoomMessagePayload) -> bool:
+        """观众命令识别 + 安全闸 + 委派（最小接线：玩法待扩展）。
+
+        返回 True 表示该消息已被命令分支消费（含白名单外/限频丢弃），
+        调用方不再进决策链。未激活或非命令文本返回 False，走原路径。
+
+        安全闸（全部 config 化，见 ``StreamerCommandConfig``）：
+        - 白名单：mappings 无映射的命令静默丢弃
+        - 限频：同一用户在 rate_window_ms 内最多 rate_max 条，超限静默丢弃
+        - 危险同意默认关闭：instruction 只含映射的语义目标，不携带任何
+          ``allow_harm`` / ``may_alter_terrain`` 等危险同意位（目标 Agent
+          契约默认不传即关）
+        """
+        if self._command_parser is None or self._command_registry is None:
+            return False
+        content = (msg.content or "").strip()
+        if not self._command_parser.is_command(content):
+            return False
+        command = self._command_parser.parse_command(content, msg)
+        if command is None:
+            return False
+
+        user_id = msg.user.id if msg.user else "unknown"
+        # 白名单闸：映射表外一律不执行
+        action = self._command_registry.get_action(command.name)
+        if action is None:
+            self._logger.debug(f"命令未在白名单，静默丢弃: /{command.name}（用户 {user_id}）")
+            return True
+        # 限频闸：窗口滑出后回收旧时间戳
+        now = now_ms()
+        hits = [ts for ts in self._command_hits.get(user_id, []) if now - ts < self._command_rate_window_ms]
+        if len(hits) >= self._command_rate_max:
+            self._command_hits[user_id] = hits
+            self._logger.debug(f"命令限频命中，静默丢弃: /{command.name}（用户 {user_id}，窗口 {len(hits)} 条）")
+            return True
+        hits.append(now)
+        self._command_hits[user_id] = hits
+
+        # 危险同意位零携带：instruction 就是映射的语义目标原文
+        if self._tool_registry is None:
+            self._logger.warning(f"命令 /{command.name} 无法委派：ToolRegistry 未注入")
+            return True
+        invocation = ToolInvocation(
+            tool_name="framework_delegate",
+            arguments={"agent": self._command_target_agent, "instruction": action},
+            source="streamer",
+        )
+        result = await self._tool_registry.invoke(invocation)
+        if not result.success:
+            # 目标不在名册 / 拒收等受理失败：拒绝执行，不崩、不进决策链
+            self._logger.warning(
+                f"命令 /{command.name} 委派受理失败（目标 '{self._command_target_agent}'）: {result.error_message}"
+            )
+            return True
+        self._logger.info(f"观众命令已委派: /{command.name} -> '{self._command_target_agent}'（用户 {user_id}）")
+        return True
 
     def trigger_external_proactive(self, topic_hint: Optional[str] = None) -> None:
         """外部 API 触发主动发言（Dashboard / API 调用）。"""
