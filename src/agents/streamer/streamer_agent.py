@@ -3,7 +3,7 @@
 主播 Agent = Planner（决策核心）+ reply 工具（入口）+ Replyer（表达引擎），一体。
 协议六项（最小契约）：
 - 生命周期：start/stop/cleanup + 可重建性
-- 工具提供：list_tools() → 暴露 reply / should_speak_proactively / parse_command
+- 工具提供：list_tools() → 暴露 reply（streamer_reply）；rundown_control 由 rundown 注册项声明
 - 事件上报：emit（rundown.changed 等；订阅 room.message.danmaku 等）
 - 状态读写：RoomState / RundownState 内部组件
 - 健康：BaseAgent 心跳协议
@@ -112,8 +112,9 @@ class StreamerAgent(BaseAgent):
 
     实现协议六项：
     - 生命周期（start/stop/cleanup）
-    - 工具提供：reply / should_speak_proactively / parse_command（3 个工具）
-      + rundown_control（Planner 局部协议工具）
+    - 工具提供：reply（streamer_reply，经 ToolRegistry 注册 + 名单 ["streamer"]）；
+      rundown_control 由 rundown 注册项声明（provider="rundown"）。
+      should_speak_proactively / parse_command 是代码直连的内部件，不是工具。
     - 事件上报：emit（rundown.changed / planner.decision 等）；订阅 room.message.*
     - 状态读写：内部 RoomState / RundownState / MessageBuffer
     - 健康：BaseAgent 心跳

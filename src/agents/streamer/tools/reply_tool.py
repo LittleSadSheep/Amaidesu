@@ -11,7 +11,7 @@
 工具契约：
 - kind: ``"sync"``（gather 等齐结果；Replyer 是一次性 LLM 调用，不是 fire-and-forget）
 - provider: ``"streamer"``（主播 Agent 自有工具；全名 streamer_reply）
-- arguments: ``{topic_summary, reply_guidance, target?, confidence?, batch_text?}``
+- arguments: ``{topic_summary, reply_guidance, target?, confidence?}``
 - 失败兜底：ToolExecutionResult(success=False, error_message=...)
 """
 
@@ -69,10 +69,6 @@ _REPLY_PARAMETERS_SCHEMA: dict[str, Any] = {
             "minimum": 0.0,
             "maximum": 1.0,
             "description": "Planner 决策置信度（0.0-1.0；可空）",
-        },
-        "batch_text": {
-            "type": "string",
-            "description": "本批弹幕文本（可空；主动发言时省略）",
         },
     },
     "required": ["topic_summary"],
@@ -199,7 +195,7 @@ class ReplyToolProvider:
         """reply 工具的 invoke（ToolProvider 协议）。
 
         契约：
-        - 接收 invocation.arguments：topic_summary / reply_guidance / target / confidence / batch_text
+        - 接收 invocation.arguments：topic_summary / reply_guidance / target / confidence
         - 把意图参数适配为 DecisionPlan(should_reply=True)（Replyer.generate 接口形态）
         - 调用 Replyer.generate
         - 返回 ToolExecutionResult（成功时 structured_content 为结果 dict，失败时 error_message 非空）
@@ -226,8 +222,8 @@ class ReplyToolProvider:
         except (TypeError, ValueError):
             confidence = 0.9
 
-        # batch_text → 暂存为 raw_text（Replyer.generate 接受弹幕批次列表；
-        # 工具调用时无原始结构，故传空列表；Replyer 仍能基于 plan + persona 生成）
+        # Replyer.generate 接受弹幕批次列表；工具调用时无原始结构，
+        # 故传空列表（Replyer 仍能基于 plan + persona 生成）
         batch: List[Any] = []
 
         # 构造 plan（must should_reply=true）
