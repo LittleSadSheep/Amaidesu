@@ -1,7 +1,7 @@
 """
 事件拦截器链
 
-``InterceptorChain`` 持有按注册顺序排列的拦截器列表，对单个事件依次应用：
+``InterceptorChain`` 持有按 ``priority`` 升序排列的拦截器列表，对单个事件依次应用：
 - 拦截器返回 ``dict``（放行）：payload 传给下一个拦截器，最终传给下游 handler
 - 拦截器返回 ``None``（丢弃）：立即终止链，返回 ``None``
 - 事件名不匹配拦截器 ``scope_prefixes``：跳过该拦截器（声明了作用域时）
@@ -9,8 +9,8 @@
   与"丢事件"语义严格区分——异常不应导致事件被丢弃（事件量小、宁可放过不可错过）
 
 设计原则：
-- 链本身持有拦截器列表（按注册顺序）；不复制以减少开销
-- ``register`` 追加；``unregister(name)`` 按 ``name`` 去重删除首个匹配
+- 链本身持有拦截器列表（按 priority 升序，同优先级保持注册顺序）；不复制以减少开销
+- ``register`` 按 priority 插入；``unregister(name)`` 按 ``name`` 去重删除首个匹配
 - ``apply`` 是只读操作，不修改链本身
 """
 
@@ -24,9 +24,10 @@ class InterceptorChain:
     """
     拦截器链
 
-    按注册顺序对事件依次应用 ``EventInterceptor.intercept``。
-    任何拦截器返回 ``None`` 即终止链并返回 ``None``（事件被丢弃）；
-    异常被捕获 + 记录 + 视为 pass-through（不影响后续拦截器或 handler）。
+    按 ``priority`` 升序（同优先级按注册顺序）对事件依次应用
+    ``EventInterceptor.intercept``。任何拦截器返回 ``None`` 即终止链并返回
+    ``None``（事件被丢弃）；异常被捕获 + 记录 + 视为 pass-through（不影响
+    后续拦截器或 handler）。
 
     默认空链的 ``apply`` 直接返回入参 ``payload``（零行为差异）。
     """
@@ -37,13 +38,18 @@ class InterceptorChain:
 
     def register(self, interceptor: EventInterceptor) -> None:
         """
-        注册一个拦截器（追加到链尾）
+        注册一个拦截器（按 ``priority`` 升序插入，同优先级保持注册顺序）
 
         Args:
             interceptor: 已实例化的 ``EventInterceptor`` 子类
         """
-        self._interceptors.append(interceptor)
-        self.logger.debug(f"注册拦截器: {interceptor.name}")
+        index = len(self._interceptors)
+        for i, existing in enumerate(self._interceptors):
+            if existing.priority > interceptor.priority:
+                index = i
+                break
+        self._interceptors.insert(index, interceptor)
+        self.logger.debug(f"注册拦截器: {interceptor.name} (priority={interceptor.priority})")
 
     def unregister(self, name: str) -> bool:
         """
@@ -61,6 +67,10 @@ class InterceptorChain:
                 self.logger.debug(f"移除拦截器: {name}")
                 return True
         return False
+
+    def get_order(self) -> List[str]:
+        """返回拦截器名称列表（按执行顺序）。用于测试与可观测性。"""
+        return [interceptor.name for interceptor in self._interceptors]
 
     def __len__(self) -> int:
         """返回当前拦截器数量（便于测试与监控）"""

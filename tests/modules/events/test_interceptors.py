@@ -2,7 +2,7 @@
 EventBus 事件拦截器测试
 
 测试 ``EventInterceptor`` + ``InterceptorChain`` 与 EventBus 的集成行为：
-- 链按注册顺序顺序执行
+- 链按优先级升序执行（同优先级保持注册顺序）
 - 拦截器返回 ``None`` 丢弃事件（handler 不被调用）
 - 拦截器抛异常被捕获 + 日志 + 视为 pass-through（不丢事件，不影响后续）
 - EventBus 默认（无拦截器）行为与旧版字节级一致
@@ -103,9 +103,10 @@ class _RaiseInterceptor(EventInterceptor):
 class _RecordCallInterceptor(EventInterceptor):
     """记录每个事件被传给它的次数，便于断言调用顺序"""
 
-    def __init__(self, name: str, record: List[str]) -> None:
+    def __init__(self, name: str, record: List[str], priority: int = 100) -> None:
         self._name = name
         self._record = record
+        self.priority = priority
 
     @property
     def name(self) -> str:
@@ -178,7 +179,7 @@ class TestInterceptorChainBasics:
 
     @pytest.mark.asyncio
     async def test_chain_executes_in_registration_order(self):
-        """链内拦截器按注册顺序依次执行"""
+        """同优先级时链内拦截器按注册顺序依次执行"""
         chain = InterceptorChain()
         record: List[str] = []
 
@@ -188,6 +189,32 @@ class TestInterceptorChainBasics:
 
         await chain.apply("evt", {}, "src")
         assert record == ["first", "second", "third"]
+
+    @pytest.mark.asyncio
+    async def test_chain_executes_in_priority_order(self):
+        """链按 priority 升序执行，与注册顺序无关（数值小者先行）"""
+        chain = InterceptorChain()
+        record: List[str] = []
+
+        # B(100) 先注册、A(200) 后注册——执行顺序仍按优先级
+        chain.register(_RecordCallInterceptor("B", record, priority=100))
+        chain.register(_RecordCallInterceptor("A", record, priority=200))
+
+        await chain.apply("evt", {}, "src")
+        assert record == ["B", "A"]
+
+    @pytest.mark.asyncio
+    async def test_priority_insert_keeps_stable_order_for_equal_priority(self):
+        """优先级插入不破坏同优先级注册顺序；更低优先级插到队首"""
+        chain = InterceptorChain()
+        record: List[str] = []
+
+        chain.register(_RecordCallInterceptor("late", record, priority=200))
+        chain.register(_RecordCallInterceptor("early", record, priority=50))
+        chain.register(_RecordCallInterceptor("mid1", record, priority=100))
+        chain.register(_RecordCallInterceptor("mid2", record, priority=100))
+
+        assert chain.get_order() == ["early", "mid1", "mid2", "late"]
 
     def test_unregister_removes_by_name(self):
         """按 name 移除首个匹配"""

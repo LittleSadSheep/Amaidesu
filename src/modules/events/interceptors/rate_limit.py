@@ -42,6 +42,9 @@ class RateLimitInterceptor(EventInterceptor):
     # 落入 "unknown_user" 桶造成误丢
     scope_prefixes = ("room.message.",)
 
+    # 净化阶段：限流在加工类拦截器（场次盖章）之前执行，超限消息不必解析归属
+    priority = 100
+
     def __init__(
         self,
         global_rate_limit: int = 100,

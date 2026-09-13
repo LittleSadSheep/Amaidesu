@@ -41,6 +41,10 @@ class SessionStampInterceptor(EventInterceptor):
 
     scope_prefixes: Tuple[str, ...] = _STAMPED_PREFIXES
 
+    # 加工阶段：场次归属在净化类拦截器（限流/相似过滤）之后注入，
+    # 被净化丢弃的消息不消耗归属解析
+    priority = 200
+
     def __init__(self, session_manager) -> None:  # type: ignore[no-untyped-def]
         self._session_manager = session_manager
 

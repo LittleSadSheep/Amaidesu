@@ -35,6 +35,11 @@ class EventInterceptor(ABC):
     # 避免对 game.*/tool.result.* 等下游事件误伤。
     scope_prefixes: Tuple[str, ...] = ()
 
+    # 执行优先级：数值越小越先执行；同优先级按注册顺序。链在注册时按此
+    # 字段升序插入，执行顺序与注册顺序解耦——阶段靠前的净化类拦截器
+    # （限流/相似过滤）应小于靠后的加工类拦截器（场次盖章）
+    priority: int = 100
+
     @property
     @abstractmethod
     def name(self) -> str:

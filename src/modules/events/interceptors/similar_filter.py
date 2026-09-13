@@ -38,6 +38,9 @@ class SimilarFilterInterceptor(EventInterceptor):
     # 只过滤直播间行为流：避免把主播发言/工具结果等业务事件的相似文本误杀
     scope_prefixes = ("room.message.",)
 
+    # 净化阶段：与限流同组，先于加工类拦截器（场次盖章）执行
+    priority = 100
+
     def __init__(
         self,
         similarity_threshold: float = 0.85,
