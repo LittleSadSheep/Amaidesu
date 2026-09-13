@@ -117,7 +117,7 @@ async def test_streamer_speech_emitted_when_tts_disabled():
             "actions": [],
             "metadata": {},
         }
-        agent._dispatch_speech_and_emotion(payload_dict)
+        agent._speech.dispatch(payload_dict)
 
         captured = await _wait_for_speech_event(bus)
         assert captured is not None, "TTS 关闭时仍应收到 streamer.speech"
@@ -125,9 +125,9 @@ async def test_streamer_speech_emitted_when_tts_disabled():
         assert captured.emotion is None
         assert captured.utterance_id.startswith("utt_")
         # TTS 关闭时 _utterance_queue 仍为 None
-        assert agent._utterance_queue is None
+        assert agent._speech.utterance_queue is None
         # seq 已自增
-        assert agent._utterance_seq == 1
+        assert agent._speech.utterance_seq == 1
     finally:
         await agent._on_stop()
 
@@ -144,8 +144,8 @@ async def test_streamer_speech_emitted_when_tts_enabled_and_no_engine():
     await agent._on_start()
     try:
         # 启动期应已检测到缺失并降级
-        assert agent._tts_enabled is False
-        assert agent._utterance_queue is None
+        assert agent._speech.tts_enabled is False
+        assert agent._speech.utterance_queue is None
 
         payload_dict = {
             "speech": "降级模式",
@@ -153,7 +153,7 @@ async def test_streamer_speech_emitted_when_tts_enabled_and_no_engine():
             "actions": [],
             "metadata": {},
         }
-        agent._dispatch_speech_and_emotion(payload_dict)
+        agent._speech.dispatch(payload_dict)
 
         captured = await _wait_for_speech_event(bus)
         assert captured is not None, "tts_engine 缺失降级时仍应 emit 业务事件"
@@ -195,7 +195,7 @@ async def test_streamer_speech_and_tts_share_same_utterance_id():
             "actions": [],
             "metadata": {},
         }
-        agent._dispatch_speech_and_emotion(payload_dict)
+        agent._speech.dispatch(payload_dict)
 
         await asyncio.wait_for(event.wait(), timeout=2.0)
         # 等 TTS 引擎取走
@@ -241,13 +241,13 @@ async def test_empty_speech_does_not_emit_streamer_speech():
                 "actions": [],
                 "metadata": {},
             }
-            agent._dispatch_speech_and_emotion(payload_dict)
+            agent._speech.dispatch(payload_dict)
 
         # 等 fire-and-forget 任务全部跑完
         await asyncio.sleep(0.05)
 
         # 不应有 STREAMER_SPEECH 事件（即使有 emotion 也不触发 streamer.speech，
         # streamer.speech 只表达 speech 业务事实）
-        assert agent._utterance_seq == 0
+        assert agent._speech.utterance_seq == 0
     finally:
         await agent._on_stop()

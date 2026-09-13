@@ -105,7 +105,7 @@ async def test_subtitle_service_show_called_with_speech_and_utterance_id():
             "actions": [],
             "metadata": {},
         }
-        agent._dispatch_speech_and_emotion(payload_dict)
+        agent._speech.dispatch(payload_dict)
 
         # 等 fire-and-forget 字幕任务跑完
         for _ in range(50):
@@ -155,7 +155,7 @@ async def test_subtitle_service_shares_utterance_id_with_streamer_speech_and_tts
             "actions": [],
             "metadata": {},
         }
-        agent._dispatch_speech_and_emotion(payload_dict)
+        agent._speech.dispatch(payload_dict)
 
         # 等三路全部落地（事件 / TTS / 字幕）
         await asyncio.wait_for(speech_event.wait(), timeout=2.0)
@@ -200,10 +200,10 @@ async def test_subtitle_service_none_skips_show_without_error():
             "metadata": {},
         }
         # 不应抛异常
-        agent._dispatch_speech_and_emotion(payload_dict)
+        agent._speech.dispatch(payload_dict)
         await asyncio.sleep(0.05)
         # 字段存储为 None
-        assert agent._subtitle_service is None
+        assert agent._speech._subtitle_service is None
     finally:
         await agent._on_stop()
 
@@ -235,14 +235,14 @@ async def test_empty_speech_does_not_trigger_subtitle():
                 "actions": [],
                 "metadata": {},
             }
-            agent._dispatch_speech_and_emotion(payload_dict)
+            agent._speech.dispatch(payload_dict)
 
         # 等可能的 fire-and-forget 任务全部跑完
         await asyncio.sleep(0.05)
 
         assert subtitle_service.show.await_count == 0, "空 speech 不应触发 subtitle_service.show"
         # seq 不递增
-        assert agent._utterance_seq == 0
+        assert agent._speech.utterance_seq == 0
     finally:
         await agent._on_stop()
 
@@ -275,7 +275,7 @@ async def test_subtitle_service_exception_does_not_break_decision_loop(loguru_ca
             "metadata": {},
         }
         # 不应抛异常
-        agent._dispatch_speech_and_emotion(payload_dict)
+        agent._speech.dispatch(payload_dict)
 
         # 等字幕任务失败 + TTS 入队执行
         for _ in range(50):

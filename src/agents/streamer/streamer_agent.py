@@ -45,9 +45,8 @@ from src.modules.events.payloads.planner import (
     PlannerDecisionPayload,
     StreamerStagePayload,
 )
-from src.modules.events.payloads.speech import StreamerSpeechPayload
 from src.modules.logging import get_logger
-from src.modules.tools import ToolInvocation, ToolSpec
+from src.modules.tools import ToolSpec
 from src.modules.tools.registry import ToolRegistry
 from src.modules.time_utils import now_ms
 from src.modules.events.payloads.room import RoomMessagePayload, RoomMessageUser
@@ -62,15 +61,11 @@ from .planner import Planner
 from .proactive_trigger import ProactiveTrigger
 from .replyer import WordFilter, Replyer
 from .room_state import RoomState
+from .speech_dispatcher import SpeechDispatcher
 from .stats import StreamerStats
 from .thinking_stream import ThinkingStreamContext
 from .timing_gate import TimingGate
 from .tools.reply_tool import ReplyToolProvider
-from .utterance_queue import (
-    DEFAULT_MAX_QUEUE,
-    DEFAULT_RENDER_TIMEOUT_MS,
-    UtteranceQueue,
-)
 from .command.router import CommandRouter
 from .config import StreamerConfig
 
@@ -357,17 +352,16 @@ class StreamerAgent(BaseAgent):
         self._reply_provider: Optional[ReplyToolProvider] = None
 
         # ===== 发言管线（speech → TTS / emotion → VTS）=====
-        # 仅当显式启用且 tts_engine 注入时才构造队列；否则决策循环行为
-        # 与改造前一致（只读 result.success，不消费 result.content）。
-        speech_cfg = speech_config or {}
-        self._tts_enabled: bool = bool(speech_cfg.get("enabled", False))
-        self._speech_max_queue: int = int(speech_cfg.get("max_queue", DEFAULT_MAX_QUEUE))
-        self._speech_render_timeout_ms: int = int(speech_cfg.get("render_timeout_ms", DEFAULT_RENDER_TIMEOUT_MS))
-        self._tts_engine = tts_engine
-        self._subtitle_service = subtitle_service
-        self._utterance_queue: Optional[UtteranceQueue] = None
-        # utterance_id 自增计数器（进程内单调；启动时复位为 0，首次自增到 1）
-        self._utterance_seq: int = 0
+        # 队列生命周期由 dispatcher 自持（start/stop）；未启用时决策循环
+        # 只读 result.success，不消费 result.content。
+        self._speech = SpeechDispatcher(
+            event_bus=event_bus,
+            subtitle_service=subtitle_service,
+            tool_registry=tool_registry,
+            tts_engine=tts_engine,
+            speech_config=speech_config,
+            logger=self._logger,
+        )
         # 决策轮次自增计数器（round_id 生成用；与 utterance_seq 同风格）
         self._round_seq: int = 0
 
@@ -376,7 +370,7 @@ class StreamerAgent(BaseAgent):
             f"(profile_planner={_PROFILE_PLANNER}, profile_replyer={_PROFILE_REPLYER}, "
             f"proactive_enabled={config.proactive.enabled}, "
             f"rundown_id={config.rundown_id!r}, "
-            f"tts_enabled={self._tts_enabled}, "
+            f"tts_enabled={self._speech.tts_enabled}, "
             f"tts_engine={'<已注入>' if tts_engine is not None else '<未注入>'})"
         )
 
@@ -405,32 +399,8 @@ class StreamerAgent(BaseAgent):
         # 启动流程单（fail-soft：加载失败降级为无流程单）
         await self._start_rundown()
 
-        # 启动发言管线（speech → TTS / emotion → VTS）
-        # 仅在 TTS 显式启用且 tts_engine 注入时构造；否则保持禁用（决策循环
-        # 行为与改造前一致：只读 result.success，不消费 result.content）。
-        if self._tts_enabled:
-            if self._tts_engine is None:
-                self._logger.warning("TTS 已启用但未注入 tts_engine，发言管线降级为关闭")
-                self._tts_enabled = False
-            else:
-                try:
-                    engine = self._tts_engine
-
-                    async def _speak(text: str, utterance_id: Optional[str] = None) -> None:
-                        """编排队列 → TTS 引擎的 speak 适配器。"""
-                        await engine.handle_speech(text, utterance_id=utterance_id)
-
-                    self._utterance_queue = UtteranceQueue(
-                        speak=_speak,
-                        logger_name="StreamerAgent.UtteranceQueue",
-                        max_queue=self._speech_max_queue,
-                        render_timeout_ms=self._speech_render_timeout_ms,
-                    )
-                    await self._utterance_queue.start()
-                except Exception as exc:
-                    self._logger.warning(f"启动发言管线失败，已降级为关闭: {exc}")
-                    self._utterance_queue = None
-                    self._tts_enabled = False
+        # 启动发言管线（speech → TTS / emotion → VTS；队列生命周期归 dispatcher）
+        await self._speech.start()
 
         self._logger.info("StreamerAgent 已启动")
 
@@ -439,12 +409,7 @@ class StreamerAgent(BaseAgent):
         self._running = False
 
         # 停止发言管线（TTS 队列先停，保证不遗留 invoke 在飞）
-        if self._utterance_queue is not None:
-            try:
-                await self._utterance_queue.stop()
-            except Exception as exc:
-                self._logger.warning(f"停止发言管线失败: {exc}")
-            self._utterance_queue = None
+        await self._speech.stop()
 
         # 停止后台双任务
         try:
@@ -1011,9 +976,9 @@ class StreamerAgent(BaseAgent):
 
         # reply 已在 Planner ReAct 循环内经 reply 工具完成（Planner 阶段耗时含
         # 表达生成）；此处仅把产出送发言管线（speech → TTS / emotion → VTS）。
-        speech_info = self._dispatch_speech_and_emotion(
+        speech_info = self._speech.dispatch(
             outcome.get("reply_payload"),
-            self._resolve_reply_target_user(outcome, batch),
+            target_user_id=self._resolve_reply_target_user(outcome, batch),
             reply_to_message_id=outcome.get("reply_to"),
             round_id=round_id,
         )
@@ -1078,28 +1043,6 @@ class StreamerAgent(BaseAgent):
     # 独立保留一份是为了让 StreamerAgent 在不持有 VTSProvider 实例时
     # 也能把 emotion 翻译为可调用参数；与 VTSProvider 的真实映射解耦
     # 也便于单测直接断言。
-    _EMOTION_TO_VTS_PARAMS: Dict[str, Dict[str, float]] = {
-        "happy": {"MouthSmile": 1.0},
-        "surprised": {"EyeOpenLeft": 1.0, "EyeOpenRight": 1.0, "MouthOpen": 0.5},
-        "sad": {"MouthSmile": -0.3, "EyeOpenLeft": 0.7, "EyeOpenRight": 0.7},
-        "angry": {"EyeOpenLeft": 0.6, "EyeOpenRight": 0.6, "MouthSmile": -0.5},
-        "shy": {"MouthSmile": 0.3, "EyeOpenLeft": 0.8, "EyeOpenRight": 0.8},
-        "love": {"MouthSmile": 0.8, "EyeOpenLeft": 0.9, "EyeOpenRight": 0.9},
-        "excited": {"MouthSmile": 1.0, "EyeOpenLeft": 1.0, "EyeOpenRight": 1.0},
-        "confused": {"EyeOpenLeft": 0.7, "EyeOpenRight": 0.7, "MouthOpen": 0.2},
-        "scared": {"EyeOpenLeft": 0.5, "EyeOpenRight": 0.5, "MouthOpen": 0.3},
-        "neutral": {},
-    }
-
-    def _next_utterance_id(self) -> str:
-        """生成下一个 utterance_id（格式 ``utt_{epoch_ms}_{seq}``）。
-
-        自增计数器在 ``__init__`` 中初始化为 0，首次调用返回 seq=1。
-        seq 是进程内单调递增，保证同场内 utterance_id 唯一。
-        """
-        self._utterance_seq += 1
-        return f"utt_{now_ms()}_{self._utterance_seq}"
-
     def _next_round_id(self) -> str:
         """生成下一个决策轮次 ID（格式 ``rnd_{epoch_ms}_{seq}``）。
 
@@ -1193,254 +1136,6 @@ class StreamerAgent(BaseAgent):
             raise
         except Exception as exc:  # noqa: BLE001 - 观测事件不阻断决策循环
             self._logger.warning(f"planner.decision 发布失败（已忽略）: round_id={result.get('round_id')}, err={exc}")
-
-    def _dispatch_speech_and_emotion(
-        self,
-        reply_payload: Any,
-        reply_target_user_id: Optional[str] = None,
-        reply_to_message_id: Optional[str] = None,
-        round_id: str = "",
-    ) -> Optional[tuple]:
-        """消费 reply 结构化结果并触发下游管线（决策循环安全：永不抛异常）。
-
-        Args:
-            reply_payload: ``ToolExecutionResult.structured_content``（dict），
-                形态 ``{speech, emotion, actions}``；emotion 为
-                ``{"name": str, "intensity": float}``。
-            reply_target_user_id: 本次回复的观众 user_id（可选；透传到
-                ``streamer.speech`` 业务事件，None 表示主动发言/无特定对象）。
-            reply_to_message_id: 本次回复所指向弹幕的 message_id（可选；
-                来自 Planner 决策输出，透传到发言事件并落库为互动关联）。
-            round_id: 决策轮次 ID（可选；透传到 ``streamer.speech`` 事件供
-                观察器把发言卡与该轮思考过程成组）。
-
-        行为契约：
-        - 非 dict 输入 → WARN 日志 + 直接返回（决策循环不受影响）
-        - TTS 未启用 → 仍发布 ``streamer.speech`` 业务事件（存储落库由 StorageLedger 订阅完成）
-          （TTS 启用与否与主播发言业务事实正交；下游消费者仅依赖业务事件）
-        - speech 非空 → 生成 utterance_id + 发布业务事件 + 写入历史；TTS 启用时
-          复用同一 utterance_id 入 TTS 队列（与 ``tts.utterance.*`` 共用关联键）
-        - emotion 非空 → ``asyncio.create_task`` 调 VTS 表情工具（fire-and-forget）
-        - actions 非空 → 逐条 ``asyncio.create_task`` 调 ToolRegistry（fire-and-forget）
-        """
-        if not isinstance(reply_payload, dict):
-            self._logger.warning(f"reply structured_content 非 dict，跳过发言管线: {type(reply_payload).__name__}")
-            return None
-
-        speech = reply_payload.get("speech", "")
-        emotion = reply_payload.get("emotion", "")
-        actions = reply_payload.get("actions", [])
-
-        cleaned_speech = speech.strip() if isinstance(speech, str) else ""
-        # emotion 新契约为 {name, intensity}；兼容旧字符串形态（防御）
-        cleaned_emotion_intensity = 0.5
-        if isinstance(emotion, dict):
-            cleaned_emotion: Optional[str] = str(emotion.get("name", "") or "").strip() or None
-            try:
-                cleaned_emotion_intensity = min(1.0, max(0.0, float(emotion.get("intensity", 0.5))))
-            except (TypeError, ValueError):
-                cleaned_emotion_intensity = 0.5
-        elif isinstance(emotion, str):
-            cleaned_emotion = emotion.strip() or None
-        else:
-            cleaned_emotion = None
-
-        # 动作类工具调用（fire-and-forget；决策循环安全：失败仅记日志）
-        self._schedule_actions(actions)
-
-        # emotion → VTS 表情调用跟随 TTS 启用门：TTS 关闭（无语音/无声卡场景）
-        # 时 avatar 表情随同关闭，避免与改造前的"管线整体退化"语义漂移。
-        # 与 speech 派发独立（speech 空但 emotion 非空时仍可触发）。
-        if cleaned_emotion and self._tts_enabled and self._utterance_queue is not None:
-            self._schedule_vts_emotion(cleaned_emotion, intensity=cleaned_emotion_intensity)
-
-        # speech 非空：先发布业务事件 + 写历史（与 TTS 启用与否正交），
-        # TTS 启用时复用同一 utterance_id 入 TTS 队列。
-        if cleaned_speech:
-            utterance_id = self._next_utterance_id()
-            self._emit_streamer_speech(
-                utterance_id,
-                cleaned_speech,
-                cleaned_emotion,
-                reply_target_user_id,
-                reply_to_message_id=reply_to_message_id,
-                round_id=round_id,
-            )
-            self._schedule_subtitle_show(cleaned_speech, utterance_id)
-            if self._tts_enabled and self._utterance_queue is not None:
-                try:
-                    asyncio.create_task(self._utterance_queue.enqueue(utterance_id, cleaned_speech))
-                except Exception as exc:
-                    self._logger.warning("utterance 入队失败（已忽略）: utterance_id={}, err={}", utterance_id, exc)
-            return cleaned_speech, cleaned_emotion, utterance_id
-
-        return None
-
-    def _emit_streamer_speech(
-        self,
-        utterance_id: str,
-        text: str,
-        emotion: Optional[str],
-        target_user_id: Optional[str] = None,
-        reply_to_message_id: Optional[str] = None,
-        round_id: str = "",
-    ) -> None:
-        """发布 ``streamer.speech`` 业务事件（fire-and-forget；下游不得触发新决策）。"""
-        event_bus = self._event_bus
-        if event_bus is None:
-            return
-        payload = StreamerSpeechPayload(
-            utterance_id=utterance_id,
-            round_id=round_id or None,
-            text=text,
-            emotion=emotion,
-            target_user_id=target_user_id,
-            reply_to_message_id=reply_to_message_id,
-        )
-
-        async def _do_emit() -> None:
-            try:
-                await event_bus.emit(
-                    CoreEvents.STREAMER_SPEECH,
-                    payload,
-                    source="streamer_agent.speech",
-                )
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:  # noqa: BLE001 - 异步背景任务边界
-                self._logger.warning(f"streamer.speech 发布失败（已忽略）: utterance_id={utterance_id}, err={exc}")
-
-        try:
-            asyncio.create_task(_do_emit())
-        except RuntimeError as exc:
-            self._logger.warning(f"streamer.speech 任务创建失败（已忽略）: utterance_id={utterance_id}, err={exc}")
-
-    def _schedule_subtitle_show(self, text: str, utterance_id: str) -> None:
-        """异步触发字幕推送（fire-and-forget；缺字幕服务跳过，失败不抛异常）。
-
-        调用 ``SubtitleService.show(text, utterance_id)``：服务内部并行
-        广播到所有已注册 Backend，单 Backend 故障隔离由服务负责，本方法
-        只关心"任务跑出去"。与 ``_emit_streamer_speech`` 同模式——
-        决策循环同步路径绝不 await 异步操作。
-        """
-        service = self._subtitle_service
-        if service is None:
-            return
-
-        async def _do_show() -> None:
-            try:
-                await service.show(text, utterance_id)
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:  # noqa: BLE001 - 异步背景任务边界
-                self._logger.warning(f"字幕 show 异常（已忽略）: utterance_id={utterance_id}, err={exc}")
-
-        try:
-            asyncio.create_task(_do_show())
-        except RuntimeError as exc:
-            self._logger.warning(f"字幕 show 任务创建失败（已忽略）: utterance_id={utterance_id}, err={exc}")
-
-    def _schedule_vts_emotion(self, emotion: str, intensity: float = 0.5) -> None:
-        """异步触发 VTS 表情调用（fire-and-forget，失败不影响决策循环）。
-
-        VTS 工具契约（vts_set_expression）::
-
-            arguments = {
-                "parameters": {param_name: value, ...},  # 表情参数映射
-                "weight": float,                         # 混合权重（情绪强度驱动）
-            }
-
-        若 emotion 不在已知映射表中，DEBUG 日志提示"无映射"并跳过；
-        已知映射但参数为空（如 ``neutral``）也照样发起调用，让 VTS
-        工具自身的静默处理逻辑统一接管（不做空表达式的特判短路）。
-
-        Args:
-            emotion: 情绪枚举名（映射表键）。
-            intensity: Replyer 输出的情绪强度 [0.0, 1.0]，直接映射为表情混合权重。
-        """
-        vts_params = self._EMOTION_TO_VTS_PARAMS.get(emotion)
-        if vts_params is None:
-            self._logger.debug(f"emotion '{emotion}' 未在已知映射表中，跳过 VTS 调用")
-            return
-
-        # 在闭包外捕获 registry 引用：避免 LSP 跨闭包推断失败，
-        # 同时确保 _invoke_vts 在工具尚未注入时不会抛 AttributeError。
-        registry = self._tool_registry
-        if registry is None:
-            self._logger.debug(f"emotion '{emotion}' 触发条件不满足（tool_registry 缺失），跳过")
-            return
-
-        invocation = ToolInvocation(
-            tool_name="vts_set_expression",
-            arguments={
-                "parameters": dict(vts_params),
-                "weight": float(min(1.0, max(0.0, intensity))),
-            },
-            source="streamer_agent.emotion",
-        )
-
-        async def _invoke_vts() -> None:
-            try:
-                await registry.invoke(invocation)
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:  # noqa: BLE001 - 异步背景任务边界
-                self._logger.warning(f"VTS 表情调用异常（已忽略）: emotion={emotion}, err={exc}")
-
-        try:
-            asyncio.create_task(_invoke_vts())
-        except RuntimeError as exc:
-            self._logger.warning(f"VTS 表情任务创建失败（已忽略）: emotion={emotion}, err={exc}")
-
-    def _schedule_actions(self, actions: Any) -> None:
-        """异步触发动作类工具调用（fire-and-forget，失败不影响决策循环）。
-
-        ``actions`` 契约：``[{name: str, parameters: dict}, ...]``（来自
-        Replyer 的 tool_calls 非 reply 部分；LLM 通过标准 function calling
-        选择的动作类工具）。
-
-        与 ``_schedule_vts_emotion`` 同模式：
-        - 每条动作独立 ``asyncio.create_task``（互不阻塞）
-        - registry 缺失时静默跳过
-        - 工具失败只记 WARN（注册表 invoke 本身不抛异常，双保险）
-        """
-        if not isinstance(actions, list) or not actions:
-            return
-
-        registry = self._tool_registry
-        if registry is None:
-            self._logger.debug(f"actions 触发条件不满足（tool_registry 缺失），跳过 {len(actions)} 条")
-            return
-
-        for action in actions:
-            if not isinstance(action, dict):
-                self._logger.debug(f"action 条目非 dict，跳过: {action!r}")
-                continue
-            name = str(action.get("name", "") or "").strip()
-            if not name:
-                self._logger.debug("action 条目缺 name，跳过")
-                continue
-            arguments = action.get("parameters") or action.get("arguments") or {}
-            if not isinstance(arguments, dict):
-                arguments = {}
-            invocation = ToolInvocation(
-                tool_name=name,
-                arguments=arguments,
-                source="streamer_agent.action",
-            )
-
-            async def _invoke_action(inv: ToolInvocation = invocation) -> None:
-                try:
-                    await registry.invoke(inv)
-                except asyncio.CancelledError:
-                    raise
-                except Exception as exc:  # noqa: BLE001 - 异步背景任务边界
-                    self._logger.warning(f"动作类工具调用异常（已忽略）: tool={inv.tool_name}, err={exc}")
-
-            try:
-                asyncio.create_task(_invoke_action())
-            except RuntimeError as exc:
-                self._logger.warning(f"动作任务创建失败（已忽略）: tool={name}, err={exc}")
 
     # ==================================================================
     # 流程单（Rundown）运行时

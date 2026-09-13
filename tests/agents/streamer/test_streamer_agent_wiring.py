@@ -145,18 +145,18 @@ async def test_speech_enqueued_with_correct_utterance_id_format():
             "actions": [],
             "metadata": {},
         }
-        agent._dispatch_speech_and_emotion(payload)
+        agent._speech.dispatch(payload)
 
-        assert agent._utterance_queue is not None
+        assert agent._speech.utterance_queue is not None
         for _ in range(50):
             if len(engine.handle_speech_calls) >= 1:
                 break
             await asyncio.sleep(0.01)
 
-        stats = agent._utterance_queue.get_stats()
+        stats = agent._speech.utterance_queue.get_stats()
         assert stats["enqueued"] == 1
         assert stats["queue_size"] == 0  # worker 已取走
-        assert agent._utterance_seq == 1
+        assert agent._speech.utterance_seq == 1
 
         assert len(engine.handle_speech_calls) == 1
         text, uid = engine.handle_speech_calls[0]
@@ -182,7 +182,7 @@ async def test_utterance_seq_increments_per_call():
         captured_utterance_ids.append(utterance_id)
         return True
 
-    agent._utterance_queue.enqueue = _capturing_enqueue  # type: ignore[method-assign]
+    agent._speech.utterance_queue.enqueue = _capturing_enqueue  # type: ignore[method-assign]
 
     try:
         for i in range(3):
@@ -192,12 +192,12 @@ async def test_utterance_seq_increments_per_call():
                 "actions": [],
                 "metadata": {},
             }
-            agent._dispatch_speech_and_emotion(payload)
+            agent._speech.dispatch(payload)
 
         await asyncio.sleep(0.05)
 
         assert len(captured_utterance_ids) == 3
-        assert agent._utterance_seq == 3
+        assert agent._speech.utterance_seq == 3
 
         pattern = re.compile(r"^utt_\d+_\d+$")
         for uid in captured_utterance_ids:
@@ -228,10 +228,10 @@ async def test_payload_not_dict_logs_and_skips(loguru_capture):
     )
     await agent._on_start()
     try:
-        agent._dispatch_speech_and_emotion(["speech", "emotion"])  # list 而非 dict
+        agent._speech.dispatch(["speech", "emotion"])  # list 而非 dict
 
         await asyncio.sleep(0.05)
-        assert agent._utterance_queue.get_stats()["enqueued"] == 0
+        assert agent._speech.utterance_queue.get_stats()["enqueued"] == 0
         assert len(engine.handle_speech_calls) == 0
         warn_records = [r for r in loguru_capture.records if r["level"] == "WARNING" and "非 dict" in r["message"]]
         assert warn_records, "应记录非 dict WARN 日志"
@@ -257,8 +257,8 @@ async def test_tts_disabled_means_no_enqueue_and_no_vts_call():
     )
     await agent._on_start()
     try:
-        assert agent._utterance_queue is None
-        assert agent._tts_enabled is False
+        assert agent._speech.utterance_queue is None
+        assert agent._speech.tts_enabled is False
 
         payload = {
             "speech": "会被忽略",
@@ -271,12 +271,12 @@ async def test_tts_disabled_means_no_enqueue_and_no_vts_call():
         def _spy(emotion: str) -> None:
             called["vts"] = True
 
-        agent._schedule_vts_emotion = _spy  # type: ignore[method-assign]
-        agent._dispatch_speech_and_emotion(payload)
+        agent._speech._schedule_vts_emotion = _spy  # type: ignore[method-assign]
+        agent._speech.dispatch(payload)
 
         await asyncio.sleep(0.05)
         assert called["vts"] is False, "TTS disabled 时不应触发 VTS 调用"
-        assert agent._utterance_seq == 1
+        assert agent._speech.utterance_seq == 1
     finally:
         await agent._on_stop()
 
@@ -287,8 +287,8 @@ async def test_speech_config_none_means_disabled():
     agent = _build_streamer_agent(tts_engine=None, speech_config=None)
     await agent._on_start()
     try:
-        assert agent._tts_enabled is False
-        assert agent._utterance_queue is None
+        assert agent._speech.tts_enabled is False
+        assert agent._speech.utterance_queue is None
     finally:
         await agent._on_stop()
 
@@ -302,8 +302,8 @@ async def test_tts_enabled_but_no_engine_disables_pipeline():
     )
     await agent._on_start()
     try:
-        assert agent._tts_enabled is False
-        assert agent._utterance_queue is None
+        assert agent._speech.tts_enabled is False
+        assert agent._speech.utterance_queue is None
     finally:
         await agent._on_stop()
 
@@ -362,7 +362,7 @@ async def test_emotion_invokes_vts_set_expression_via_create_task():
             "actions": [],
             "metadata": {},
         }
-        agent._dispatch_speech_and_emotion(payload)
+        agent._speech.dispatch(payload)
 
         await asyncio.wait_for(invoke_started.wait(), timeout=2.0)
 
@@ -416,7 +416,7 @@ async def test_emotion_intensity_maps_to_vts_weight():
     )
     await agent._on_start()
     try:
-        agent._dispatch_speech_and_emotion(
+        agent._speech.dispatch(
             {
                 "speech": "太兴奋了！！",
                 "emotion": {"name": "excited", "intensity": 0.9},
@@ -469,7 +469,7 @@ async def test_unknown_emotion_does_not_call_vts():
             "actions": [],
             "metadata": {},
         }
-        agent._dispatch_speech_and_emotion(payload)
+        agent._speech.dispatch(payload)
         await asyncio.sleep(0.2)
         assert vts_invocations == [], f"未知 emotion 不应触发 VTS 调用，实际: {vts_invocations}"
     finally:
@@ -509,9 +509,9 @@ async def test_vts_exception_does_not_break_decision_loop():
             "actions": [],
             "metadata": {},
         }
-        agent._dispatch_speech_and_emotion(payload)
+        agent._speech.dispatch(payload)
         await asyncio.sleep(0.3)
-        assert agent._tts_enabled is True
+        assert agent._speech.tts_enabled is True
     finally:
         await agent._on_stop()
 
@@ -552,11 +552,11 @@ async def test_empty_speech_does_not_enqueue():
             "actions": [],
             "metadata": {},
         }
-        agent._dispatch_speech_and_emotion(payload)
+        agent._speech.dispatch(payload)
         await asyncio.sleep(0.2)
 
-        assert agent._utterance_queue.get_stats()["enqueued"] == 0
-        assert agent._utterance_seq == 0
+        assert agent._speech.utterance_queue.get_stats()["enqueued"] == 0
+        assert agent._speech.utterance_seq == 0
         assert len(engine.handle_speech_calls) == 0
         assert len(vts_calls) == 1
     finally:
@@ -636,4 +636,4 @@ async def test_decision_loop_unaffected_when_tts_disabled():
 
     stats = agent.get_statistics()
     assert stats["total_replies"] == 1
-    assert agent._utterance_queue is None
+    assert agent._speech.utterance_queue is None
