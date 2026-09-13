@@ -50,8 +50,6 @@ _DEFAULT_SUMMARY_INTERVAL_MS = 60_000
 # 摘要 LLM 绑定：由代码显式声明（配置不承载绑定；封闭 profile 六成员之一，
 # 与 Planner / Replyer 隔离，对应 model.toml [llm_profiles.summary]）
 SUMMARY_PROFILE = "summary"
-# 窗口触发压缩的条数阈值
-_DEFAULT_WINDOW_EVENT_THRESHOLD = 200
 # 压缩队列上限（与 StreamerCompressorConfig.queue_max 默认对齐）
 _DEFAULT_COMPRESSOR_QUEUE_MAX = 100
 # 压缩 worker 并发（与 StreamerCompressorConfig.concurrency 默认对齐）
@@ -106,7 +104,6 @@ class BackgroundMaintainer:
                 - ``light_tick_ms``（默认 5000）
                 - ``cold_timeout_ms``（默认 60000）
                 - ``summary_interval_ms``（默认 60000）
-                - ``window_event_threshold``（默认 200）
                 - ``compressor_concurrency``（默认 1）
                 - ``compressor_queue_max``（默认 100）
             room_state: ``RoomState`` 实例（轻循环读取快照）
@@ -150,7 +147,6 @@ class BackgroundMaintainer:
         self._light_tick_ms: int = _cfg(config, "light_tick_ms", _DEFAULT_LIGHT_TICK_MS)
         self._cold_timeout_ms: int = _cfg(config, "cold_timeout_ms", _DEFAULT_COLD_TIMEOUT_MS)
         self._summary_interval_ms: int = _cfg(config, "summary_interval_ms", _DEFAULT_SUMMARY_INTERVAL_MS)
-        self._window_event_threshold: int = _cfg(config, "window_event_threshold", _DEFAULT_WINDOW_EVENT_THRESHOLD)
 
         self._light_task: Optional[asyncio.Task] = None
         self._compress_task: Optional[asyncio.Task] = None
@@ -186,7 +182,6 @@ class BackgroundMaintainer:
             f"BackgroundMaintainer 已启动 "
             f"(light_tick={self._light_tick_ms}ms, "
             f"summary_interval={self._summary_interval_ms}ms, "
-            f"window_threshold={self._window_event_threshold}, "
             f"memory={'on' if self._memory is not None else 'off'}, "
             f"event_bus={'on' if self._event_bus is not None else 'off'})"
         )
@@ -330,12 +325,6 @@ class BackgroundMaintainer:
         except Exception as exc:
             self._logger.warning(f"摘要门控失败: {exc}")
 
-        # 3. 窗口滑动检查（事件量/时间阈值 → put 压缩队列）
-        try:
-            self._check_compression_window(ts)
-        except Exception as exc:
-            self._logger.warning(f"压缩窗口检查失败: {exc}")
-
     async def _write_live_session(self, now_ms: int) -> None:
         """把当前 RoomState 快照写入 live_sessions 表（后台记账，每轻 tick 一次心跳）。
 
@@ -389,18 +378,6 @@ class BackgroundMaintainer:
             return max(base // 2, 5_000)
         return base
 
-    def _check_compression_window(self, now_ms: int) -> None:
-        """窗口滑动检查：事件量/时间阈值 → put 压缩队列。"""
-        # 暂用 last_message_ms + size 触发；当前为基于热度阈值的简化判定
-        snap = self._room_state.get_snapshot(now_ms=now_ms)
-        # TODO: 后续可接入更复杂的窗口判定（事件量 > threshold）
-        # 当前实现：每 5 分钟触发一次窗口压缩（与 summary 同步）
-        if snap.topics and len(snap.topics) >= 5:
-            try:
-                self._compress_queue.put_nowait({"type": "window", "now_ms": now_ms})
-            except asyncio.QueueFull:
-                pass
-
     # ------------------------------------------------------------------
     # 压缩 worker（asyncio.Queue 触发）
     # ------------------------------------------------------------------
@@ -427,11 +404,10 @@ class BackgroundMaintainer:
             raise
 
     async def _handle_compress_task(self, task: Dict[str, Any]) -> None:
-        """处理压缩任务（当前支持 summary / window 两种类型）。"""
+        """处理压缩任务（当前支持 summary 类型）。"""
         task_type = task.get("type")
         if task_type == "summary":
             await self._summarize_topic(task.get("now_ms", _real_now_ms()))
-        # 其它类型（暂不实现；留给后续）
 
     async def _summarize_topic(self, now_ms: int) -> None:
         """调 LLM 生成话题摘要（summary profile）。

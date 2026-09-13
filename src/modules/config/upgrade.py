@@ -128,6 +128,19 @@ def _drop_simulator_llm_profile(data: Dict[str, Any]) -> List[str]:
 register_file_hook("infra.toml", "drop_simulator_llm_profile", "2.0.32", _drop_simulator_llm_profile)
 
 
+def _drop_window_event_threshold(data: Dict[str, Any]) -> List[str]:
+    """删除 ``[agents.streamer.background].window_event_threshold``（窗口压缩未实现，字段无消费者）"""
+    streamer = (data.get("agents") or {}).get("streamer")
+    background = streamer.get("background") if isinstance(streamer, dict) else None
+    if isinstance(background, dict) and "window_event_threshold" in background:
+        del background["window_event_threshold"]
+        return ["agents.streamer.background.window_event_threshold"]
+    return []
+
+
+register_file_hook("agents.toml", "drop_window_event_threshold", "2.0.33", _drop_window_event_threshold)
+
+
 def _version_tuple(version: str) -> tuple[int, ...]:
     """版本号 → 可比较元组（"2.0.31" → (2, 0, 31)）；解析失败按 0 处理"""
     try:

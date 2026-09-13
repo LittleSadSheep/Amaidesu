@@ -14,7 +14,7 @@
     enabled, memory_recall_long_term
 
     [agents.streamer.background]
-    enabled, light_tick_ms, cold_timeout_ms, summary_interval_ms, window_event_threshold
+    enabled, light_tick_ms, cold_timeout_ms, summary_interval_ms
 
     [agents.streamer.background.compressor]
     concurrency, queue_max
@@ -130,9 +130,7 @@ class StreamerCompressorConfig(BaseConfig):
 class StreamerBackgroundConfig(BaseConfig):
     """[agents.streamer.background] 段
 
-    后台维护任务的轻循环 + 压缩 worker 参数。light_tick_ms / cold_timeout_ms /
-    summary_interval_ms / window_event_threshold 与 compressor 子段真正生效
-    （修复死配置）。
+    后台维护任务的轻循环 + 压缩 worker 参数。
     """
 
     enabled: bool = Field(default=True, description="是否启用后台维护任务")
@@ -151,11 +149,6 @@ class StreamerBackgroundConfig(BaseConfig):
         default=60_000,
         ge=0,
         description="低频 LLM 摘要间隔（毫秒）",
-    )
-    window_event_threshold: int = Field(
-        default=200,
-        ge=1,
-        description="窗口触发压缩的条数阈值",
     )
     compressor: StreamerCompressorConfig = Field(
         default_factory=StreamerCompressorConfig,

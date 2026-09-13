@@ -208,6 +208,20 @@ class TestAdvanceFileVersions:
 
 
 class TestVersionPipeline:
+    """加载管线闭环（真实文件）。
+
+    体内会替换 agents.toml 的生产钩子链；setup/teardown 暂存恢复，
+    防止注册表污染泄漏到其他测试（各文件版本流独立，恢复是硬要求）。
+    """
+
+    def setup_method(self) -> None:
+        self._saved_agents_hooks = upgrade._FILE_HOOKS.pop("agents.toml", None)
+
+    def teardown_method(self) -> None:
+        upgrade._FILE_HOOKS.pop("agents.toml", None)
+        if self._saved_agents_hooks is not None:
+            upgrade._FILE_HOOKS["agents.toml"] = self._saved_agents_hooks
+
     def _write_version(self, config_dir: Path, file_name: str, version: str) -> None:
         path = config_dir / file_name
         content = path.read_text(encoding="utf-8-sig")
@@ -258,6 +272,8 @@ class TestVersionPipeline:
         content = content.replace("[agents]\n", '[agents]\nbot_name = "麦麦"\n', 1)
         agents_path.write_text(content, encoding="utf-8-sig")
 
+        # 隔离生产钩子（本测试断言推进目标 = 样例钩子 target 2.0.31）
+        upgrade._FILE_HOOKS.pop("agents.toml", None)
         upgrade.register_file_hook("agents.toml", "sample", "2.0.31", sample_hook_v2_0_31)
         try:
             load_config_dir(tmp_path)

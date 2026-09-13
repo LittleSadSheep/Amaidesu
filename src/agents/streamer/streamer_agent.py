@@ -309,7 +309,6 @@ class StreamerAgent(BaseAgent):
             "light_tick_ms": bg.light_tick_ms,
             "cold_timeout_ms": bg.cold_timeout_ms,
             "summary_interval_ms": bg.summary_interval_ms,
-            "window_event_threshold": bg.window_event_threshold,
             "compressor_concurrency": bg.compressor.concurrency,
             "compressor_queue_max": bg.compressor.queue_max,
         }
