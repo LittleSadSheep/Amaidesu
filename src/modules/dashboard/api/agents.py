@@ -105,7 +105,6 @@ async def list_agents(server: ServerDep) -> AgentListResponse:
 async def get_agent_state(name: str, server: ServerDep) -> AgentStateResponse:
     """单个 Agent 的 state / heartbeat_ms / is_alive / restart_count。"""
     control = _get_agent_control(server)
-    control = _get_agent_control(server)
     manager = _get_agent_manager(server)
     info = control.state_of(name)
     if info is None:
