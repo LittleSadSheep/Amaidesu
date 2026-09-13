@@ -131,14 +131,41 @@
                 size="default"
                 plain
                 :loading="actionLoading[`${selectedAgent.name}-restart`]"
-                @click="handleControl('restart')"
+                @click="handleRestartWithConfirm"
               >
                 重启
+              </el-button>
+              <el-button
+                size="default"
+                plain
+                :disabled="!agentStateOf(selectedAgent.name) || selectedState === 'paused'"
+                :loading="controlLoading[`${selectedAgent.name}-pause`]"
+                @click="handleAgentControl('pause')"
+              >
+                暂停
+              </el-button>
+              <el-button
+                size="default"
+                plain
+                :disabled="selectedState !== 'paused'"
+                :loading="controlLoading[`${selectedAgent.name}-resume`]"
+                @click="handleAgentControl('resume')"
+              >
+                恢复
+              </el-button>
+              <el-button
+                type="danger"
+                size="default"
+                plain
+                :loading="controlLoading[`${selectedAgent.name}-shutdown`]"
+                @click="handleAgentControl('shutdown')"
+              >
+                关机
               </el-button>
             </div>
           </header>
 
-          <!-- 2. 元信息条：已启用 / 运行中 / 最近决策 -->
+          <!-- 2. 元信息条：已启用 / 运行中 / 状态 / 心跳 / 存活 / 重启次数 / 最近决策 -->
           <div class="details-strip" aria-label="状态摘要">
             <div class="stat-chip">
               <span class="chip-label">已启用</span>
@@ -152,10 +179,37 @@
                 {{ selectedAgent.is_started ? '是' : '否' }}
               </span>
             </div>
+            <div class="stat-chip">
+              <span class="chip-label">状态</span>
+              <span class="chip-value mono">{{ selectedState }}</span>
+            </div>
+            <div class="stat-chip">
+              <span class="chip-label">心跳</span>
+              <span class="chip-value mono">{{ heartbeatLabel }}</span>
+            </div>
+            <div class="stat-chip">
+              <span class="chip-label">存活</span>
+              <span class="chip-value" :class="selectedInfo?.is_alive ? 'chip-yes' : 'chip-no'">
+                {{ selectedInfo ? (selectedInfo.is_alive ? '是' : '否') : '—' }}
+              </span>
+            </div>
+            <div class="stat-chip">
+              <span class="chip-label">重启次数</span>
+              <span class="chip-value mono">{{ selectedInfo?.restart_count ?? '—' }}</span>
+            </div>
             <div class="stat-chip stat-chip--accent">
               <span class="chip-label">最近决策</span>
               <span class="chip-value mono">{{ latestDecisionLabel }}</span>
             </div>
+            <el-button
+              size="small"
+              text
+              :loading="stateRefreshing"
+              title="刷新状态"
+              @click="refreshAgentStates"
+            >
+              刷新
+            </el-button>
           </div>
 
           <!-- 3. 运行轨迹：THE MAIN SPACE -->
@@ -277,10 +331,17 @@
  * - 后端后续票：事件负载增加 agent-identity 字段可消除近似归因。
  */
 import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue';
-import { ElMessage } from 'element-plus';
+import { ElMessage, ElMessageBox } from 'element-plus';
 import { storeToRefs } from 'pinia';
 import { useComponentsStore, useEventsStore } from '@/stores';
-import type { ComponentControlAction, ComponentSummary, WebSocketMessage } from '@/types';
+import { agentsApi } from '@/api';
+import type {
+  AgentControlActionType,
+  AgentInfo,
+  ComponentControlAction,
+  ComponentSummary,
+  WebSocketMessage,
+} from '@/types';
 import { summarizeEvent } from '@/utils/eventSummary';
 
 // ============================================================
@@ -349,6 +410,7 @@ async function handleControl(action: ComponentControlAction): Promise<void> {
     ElMessage.error(error instanceof Error ? error.message : '操作失败');
   } finally {
     actionLoading[key] = false;
+    void refreshAgentStates();
   }
 }
 
@@ -381,6 +443,103 @@ function statusLabel(a: ComponentSummary): string {
   if (a.is_started) return '运行中';
   if (a.is_enabled) return '已停止';
   return '未启用';
+}
+
+// ============================================================
+// Agent 控制面（/api/v1/agents）：运行状态 + pause/resume/shutdown
+// ============================================================
+
+// 运行状态名册：name → AgentInfo（进页面拉一次，操作后与手动刷新时更新）
+const agentStates = ref<Record<string, AgentInfo>>({});
+const stateRefreshing = ref(false);
+
+async function refreshAgentStates(): Promise<void> {
+  stateRefreshing.value = true;
+  try {
+    const res = await agentsApi.listAgents();
+    const next: Record<string, AgentInfo> = {};
+    for (const a of res.data.agents) next[a.name] = a;
+    agentStates.value = next;
+  } catch (error) {
+    ElMessage.error(extractAgentError(error, '获取 Agent 状态失败'));
+  } finally {
+    stateRefreshing.value = false;
+  }
+}
+
+function agentStateOf(name: string): AgentInfo | null {
+  return agentStates.value[name] ?? null;
+}
+
+const selectedInfo = computed<AgentInfo | null>(() =>
+  selectedName.value ? agentStateOf(selectedName.value) : null,
+);
+
+const selectedState = computed<string>(() => selectedInfo.value?.state ?? '—');
+
+const heartbeatLabel = computed<string>(() => {
+  const info = selectedInfo.value;
+  if (!info) return '—';
+  return `${info.heartbeat_ms} ms`;
+});
+
+// 从 axios 错误中提取后端中文 detail（400 风险说明 / 404 / 500 均为中文）
+function extractAgentError(error: unknown, fallback: string): string {
+  if (error && typeof error === 'object' && 'response' in error) {
+    const data = (error as { response?: { data?: { detail?: unknown } } }).response?.data;
+    if (data && typeof data.detail === 'string') return data.detail;
+  }
+  return error instanceof Error && error.message ? error.message : fallback;
+}
+
+// pause/resume/shutdown 走框架级控制端点；shutdown 为高风险动作，确认后才携带 confirm: true
+const controlLoading = reactive<Record<string, boolean>>({});
+
+async function handleAgentControl(action: AgentControlActionType): Promise<void> {
+  const name = selectedName.value;
+  if (!name) return;
+  const riskHints: Partial<Record<AgentControlActionType, string>> = {
+    shutdown: '停机后该 Agent 不再响应（需重新启用才能恢复）',
+  };
+  const hint = riskHints[action];
+  if (hint) {
+    try {
+      await ElMessageBox.confirm(`确认对「${name}」执行关机？${hint}`, '高风险操作确认', {
+        type: 'warning',
+        confirmButtonText: '确认关机',
+        cancelButtonText: '取消',
+      });
+    } catch {
+      return;
+    }
+  }
+  const key = `${name}-${action}`;
+  controlLoading[key] = true;
+  try {
+    const res = await agentsApi.controlAgent(name, action, hint ? true : undefined);
+    ElMessage.success(res.data.message);
+  } catch (error) {
+    ElMessage.error(extractAgentError(error, '操作失败'));
+  } finally {
+    controlLoading[key] = false;
+    await refreshAgentStates();
+  }
+}
+
+// 既有重启语义（组件控制端点）不动，仅补确认框
+async function handleRestartWithConfirm(): Promise<void> {
+  const name = selectedName.value;
+  if (!name) return;
+  try {
+    await ElMessageBox.confirm(`确认重启「${name}」？将停止当前实例并重新构造启动`, '重启确认', {
+      type: 'warning',
+      confirmButtonText: '确认重启',
+      cancelButtonText: '取消',
+    });
+  } catch {
+    return;
+  }
+  await handleControl('restart');
 }
 
 // ============================================================
@@ -534,6 +693,7 @@ function relativeTime(timestampMs: number): string {
 
 onMounted(() => {
   componentsStore.fetchComponents();
+  refreshAgentStates();
 });
 </script>
 

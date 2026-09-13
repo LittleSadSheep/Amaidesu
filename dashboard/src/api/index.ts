@@ -8,6 +8,10 @@
 
 import axios from 'axios';
 import type {
+  AgentControlActionType,
+  AgentControlResponse,
+  AgentListResponse,
+  AgentState,
   SystemStatusResponse,
   ComponentListResponse,
   ComponentControlRequest,
@@ -123,6 +127,19 @@ export const toolsApi = {
     api.post<ToolControlResponse>(`/tools/${name}/control`, { action }),
   reconnectProvider: (providerId: string) =>
     api.post<ToolReconnectResponse>(`/tools/providers/${providerId}/reconnect`),
+};
+
+// ===== Agent 控制面（运行态观测 + 框架级控制） =====
+//
+// `GET /agents`：已注册 Agent 名册（state / heartbeat_ms / is_alive /
+// restart_count / enabled）。`POST /agents/{name}/control`：pause / resume
+// 即时生效；shutdown / restart 属高风险动作，须携带 confirm: true，
+// 受理后返回 202（响应体与 200 同形）。
+export const agentsApi = {
+  listAgents: () => api.get<AgentListResponse>('/agents'),
+  getAgentState: (name: string) => api.get<AgentState>(`/agents/${name}/state`),
+  controlAgent: (name: string, action: AgentControlActionType, confirm?: boolean) =>
+    api.post<AgentControlResponse>(`/agents/${name}/control`, { action, confirm }),
 };
 
 // ===== Simulator 控制面（世界模拟器：generate 生成 / replay 回放） =====

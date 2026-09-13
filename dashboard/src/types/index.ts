@@ -98,6 +98,51 @@ export interface ComponentControlResponse {
   message: string;
 }
 
+// ==================== Agent 控制面 ====================
+
+/**
+ * Agent 运行名册条目（`GET /api/v1/agents`）。
+ *
+ * - `state`：Agent 决策循环状态（如 running / paused），由后端派生
+ * - `heartbeat_ms`：最近心跳距当前的毫秒数
+ * - `is_alive`：心跳是否超时判定存活
+ * - `restart_count`：重启计数（跨实例继承）
+ * - `enabled`：agents.toml `[agents].enabled` 配置态标记
+ */
+export interface AgentInfo {
+  name: string;
+  description: string;
+  state: string;
+  heartbeat_ms: number;
+  is_alive: boolean;
+  restart_count: number;
+  enabled: boolean;
+}
+
+export interface AgentListResponse {
+  agents: AgentInfo[];
+}
+
+/** 单 Agent 运行状态（`GET /api/v1/agents/{name}/state`，无 enabled） */
+export type AgentState = Omit<AgentInfo, 'enabled'>;
+
+/** Agent 框架级控制动作（pause/resume 即时生效；shutdown/restart 高风险需 confirm） */
+export type AgentControlActionType = 'pause' | 'resume' | 'shutdown' | 'restart';
+
+export interface AgentControlRequest {
+  action: AgentControlActionType;
+  /** shutdown / restart 缺 confirm=true 时后端以 400 拒绝并附中文风险说明 */
+  confirm?: boolean;
+}
+
+export interface AgentControlResponse {
+  success: boolean;
+  action: string;
+  name: string;
+  message: string;
+  state?: string | null;
+}
+
 // ==================== 配置 ====================
 
 /**
