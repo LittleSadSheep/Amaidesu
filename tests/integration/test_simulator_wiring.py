@@ -173,6 +173,66 @@ class TestSimulatorWiring:
         if result[1] is not None:
             await result[1].cleanup()
 
+    @pytest.mark.asyncio
+    async def test_simulator_setup_runs_after_agents_started(
+        self, config_service_factory, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """装配顺序契约：simulator.setup（可能发 live.started）晚于 agent_manager.start_all（订阅生效）。
+
+        回放模式开播经 open_session 发 live.started；若 setup 早于 Agent 订阅，
+        开播边界事件会被主播 Agent 错过（主动发言闸不置位）。
+        """
+        from src.modules.agents.manager import AgentManager
+        from src.modules.simulator.service import SimulatorService
+
+        from main import create_app_components
+
+        monkeypatch.setattr("main._BASE_DIR", str(Path.cwd()))
+
+        order: list[str] = []
+
+        orig_start_all = AgentManager.start_all
+
+        async def spy_start_all(self: AgentManager) -> None:
+            await orig_start_all(self)
+            order.append("agents_started")
+
+        orig_setup = SimulatorService.setup
+
+        async def spy_setup(self: SimulatorService, *args: Any, **kwargs: Any) -> None:
+            order.append("simulator_setup")
+            await orig_setup(self, *args, **kwargs)
+
+        monkeypatch.setattr(AgentManager, "start_all", spy_start_all)
+        monkeypatch.setattr(SimulatorService, "setup", spy_setup)
+
+        config_service = config_service_factory(simulator_enabled=True)
+        config = config_service.main_config
+        # 装配一个最小 streamer Agent，使 agent_manager.start_all() 真实执行
+        config["agents"] = {"enabled": ["streamer"], "streamer": {}}
+
+        result = await create_app_components(
+            config=config,
+            config_service=config_service,
+            dev_webui=False,
+            simulator_auto_start=True,
+        )
+        try:
+            assert order == ["agents_started", "simulator_setup"], (
+                f"装配顺序契约被破坏：期望 agents 订阅先于 simulator setup，实际 {order}"
+            )
+        finally:
+            agent_manager = result[5]
+            if agent_manager is not None:
+                await agent_manager.stop_supervisor()
+                await agent_manager.stop_all()
+            simulator_service = result[6]
+            if simulator_service is not None:
+                await simulator_service.cleanup()
+            await result[0].cleanup()
+            if result[1] is not None:
+                await result[1].cleanup()
+
 
 class TestMainDryModeShutdown:
     """main() --dry 路径行为验证（避免 --dry 触发 LLM 调用）。"""

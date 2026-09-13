@@ -331,10 +331,15 @@ async def create_app_components(
 ]:
     """组合根：构造并连接所有核心组件。
 
-    按依赖关系构造：LLM 为基座，再装存储与记忆、EventBus 与
-    拦截器与场次管理，然后 EventHistoryRecorder + StorageLedger（溯源链收口），
-    Collector/Simulator/Agent 按各自配置开关装配，ToolRegistry 在 Agent 启动前
-    完成 L2/L1 接线与审计，最后挂 DashboardServer 作为 WebUI observer。
+    装配分两段（契约）：
+    - 第 ① 段 构造 + 接线：LLM 为基座，再装存储与记忆、EventBus 与拦截器与
+      场次管理、EventHistoryRecorder + StorageLedger（溯源链收口）、Collector、
+      ToolRegistry L2/L1 接线与审计——所有 ``event_bus.on`` 在此段就位；
+      本段不触发业务运行态（不得发 live.started 之类的边界事件）。
+    - 第 ② 段 启动/触发：``agent_manager.start_all()``（Agent 订阅生效）先行，
+      之后才允许触发类组件启动（SimulatorService.setup：replay 模式开播经
+      open_session 发 live.started），保证边界事件不漏订阅；最后挂
+      DashboardServer 作为 WebUI observer。
 
     Args:
         config: 完整配置字典
@@ -419,13 +424,15 @@ async def create_app_components(
         await collector_manager.start_all()
         logger.info(f"CollectorManager 已启动（{len(collector_manager)} 个 Collector）")
 
-    # --- SimulatorService（开发基础设施）---
-    # 默认 enabled=false 生产零装配；enabled=true 时装配并自动启动（除非 --dry）。
-    # 装配需存储仓储（人设/礼物/世界窗口）+ LLMManager（generate 模式）+ EventBus + ConfigService。
+    # --- SimulatorService（开发基础设施；第 ① 段只构造，setup 在第 ② 段）---
+    # 默认 enabled=false 生产零装配；构造需存储仓储（人设/礼物/世界窗口）
+    # + LLMManager（generate 模式）+ EventBus + 场次管理。
+    # setup/启动推迟到第 ② 段（Agent 订阅之后）：replay 模式 start() 经
+    # open_session 发 live.started，属业务运行态触发，第 ① 段不得做。
     simulator_service: Optional["SimulatorService"] = None
     simulator_cfg = config.get("simulator", {}) if isinstance(config, dict) else {}
     if isinstance(simulator_cfg, dict) and simulator_cfg.get("enabled", False):
-        logger.info("初始化 SimulatorService（src/modules/simulator/）...")
+        logger.info("构造 SimulatorService（src/modules/simulator/，启动在第 ② 段）...")
         simulator_service = SimulatorService(
             event_bus=event_bus,
             sim_repo=database.sim,
@@ -433,14 +440,6 @@ async def create_app_components(
             services_by_type={type(llm_service): llm_service},
             session_manager=session_manager,
         )
-        await simulator_service.setup(
-            config_service,
-            auto_start=simulator_auto_start,
-        )
-        if simulator_service.is_running:
-            logger.info("SimulatorService 已启动（[simulator].enabled=true）")
-        else:
-            logger.info("SimulatorService 已装配（enabled=true 但未启动，见 auto_start）")
     else:
         logger.debug("[simulator].enabled=false，零装配 SimulatorService")
 
@@ -655,6 +654,21 @@ async def create_app_components(
         # 守护循环在所有 Agent 启动后开启（巡检只看活跃 Agent）
         agent_manager.start_supervisor()
         logger.info(f"AgentManager 已启动（{len(agent_manager)} 个 Agent）")
+
+    # --- 装配第 ② 段：启动/触发（进入本段前所有 event_bus.on 已就位）---
+    # 契约：第 ① 段只构造与接线，不改变业务运行态；触发类组件在此段启动，
+    # 保证边界事件（live.started 等）发出时订阅方已就位。
+    # SimulatorService.setup 最后一步是 auto_start：replay 模式开播经
+    # open_session 发 live.started，必须晚于上面 start_all() 的订阅生效。
+    if simulator_service is not None:
+        await simulator_service.setup(
+            config_service,
+            auto_start=simulator_auto_start,
+        )
+        if simulator_service.is_running:
+            logger.info("SimulatorService 已启动（[simulator].enabled=true）")
+        else:
+            logger.info("SimulatorService 已装配（enabled=true 但未启动，见 auto_start）")
 
     # --- ToolRegistry 工具审计：所有 Agent 声明的工具是否都已注册实现 ---
     if agent_manager is not None and agent_manager.tool_registry is not None:

@@ -416,12 +416,6 @@ class StreamerAgent(BaseAgent):
         if self._event_bus is not None:
             self._subscribe_events()
 
-        # 场次初始同步：订阅前场次可能已开启（模拟器回放 auto_start 先于 Agent
-        # 订阅），以 session_manager 当前状态为准，不依赖事件是否错过
-        if self._session_manager is not None and self._session_manager.active_pk is not None:
-            self._live_active = True
-            self._logger.info(f"启动时场次已在进行（id={self._session_manager.active_pk}）：主动发言放行")
-
         # 启动后台 flush 循环
         self._flush_task = asyncio.create_task(self._flush_loop())
 
