@@ -8,6 +8,9 @@
       </div>
       <div class="header-actions">
         <el-button :icon="Refresh" :loading="loadingState" @click="refresh"> 刷新 </el-button>
+        <el-button type="primary" :icon="Files" :loading="libraryLoading" @click="openLibrary">
+          流程单库
+        </el-button>
       </div>
     </header>
 
@@ -59,7 +62,10 @@
       <section v-if="state && state.segments.length > 0" class="segments-section">
         <header class="section-bar">
           <h3 class="section-title">环节预览</h3>
-          <span class="section-meta">共 {{ state.segments.length }} 个环节</span>
+          <div class="section-tools">
+            <span class="section-meta">共 {{ state.segments.length }} 个环节</span>
+            <el-button size="small" :icon="EditPen" @click="startEditCurrent">编辑流程单</el-button>
+          </div>
         </header>
         <el-table
           :data="state.segments"
@@ -200,7 +206,10 @@
       <section class="segments-section">
         <header class="section-bar">
           <h3 class="section-title">环节清单</h3>
-          <span class="section-meta">共 {{ state?.segments.length ?? 0 }} 个环节</span>
+          <div class="section-tools">
+            <span class="section-meta">共 {{ state?.segments.length ?? 0 }} 个环节</span>
+            <el-button size="small" :icon="EditPen" @click="startEditCurrent">编辑流程单</el-button>
+          </div>
         </header>
         <el-table
           :data="state?.segments ?? []"
@@ -349,6 +358,206 @@
         </div>
       </div>
     </el-drawer>
+
+    <!-- 流程单库：列表 / 新建 / 复制 / 删除 / 设为当前 -->
+    <el-dialog
+      v-model="libraryOpen"
+      title="流程单库"
+      width="760px"
+      append-to-body
+      class="library-dialog"
+    >
+      <el-table :data="libraryItems" stripe size="default" class="library-table">
+        <el-table-column label="标题" min-width="150">
+          <template #default="{ row }">
+            <span class="library-title">{{ row.title }}</span>
+            <el-tag
+              v-if="row.rundown_id === currentRundownId"
+              size="small"
+              type="success"
+              effect="plain"
+              class="current-flag"
+            >
+              当前
+            </el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="ID" min-width="170">
+          <template #default="{ row }">
+            <span class="mono library-id">{{ row.rundown_id }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="环节数" width="80" align="center">
+          <template #default="{ row }">{{ row.segments.length }}</template>
+        </el-table-column>
+        <el-table-column label="总时长" width="100">
+          <template #default="{ row }">
+            <span class="mono">{{ formatDuration(totalExpectedMs(row)) }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="操作" width="250" fixed="right" align="center">
+          <template #default="{ row }">
+            <el-button link type="primary" @click.stop="startEdit(row)">编辑</el-button>
+            <el-button
+              link
+              type="success"
+              :disabled="row.rundown_id === currentRundownId"
+              @click.stop="activateRundown(row)"
+            >
+              设为当前
+            </el-button>
+            <el-button link @click.stop="duplicateRundown(row)">复制</el-button>
+            <el-button link type="danger" @click.stop="removeRundown(row)">删除</el-button>
+          </template>
+        </el-table-column>
+      </el-table>
+      <template #footer>
+        <div class="library-footer">
+          <span class="library-hint">
+            未选单时主播 Agent 使用内置默认流程单（初次直播·自我介绍）。
+          </span>
+          <div>
+            <el-button :icon="Plus" @click="startCreate">新建流程单</el-button>
+            <el-button @click="libraryOpen = false">关闭</el-button>
+          </div>
+        </div>
+      </template>
+    </el-dialog>
+
+    <!-- 流程单编辑器：标题 + 环节卡片排序增删 -->
+    <el-dialog
+      v-model="editorOpen"
+      :title="editorOriginalId ? '编辑流程单' : '新建流程单'"
+      width="680px"
+      append-to-body
+      class="editor-dialog"
+      :close-on-click-modal="false"
+    >
+      <el-form label-width="84px" class="editor-form">
+        <el-form-item label="流程单 ID">
+          <el-input v-model="editorForm.rundown_id" placeholder="唯一标识，配置引用此 id" />
+        </el-form-item>
+        <el-form-item label="标题">
+          <el-input v-model="editorForm.title" placeholder="流程单标题" />
+        </el-form-item>
+      </el-form>
+
+      <div class="seg-editor-bar">
+        <span class="section-title">环节（{{ editorForm.segments.length }}）</span>
+        <el-button size="small" :icon="Plus" @click="openSegmentDialog(-1)">添加环节</el-button>
+      </div>
+      <div v-if="editorForm.segments.length === 0" class="seg-editor-empty">
+        <el-empty description="至少需要一个环节" :image-size="60" />
+      </div>
+      <div v-else class="seg-editor-list">
+        <div
+          v-for="(seg, idx) in editorForm.segments"
+          :key="`${seg.id}-${idx}`"
+          class="seg-editor-card"
+        >
+          <span class="seg-order mono">{{ idx + 1 }}</span>
+          <div class="seg-info">
+            <div class="seg-name">{{ seg.title }}</div>
+            <div class="seg-meta">
+              <span class="mono">{{ seg.id }}</span>
+              <span class="mono">{{ formatDuration(seg.expected_ms) }}</span>
+            </div>
+          </div>
+          <div class="seg-actions">
+            <el-button link :disabled="idx === 0" @click="moveSegment(idx, -1)">上移</el-button>
+            <el-button
+              link
+              :disabled="idx === editorForm.segments.length - 1"
+              @click="moveSegment(idx, 1)"
+            >
+              下移
+            </el-button>
+            <el-button link type="primary" @click="openSegmentDialog(idx)">编辑</el-button>
+            <el-button
+              link
+              type="danger"
+              :disabled="editorForm.segments.length <= 1"
+              @click="removeSegment(idx)"
+            >
+              删除
+            </el-button>
+          </div>
+        </div>
+      </div>
+
+      <template #footer>
+        <el-button @click="editorOpen = false">取消</el-button>
+        <el-button type="primary" :loading="editorSaving" @click="saveEditor">保存</el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 环节编辑（二级）：新增与编辑共用 -->
+    <el-dialog
+      v-model="segDialogOpen"
+      :title="segEditingIndex >= 0 ? '编辑环节' : '添加环节'"
+      width="540px"
+      append-to-body
+      class="seg-dialog"
+      :close-on-click-modal="false"
+    >
+      <el-form label-width="90px">
+        <el-form-item label="环节 ID">
+          <el-input v-model="segForm.id" placeholder="环节唯一标识，跳转定位用" />
+        </el-form-item>
+        <el-form-item label="环节名">
+          <el-input v-model="segForm.title" placeholder="环节标题" />
+        </el-form-item>
+        <el-form-item label="任务说明">
+          <el-input
+            v-model="segForm.task_description"
+            type="textarea"
+            :rows="3"
+            placeholder="给主播 Agent 的目标指引，允许自由发挥"
+          />
+        </el-form-item>
+        <el-form-item label="关键要点">
+          <el-input
+            v-model="segForm.keyPointsText"
+            type="textarea"
+            :rows="3"
+            placeholder="每行一条；可留空"
+          />
+        </el-form-item>
+        <el-form-item label="预期时长">
+          <el-input-number
+            v-model="segForm.expectedMinutes"
+            :min="0.1"
+            :step="0.5"
+            :precision="1"
+            controls-position="right"
+          />
+          <span class="minutes-unit">分钟</span>
+        </el-form-item>
+        <el-form-item label="最短停留">
+          <el-input-number
+            v-model="segForm.minMinutes"
+            :min="0.1"
+            :step="0.5"
+            :precision="1"
+            controls-position="right"
+            placeholder="可选"
+          />
+          <span class="minutes-unit">分钟（可选；防御 Agent 抢跑）</span>
+        </el-form-item>
+        <el-form-item label="备注">
+          <el-input
+            v-model="segForm.notes"
+            type="textarea"
+            :rows="2"
+            placeholder="导演直录内容（如参考开场白），直接注入上下文；可留空"
+          />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="segDialogOpen = false">取消</el-button>
+        <el-button type="primary" @click="saveSegmentDialog">确定</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -366,15 +575,24 @@
  * 2. 未加载（status=idle）：等待主播 Agent 启动 + 环节预览
  * 3. 运行中（status=running|paused|done）：KPI 行 + 当前环节卡 + 环节表 + 历史时间线
  */
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
-import { ElMessage } from 'element-plus';
-import { ArrowRightBold, Position, Refresh, VideoPause } from '@element-plus/icons-vue';
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
+import { ElMessage, ElMessageBox } from 'element-plus';
+import {
+  ArrowRightBold,
+  EditPen,
+  Files,
+  Plus,
+  Position,
+  Refresh,
+  VideoPause,
+} from '@element-plus/icons-vue';
 import { rundownApi } from '@/api';
 import { wsClient } from '@/api/websocket';
 import type {
   RundownControlAction,
   RundownControlResponse,
   RundownCurrentSegment,
+  RundownDefinition,
   RundownSegmentView,
   RundownSnapshot,
   RundownStateResponse,
@@ -637,6 +855,304 @@ function handleNext(): void {
 
 function handleJump(seg: RundownSegmentView): void {
   void performControl('goto', { segment_id: seg.id });
+}
+
+// ============================================================
+// 流程单库与编辑器
+// ============================================================
+// 编辑保存（upsert）写入存储；保存的是直播运行中的那份流程单时，
+// 后端写穿运行态（进度按环节 id 对齐），本页经既有 rundown.changed
+// 防抖重拉机制自动刷新，无需额外订阅。
+
+const libraryOpen = ref(false);
+const libraryLoading = ref(false);
+const libraryItems = ref<RundownDefinition[]>([]);
+
+/** 配置当前指向的流程单 id；空串 = 使用内置默认流程单 */
+const currentRundownId = computed(() => state.value?.config.rundown_id ?? '');
+
+function totalExpectedMs(def: RundownDefinition): number {
+  return def.segments.reduce((sum, seg) => sum + (seg.expected_ms || 0), 0);
+}
+
+async function fetchLibrary(): Promise<void> {
+  libraryLoading.value = true;
+  try {
+    const res = await rundownApi.listRundowns();
+    if (!res.data.success) {
+      ElMessage.error(res.data.message || '流程单库加载失败');
+      return;
+    }
+    libraryItems.value = res.data.rundowns;
+  } catch (e) {
+    ElMessage.error(e instanceof Error ? e.message : '流程单库加载失败');
+  } finally {
+    libraryLoading.value = false;
+  }
+}
+
+async function openLibrary(): Promise<void> {
+  await fetchLibrary();
+  libraryOpen.value = true;
+}
+
+// ---- 编辑器 ----
+
+const editorOpen = ref(false);
+const editorSaving = ref(false);
+/** 打开时的 rundown_id；空串 = 新建 */
+const editorOriginalId = ref('');
+const editorForm = reactive<{ rundown_id: string; title: string; segments: RundownSegmentView[] }>({
+  rundown_id: '',
+  title: '',
+  segments: [],
+});
+
+function fillEditorForm(def: RundownDefinition): void {
+  editorForm.rundown_id = def.rundown_id;
+  editorForm.title = def.title;
+  editorForm.segments = JSON.parse(JSON.stringify(def.segments)) as RundownSegmentView[];
+}
+
+async function startCreate(): Promise<void> {
+  try {
+    const res = await rundownApi.getTemplate();
+    if (!res.data.success || !res.data.definition) {
+      ElMessage.error(res.data.message || '模板加载失败');
+      return;
+    }
+    fillEditorForm(res.data.definition);
+    editorForm.rundown_id = `rundown_${Date.now() % 100_000}`;
+    editorOriginalId.value = '';
+    editorOpen.value = true;
+  } catch (e) {
+    ElMessage.error(e instanceof Error ? e.message : '模板加载失败');
+  }
+}
+
+/** 编辑当前配置指向的流程单；未选单或指向不存在时从运行快照预填新建 */
+async function startEditCurrent(): Promise<void> {
+  await fetchLibrary();
+  const found = currentRundownId.value
+    ? libraryItems.value.find(r => r.rundown_id === currentRundownId.value)
+    : null;
+  if (found) {
+    startEdit(found);
+    return;
+  }
+  if (state.value && state.value.segments.length > 0) {
+    // 运行中的是内置默认流程单（虚拟存在不写库）：从快照预填，保存即落库
+    fillEditorForm({
+      rundown_id: `rundown_${Date.now() % 100_000}`,
+      title: snapshot.value?.title || '未命名流程单',
+      segments: state.value.segments,
+    });
+    editorOriginalId.value = '';
+    editorOpen.value = true;
+    ElMessage.info('当前使用的是内置默认流程单；保存后将作为新流程单入库');
+    return;
+  }
+  ElMessage.warning('流程单内容尚未加载，请先启动主播 Agent 或从流程单库选择');
+}
+
+function startEdit(def: RundownDefinition): void {
+  fillEditorForm(def);
+  editorOriginalId.value = def.rundown_id;
+  editorOpen.value = true;
+}
+
+async function saveEditor(): Promise<void> {
+  if (!editorForm.rundown_id.trim()) {
+    ElMessage.warning('请填写流程单 ID');
+    return;
+  }
+  if (!editorForm.title.trim()) {
+    ElMessage.warning('请填写流程单标题');
+    return;
+  }
+  if (editorForm.segments.length === 0) {
+    ElMessage.warning('至少需要一个环节');
+    return;
+  }
+  editorSaving.value = true;
+  try {
+    const res = await rundownApi.upsert({
+      rundown_id: editorForm.rundown_id.trim(),
+      title: editorForm.title.trim(),
+      segments: editorForm.segments,
+    });
+    if (!res.data.success) {
+      ElMessage.error(res.data.message || '保存失败');
+      return;
+    }
+    ElMessage.success(res.data.message || '已保存');
+    editorOpen.value = false;
+    // 写穿后 rundown.changed 会触发防抖重拉；这里主动刷新保证非运行态也即时
+    void fetchState({ silent: true });
+    if (libraryOpen.value) await fetchLibrary();
+  } catch (e) {
+    ElMessage.error(e instanceof Error ? e.message : '保存失败');
+  } finally {
+    editorSaving.value = false;
+  }
+}
+
+// ---- 环节卡片操作 ----
+
+function moveSegment(idx: number, dir: -1 | 1): void {
+  const target = idx + dir;
+  if (target < 0 || target >= editorForm.segments.length) return;
+  const segs = editorForm.segments;
+  [segs[idx], segs[target]] = [segs[target], segs[idx]];
+}
+
+function removeSegment(idx: number): void {
+  if (editorForm.segments.length <= 1) return;
+  editorForm.segments.splice(idx, 1);
+}
+
+// ---- 环节二级编辑 ----
+
+const segDialogOpen = ref(false);
+const segEditingIndex = ref(-1);
+const segForm = reactive({
+  id: '',
+  title: '',
+  task_description: '',
+  keyPointsText: '',
+  expectedMinutes: 5,
+  minMinutes: null as number | null,
+  notes: '',
+});
+
+const MINUTES_MS = 60_000;
+
+function openSegmentDialog(idx: number): void {
+  segEditingIndex.value = idx;
+  if (idx >= 0) {
+    const seg = editorForm.segments[idx];
+    segForm.id = seg.id;
+    segForm.title = seg.title;
+    segForm.task_description = seg.task_description;
+    segForm.keyPointsText = seg.key_points.join('\n');
+    segForm.expectedMinutes = Math.round((seg.expected_ms / MINUTES_MS) * 10) / 10;
+    segForm.minMinutes =
+      seg.min_duration_ms != null ? Math.round((seg.min_duration_ms / MINUTES_MS) * 10) / 10 : null;
+    segForm.notes = seg.notes ?? '';
+  } else {
+    segForm.id = `segment_${editorForm.segments.length + 1}`;
+    segForm.title = '';
+    segForm.task_description = '';
+    segForm.keyPointsText = '';
+    segForm.expectedMinutes = 5;
+    segForm.minMinutes = null;
+    segForm.notes = '';
+  }
+  segDialogOpen.value = true;
+}
+
+function saveSegmentDialog(): void {
+  if (!segForm.id.trim()) {
+    ElMessage.warning('请填写环节 ID');
+    return;
+  }
+  if (!segForm.title.trim()) {
+    ElMessage.warning('请填写环节名');
+    return;
+  }
+  const duplicate = editorForm.segments.some(
+    (seg, i) => seg.id === segForm.id.trim() && i !== segEditingIndex.value,
+  );
+  if (duplicate) {
+    ElMessage.warning(`环节 ID "${segForm.id.trim()}" 已存在`);
+    return;
+  }
+  if (
+    segForm.minMinutes != null &&
+    segForm.expectedMinutes != null &&
+    segForm.minMinutes > segForm.expectedMinutes
+  ) {
+    ElMessage.warning('最短停留不能大于预期时长');
+    return;
+  }
+
+  const segment: RundownSegmentView = {
+    id: segForm.id.trim(),
+    title: segForm.title.trim(),
+    task_description: segForm.task_description.trim(),
+    key_points: segForm.keyPointsText
+      .split('\n')
+      .map(line => line.trim())
+      .filter(Boolean),
+    expected_ms: Math.max(1000, Math.round((segForm.expectedMinutes ?? 0.1) * MINUTES_MS)),
+    min_duration_ms:
+      segForm.minMinutes != null
+        ? Math.max(1000, Math.round(segForm.minMinutes * MINUTES_MS))
+        : null,
+    notes: segForm.notes.trim() || null,
+  };
+  if (segEditingIndex.value >= 0) {
+    editorForm.segments[segEditingIndex.value] = segment;
+  } else {
+    editorForm.segments.push(segment);
+  }
+  segDialogOpen.value = false;
+}
+
+// ---- 库操作：删除 / 复制 / 设为当前 ----
+
+async function removeRundown(def: RundownDefinition): Promise<void> {
+  const referenced = def.rundown_id === currentRundownId.value;
+  try {
+    await ElMessageBox.confirm(
+      referenced
+        ? `确定删除「${def.title}」？当前配置仍指向它，重启主播 Agent 后将回退内置默认流程单。`
+        : `确定删除「${def.title}」？`,
+      '删除流程单',
+      { confirmButtonText: '删除', cancelButtonText: '取消', type: 'warning' },
+    );
+  } catch {
+    return;
+  }
+  try {
+    const res = await rundownApi.remove(def.rundown_id);
+    if (!res.data.success) {
+      ElMessage.error(res.data.message || '删除失败');
+      return;
+    }
+    ElMessage.success(res.data.message || '已删除');
+    await fetchLibrary();
+  } catch (e) {
+    ElMessage.error(e instanceof Error ? e.message : '删除失败');
+  }
+}
+
+async function duplicateRundown(def: RundownDefinition): Promise<void> {
+  try {
+    const res = await rundownApi.duplicate(def.rundown_id);
+    if (!res.data.success) {
+      ElMessage.error(res.data.message || '复制失败');
+      return;
+    }
+    ElMessage.success(`已复制为 ${res.data.rundown_id}`);
+    await fetchLibrary();
+  } catch (e) {
+    ElMessage.error(e instanceof Error ? e.message : '复制失败');
+  }
+}
+
+async function activateRundown(def: RundownDefinition): Promise<void> {
+  try {
+    const res = await rundownApi.activate(def.rundown_id);
+    if (!res.data.success) {
+      ElMessage.error(res.data.message || '设置失败');
+      return;
+    }
+    ElMessage.success(res.data.message || '已设为当前');
+    await fetchLibrary();
+  } catch (e) {
+    ElMessage.error(e instanceof Error ? e.message : '设置失败');
+  }
 }
 
 // ============================================================
@@ -1335,6 +1851,119 @@ watch(
   padding-top: var(--spacing-sm);
   border-top: 1px solid var(--border-color-light);
   margin-top: auto;
+}
+
+/* ============================================================ */
+/* 流程单库与编辑器                                                */
+/* ============================================================ */
+
+.section-tools {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+}
+
+.library-table {
+  cursor: default;
+}
+
+.library-title {
+  font-weight: 500;
+  margin-right: 6px;
+}
+
+.current-flag {
+  margin-left: 4px;
+}
+
+.library-id {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.library-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--spacing-md);
+}
+
+.library-hint {
+  font-size: 12px;
+  color: var(--text-placeholder);
+}
+
+.seg-editor-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin: var(--spacing-sm) 0;
+}
+
+.seg-editor-empty {
+  padding: var(--spacing-xs) 0;
+}
+
+.seg-editor-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-xs);
+  max-height: 360px;
+  overflow-y: auto;
+}
+
+.seg-editor-card {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+  background: var(--bg-hover);
+  border: 1px solid var(--border-color-light);
+  border-radius: var(--radius-md);
+  padding: var(--spacing-xs) var(--spacing-sm);
+}
+
+.seg-order {
+  width: 24px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: var(--color-agenda);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 700;
+  flex-shrink: 0;
+}
+
+.seg-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.seg-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+  word-break: break-word;
+}
+
+.seg-meta {
+  display: flex;
+  gap: var(--spacing-sm);
+  font-size: 11px;
+  color: var(--text-placeholder);
+}
+
+.seg-actions {
+  display: flex;
+  flex-shrink: 0;
+}
+
+.minutes-unit {
+  margin-left: var(--spacing-sm);
+  font-size: 12px;
+  color: var(--text-secondary);
 }
 
 /* ============================================================ */

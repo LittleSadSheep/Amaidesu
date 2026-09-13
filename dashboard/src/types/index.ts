@@ -624,6 +624,42 @@ export interface RundownControlResponse {
   snapshot: RundownSnapshot | null;
 }
 
+// ==================== Rundown 流程单库（编辑器） ====================
+
+/**
+ * 流程单完整定义——库列表项与保存请求体共用同一形状。
+ *
+ * 完整性校验（环节 id 唯一、时长下界、最短停留不超预期）由后端领域模型负责，
+ * 前端仅做非空预检以省一次往返。
+ */
+export interface RundownDefinition {
+  rundown_id: string;
+  title: string;
+  segments: RundownSegmentView[];
+}
+
+/** `GET /api/v1/agenda/rundowns` 响应；`current_id` 为空表示配置未选单（走内置默认流程单）。 */
+export interface RundownListResponse {
+  success: boolean;
+  message: string;
+  rundowns: RundownDefinition[];
+  current_id: string;
+}
+
+/** `GET /api/v1/agenda/rundowns/template` 响应（内置默认流程单，新建预填模板）。 */
+export interface RundownTemplateResponse {
+  success: boolean;
+  message: string;
+  definition: RundownDefinition | null;
+}
+
+/** 流程单库写操作统一响应（upsert / delete / duplicate / activate）。 */
+export interface RundownMutateResponse {
+  success: boolean;
+  message: string;
+  rundown_id: string | null;
+}
+
 // ==================== 导出 settings / llm / trace 子模块 ====================
 
 export * from './settings';

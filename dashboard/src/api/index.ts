@@ -43,6 +43,10 @@ import type {
   RundownStateResponse,
   RundownControlRequest,
   RundownControlResponse,
+  RundownDefinition,
+  RundownListResponse,
+  RundownMutateResponse,
+  RundownTemplateResponse,
   ProactiveToggleRequest,
   ProactiveToggleResponse,
   StreamerStatusResponse,
@@ -253,6 +257,20 @@ export const rundownApi = {
   getState: () => api.get<RundownStateResponse>('/agenda/state'),
   control: (request: RundownControlRequest) =>
     api.post<RundownControlResponse>('/agenda/control', request),
+
+  // ===== 流程单库（列表 / 模板 / upsert / 删除 / 复制 / 设为当前） =====
+  //
+  // upsert 保存的流程单正是直播运行中的那份时，后端会写穿运行态
+  // （进度按环节 id 对齐）；activate 只落盘配置，重启主播 Agent 后生效。
+  listRundowns: () => api.get<RundownListResponse>('/agenda/rundowns'),
+  getTemplate: () => api.get<RundownTemplateResponse>('/agenda/rundowns/template'),
+  upsert: (definition: RundownDefinition) =>
+    api.post<RundownMutateResponse>('/agenda/rundowns', definition),
+  remove: (rundownId: string) => api.delete<RundownMutateResponse>(`/agenda/rundowns/${rundownId}`),
+  duplicate: (rundownId: string) =>
+    api.post<RundownMutateResponse>(`/agenda/rundowns/${rundownId}/duplicate`),
+  activate: (rundownId: string) =>
+    api.post<RundownMutateResponse>(`/agenda/rundowns/${rundownId}/activate`),
 };
 
 export default api;
