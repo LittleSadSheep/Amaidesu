@@ -178,7 +178,7 @@ async def test_streamer_infra_kwargs_forwarded() -> None:
     )
     assert agent is not None
     assert agent._session_manager is session_obj
-    assert agent._tts_engine is tts_obj
-    assert agent._subtitle_service is subtitle_obj
+    assert agent._speech._tts_engine is tts_obj
+    assert agent._speech._subtitle_service is subtitle_obj
     assert agent._thinking_sink is sink_obj
-    assert agent._speech_max_queue == 5
+    assert agent._speech._speech_max_queue == 5

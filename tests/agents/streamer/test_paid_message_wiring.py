@@ -106,7 +106,7 @@ async def test_paid_message_flushes_decision_with_forced_true() -> None:
     """付费消息触发立即 flush，Planner 以 forced=True 进入决策轮。"""
     agent = _build_agent()
     plan_mock = AsyncMock(return_value=None)
-    agent._planner.plan = plan_mock  # type: ignore[method-assign]
+    agent._rounds._planner.plan = plan_mock  # type: ignore[method-assign]
 
     await agent.handle_message(_make_message("super_chat", content="SC 点名"))
     await agent._maybe_flush()
@@ -120,7 +120,7 @@ async def test_normal_danmaku_not_forced_and_no_immediate_flush() -> None:
     """普通弹幕：不误置 forced，窗口未到期不触发决策轮。"""
     agent = _build_agent()
     plan_mock = AsyncMock(return_value=None)
-    agent._planner.plan = plan_mock  # type: ignore[method-assign]
+    agent._rounds._planner.plan = plan_mock  # type: ignore[method-assign]
 
     await agent.handle_message(_make_message("danmaku", content="哈哈"))
     assert agent._buffer.force is False

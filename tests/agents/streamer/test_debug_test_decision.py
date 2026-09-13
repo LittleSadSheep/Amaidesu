@@ -59,7 +59,7 @@ def _build_agent() -> StreamerAgent:
 
 
 def _patch_planner(agent: StreamerAgent, outcome: Optional[Dict[str, Any]]) -> None:
-    agent._planner.plan = AsyncMock(return_value=outcome)
+    agent._rounds._planner.plan = AsyncMock(return_value=outcome)
 
 
 def _patch_reply_provider(

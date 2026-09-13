@@ -59,7 +59,7 @@ async def test_decide_round_delivers_reasoning_to_sink():
     sink = _RecordingSink()
     agent = _build_agent(thinking_sink=sink)
 
-    await agent._decide_round(
+    await agent._rounds._decide_round(
         [],
         round_id="round_e2e",
         started_ms=0,
@@ -81,7 +81,7 @@ async def test_disabled_switch_short_circuits_sink():
     sink = _RecordingSink()
     agent = _build_agent(thinking_sink=sink, enabled=False)
 
-    await agent._decide_round(
+    await agent._rounds._decide_round(
         [],
         round_id="round_off",
         started_ms=0,
@@ -97,7 +97,7 @@ async def test_disabled_switch_short_circuits_sink():
 async def test_no_sink_means_no_crash():
     agent = _build_agent(thinking_sink=None)
 
-    result = await agent._decide_round(
+    result = await agent._rounds._decide_round(
         [],
         round_id="round_none",
         started_ms=0,

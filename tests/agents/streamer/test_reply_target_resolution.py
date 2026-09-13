@@ -69,7 +69,7 @@ def test_resolve_target_by_message_id():
     msg = _make_msg(text="主播好", user_id="alice", message_id="msg_123")
     plan = {"target": "msg_123"}
 
-    assert agent._resolve_reply_target_user(plan, [msg]) == "alice"
+    assert agent._rounds._resolve_reply_target_user(plan, [msg]) == "alice"
 
 
 def test_resolve_target_by_text_fallback():
@@ -78,7 +78,7 @@ def test_resolve_target_by_text_fallback():
     msg = _make_msg(text="你好呀主播", user_id="bob")
     plan = {"target": "你好呀"}
 
-    assert agent._resolve_reply_target_user(plan, [msg]) == "bob"
+    assert agent._rounds._resolve_reply_target_user(plan, [msg]) == "bob"
 
 
 def test_resolve_target_none_when_no_target():
@@ -87,7 +87,7 @@ def test_resolve_target_none_when_no_target():
     msg = _make_msg(text="hi", user_id="alice")
     plan = {"target": None}
 
-    assert agent._resolve_reply_target_user(plan, [msg]) is None
+    assert agent._rounds._resolve_reply_target_user(plan, [msg]) is None
 
 
 def test_resolve_target_fallback_last_message():
@@ -98,7 +98,7 @@ def test_resolve_target_fallback_last_message():
     m3 = _make_msg(text="ccc", user_id="carol")
     plan = {"target": "zzz_unmatched"}
 
-    assert agent._resolve_reply_target_user(plan, [m1, m2, m3]) == "carol"
+    assert agent._rounds._resolve_reply_target_user(plan, [m1, m2, m3]) == "carol"
 
 
 def test_resolve_target_empty_batch():
@@ -106,7 +106,7 @@ def test_resolve_target_empty_batch():
     agent = _make_minimal_agent()
     plan = {"target": "msg_123"}
 
-    assert agent._resolve_reply_target_user(plan, []) is None
+    assert agent._rounds._resolve_reply_target_user(plan, []) is None
 
 
 # ---------------------------------------------------------------------------
@@ -150,7 +150,7 @@ class TestReplyToMessageIdResolution:
             _make_msg(text="主播好可爱", user_id="u2", message_id="m2"),
         ]
         plan = {"target": "观众A", "reply_to": "m2"}
-        user_id = agent._resolve_reply_target_user(plan, batch)
+        user_id = agent._rounds._resolve_reply_target_user(plan, batch)
         assert user_id == "u2", "reply_to 应精确命中对应弹幕的观众"
 
     @pytest.mark.asyncio
@@ -158,7 +158,7 @@ class TestReplyToMessageIdResolution:
         agent = _make_minimal_agent()
         batch = [_make_msg(text="今天玩什么？", user_id="u1", message_id="m1")]
         plan = {"reply_to": "不存在的id"}
-        user_id = agent._resolve_reply_target_user(plan, batch)
+        user_id = agent._rounds._resolve_reply_target_user(plan, batch)
         assert user_id is None, "reply_to 未命中时不做文本兜底（防误关联）"
 
     @pytest.mark.asyncio

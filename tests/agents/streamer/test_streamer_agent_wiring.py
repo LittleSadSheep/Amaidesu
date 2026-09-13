@@ -628,7 +628,7 @@ async def test_decision_loop_unaffected_when_tts_disabled():
         history_provider=None,
     )
 
-    await agent._make_two_stage_decision(
+    await agent._rounds.execute(
         batch=[],
         forced=False,
         trigger_reason="test",
