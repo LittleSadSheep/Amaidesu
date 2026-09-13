@@ -13,7 +13,6 @@ profile="replyer")``。测试 mock 按 profile 分流：
 from __future__ import annotations
 
 import asyncio
-import json
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -490,12 +489,15 @@ class TestStatisticsFields:
         agent, bus, registry, llm, prompt = _setup_agent()
 
         # time.time 粒度在 Windows 上较粗，mock 秒回时毫秒差值可能取整为 0；
-        # 注入 50ms 延迟保证实测耗时可靠大于 0。
-        async def _slow_call_tools(*args, **kwargs):
-            await asyncio.sleep(0.05)
-            return _replyer_response("谢谢支持！", emotion="happy")
+        # replyer 分支注入 50ms 延迟保证实测耗时可靠大于 0。
+        inner = llm.generate.side_effect
 
-        llm.call_tools = AsyncMock(side_effect=_slow_call_tools)
+        async def _slow_dispatch(*args, **kwargs):
+            if kwargs.get("profile") == "replyer":
+                await asyncio.sleep(0.05)
+            return await inner(*args, **kwargs)
+
+        llm.generate = AsyncMock(side_effect=_slow_dispatch)
 
         await agent.start()
         try:
@@ -524,7 +526,15 @@ class TestStatisticsFields:
                 _planner_react_response([]),
             ]
         )
-        llm.call_tools = AsyncMock(return_value=_replyer_failure("llm down"))
+        # replyer 分支返回失败响应（Replyer LLM 失败 → reply 工具失败 → 计数递增）
+        inner = llm.generate.side_effect
+
+        async def _failing_dispatch(*args, **kwargs):
+            if kwargs.get("profile") == "replyer":
+                return _replyer_failure("llm down")
+            return await inner(*args, **kwargs)
+
+        llm.generate = AsyncMock(side_effect=_failing_dispatch)
 
         await agent.start()
         try:
@@ -567,7 +577,15 @@ class TestStatisticsFields:
                 _planner_react_response([]),
             ]
         )
-        llm.call_tools = AsyncMock(return_value=_replyer_failure("llm down"))
+        # replyer 分支返回失败响应（Replyer LLM 失败 → reply 工具失败 → 计数递增）
+        inner = llm.generate.side_effect
+
+        async def _failing_dispatch(*args, **kwargs):
+            if kwargs.get("profile") == "replyer":
+                return _replyer_failure("llm down")
+            return await inner(*args, **kwargs)
+
+        llm.generate = AsyncMock(side_effect=_failing_dispatch)
 
         await agent.start()
         try:

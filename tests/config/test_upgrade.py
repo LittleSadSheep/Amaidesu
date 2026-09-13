@@ -63,6 +63,16 @@ def sample_cross_hook(host_data: Dict[str, Any], target_data: Dict[str, Any]) ->
 
 
 class TestAdvanceFileVersions:
+    """调度器单测：与生产钩子注册表隔离（暂存清空，测试后恢复）。"""
+
+    def setup_method(self) -> None:
+        self._saved_agents_hooks = upgrade._FILE_HOOKS.pop("agents.toml", None)
+
+    def teardown_method(self) -> None:
+        upgrade._FILE_HOOKS.pop("agents.toml", None)
+        if self._saved_agents_hooks is not None:
+            upgrade._FILE_HOOKS["agents.toml"] = self._saved_agents_hooks
+
     def test_advances_to_last_executed_hook_target(self):
         """有适用钩子的文件推进到最后一个已执行钩子的 target（不是基线）"""
         raw = {"agents.toml": {"meta": {"version": "2.0.30"}, "agents": {"bot_name": "麦麦"}}}
@@ -221,6 +231,8 @@ class TestVersionPipeline:
         content = content.replace("[agents]\n", '[agents]\nbot_name = "麦麦"\n', 1)
         agents_path.write_text(content, encoding="utf-8-sig")
 
+        # 隔离生产钩子（agents.toml 的生产登记会改变推进目标）
+        upgrade._FILE_HOOKS.pop("agents.toml", None)
         upgrade.register_file_hook("agents.toml", "sample", "2.0.31", sample_hook_v2_0_31)
         try:
             config, _report = load_config_dir(tmp_path)

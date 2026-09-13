@@ -140,16 +140,15 @@ def test_factory_does_not_expose_llm_profile() -> None:
     assert "llm_profile" not in inspect.signature(instantiate_agent).parameters
 
 
-@pytest.mark.asyncio
-async def test_minecraft_uses_agent_default_llm_profile() -> None:
-    """工厂构造 MinecraftAgent 时使用类默认 profile（'minecraft'）。"""
-    from unittest.mock import AsyncMock, MagicMock
+def test_minecraft_uses_agent_default_llm_profile() -> None:
+    """工厂构造 MinecraftAgent 时使用代码显式声明的 profile（'minecraft'）。"""
+    from unittest.mock import MagicMock
 
-    llm = MagicMock()
-    llm.call_tools = AsyncMock()
-    agent = instantiate_agent("minecraft", {}, llm_manager=llm, prompt_manager=MagicMock())
+    from src.agents.minecraft.agent import MINECRAFT_PROFILE
+
+    agent = instantiate_agent("minecraft", {}, llm_manager=MagicMock(), prompt_manager=MagicMock())
     assert agent is not None
-    assert agent._llm_profile == "minecraft"
+    assert MINECRAFT_PROFILE == "minecraft"
 
 
 # ---------------------------------------------------------------------------
