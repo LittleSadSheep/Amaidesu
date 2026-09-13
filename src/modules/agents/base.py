@@ -35,15 +35,20 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Dict, Iterable, Optional
 
+from src.modules.config.core_schemas import AgentSupervisorConfig
 from src.modules.logging import get_logger
 from src.modules.time_utils import now_ms
 from src.modules.tools.models import ToolSpec
 
 logger = get_logger("BaseAgent")
 
-
 # 简化 EventBus 类型提示（避免循环依赖；实际注入由 AgentManager 完成）
 EventBusLike = Any
+
+# 守护参数默认值的唯一权威：AgentSupervisorConfig（infra.toml
+# [agent_supervisor] 段的 Schema）。构造未显式传参时从此处解析，
+# 避免框架代码里散落魔法数。
+_SUPERVISOR_DEFAULTS = AgentSupervisorConfig()
 
 
 class AgentState(str, Enum):
@@ -90,11 +95,22 @@ class BaseAgent(abc.ABC):
     emits_events: Iterable[str] = ()  # 子类可声明自己发哪些事件族
 
     # ----- 内部状态 -----
-    def __init__(self, *, event_bus: Optional[EventBusLike] = None) -> None:
+    def __init__(
+        self,
+        *,
+        event_bus: Optional[EventBusLike] = None,
+        heartbeat_interval_ms: Optional[int] = None,
+    ) -> None:
         # name 由子类显式声明（class attr）；不在 __init__ 兜底，避免掩盖错误
         # AgentManager.register 会拒绝空名（更明确的错误位置）
         self._state: AgentState = AgentState.CREATED
         self._event_bus = event_bus
+        # 心跳间隔（毫秒）；未显式传入时用守护配置默认值；<=0 关闭心跳任务
+        self._heartbeat_interval_ms: int = (
+            heartbeat_interval_ms if heartbeat_interval_ms is not None else _SUPERVISOR_DEFAULTS.heartbeat_interval_ms
+        )
+        # 心跳后台任务（start 创建 / stop 取消；None = 未运行）
+        self._heartbeat_task: Optional["asyncio.Task[None]"] = None
         # 用子类声明的 name 初始化心跳（如未声明 → 防御用空串；Manager 拒绝）
         self._heartbeat = AgentHeartbeat(agent_name=self.name or "", last_heartbeat_ms=now_ms())
         self._restart_count: int = 0
@@ -129,6 +145,7 @@ class BaseAgent(abc.ABC):
             raise
 
         self._subscribe_task_wakeup()
+        self._start_heartbeat_loop()
 
         async with self._lock:
             self._state = AgentState.RUNNING
@@ -141,6 +158,7 @@ class BaseAgent(abc.ABC):
             if self._state == AgentState.STOPPED:
                 return
             self._state = AgentState.STOPPING
+        await self._stop_heartbeat_loop()
 
         try:
             await self._on_stop()
@@ -157,8 +175,47 @@ class BaseAgent(abc.ABC):
 
     async def cleanup(self) -> None:
         """资源释放（连接/后台任务）。默认实现: 调用 _on_cleanup 钩子。"""
+        # 心跳任务兜底取消（stop 未被调用的异常路径）
+        await self._stop_heartbeat_loop()
         await self._on_cleanup()
         logger.debug(f"Agent '{self.name}' 资源已清理")
+
+    # ----- 心跳后台任务 -----
+
+    def _start_heartbeat_loop(self) -> None:
+        """创建心跳后台任务（start 成功路径调用；幂等）。
+
+        ``heartbeat_interval_ms <= 0`` 时不创建（心跳关闭）；已有存活任务
+        时跳过（重复 start 防御）。
+        """
+        if self._heartbeat_interval_ms <= 0:
+            logger.debug(f"Agent '{self.name}' 心跳已关闭（interval_ms<=0），不创建心跳任务")
+            return
+        if self._heartbeat_task is not None and not self._heartbeat_task.done():
+            return
+        self._heartbeat_task = asyncio.create_task(self._heartbeat_loop(), name=f"heartbeat-{self.name}")
+
+    async def _heartbeat_loop(self) -> None:
+        """周期写心跳；任何异常只记日志，不拖垮 Agent（任务退出由 stop 取消）。"""
+        interval_s = self._heartbeat_interval_ms / 1000
+        while True:
+            await asyncio.sleep(interval_s)
+            try:
+                self.note_heartbeat()
+            except Exception as exc:  # noqa: BLE001 - 心跳异常不拖垮 Agent
+                logger.warning(f"Agent '{self.name}' 心跳写入异常（忽略）: {type(exc).__name__}: {exc}")
+
+    async def _stop_heartbeat_loop(self) -> None:
+        """取消心跳后台任务（stop / cleanup 路径调用；幂等）。"""
+        task = self._heartbeat_task
+        self._heartbeat_task = None
+        if task is None or task.done():
+            return
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass  # 预期取消路径
 
     # ----- 内部钩子（子类可选覆写）-----
 
@@ -364,6 +421,14 @@ class BaseAgent(abc.ABC):
 
     def increment_restart_counter(self) -> None:
         self._restart_count += 1
+
+    def carry_restart_count(self, count: int) -> None:
+        """继承前实例的重启计数（AgentManager.rebuild 换实例后调用）。
+
+        重建产出的是全新实例（计数归零）；由 manager 把累计次数搬运到
+        新实例上，保证 restart_count 观测面跨重建连续。
+        """
+        self._restart_count = max(0, count)
 
     @property
     def restart_count(self) -> int:

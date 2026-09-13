@@ -9,6 +9,7 @@ from typing import Any
 from pydantic import Field
 
 from src.modules.config.core_schemas import (
+    AgentSupervisorConfig,
     DashboardConfig,
     EventHistoryConfig,
     SubtitleInfraConfig,
@@ -30,6 +31,7 @@ class InfraRootConfig(BaseConfig):
     - ``[events]``      — EventBus 事件历史
     - ``[interceptors]`` — 事件拦截器配置（动态键）
     - ``[dashboard]``   — Web Dashboard
+    - ``[agent_supervisor]`` — Agent 心跳与自动重建（守护）
     - ``[logging]``     — 日志
     - ``[simulator]``   — 模拟直播间
     """
@@ -65,6 +67,10 @@ class InfraRootConfig(BaseConfig):
         },
         description="事件拦截器配置（动态键，如 rate_limit / similar_filter）",
     )
+    agent_supervisor: AgentSupervisorConfig = Field(
+        default_factory=AgentSupervisorConfig,
+        description="Agent 心跳与自动重建（守护）配置（间隔/判死阈值/重建风暴保护）",
+    )
     dashboard: DashboardConfig = Field(default_factory=DashboardConfig, description="Dashboard 配置")
     logging: LoggingConfig = Field(default_factory=LoggingConfig, description="日志配置")
     simulator: SimulatorConfigSchema = Field(
@@ -73,4 +79,4 @@ class InfraRootConfig(BaseConfig):
     )
 
 
-__all__ = ["InfraRootConfig"]
+__all__ = ["AgentSupervisorConfig", "InfraRootConfig"]

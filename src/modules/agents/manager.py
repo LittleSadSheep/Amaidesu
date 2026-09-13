@@ -21,6 +21,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
 from src.modules.agents.base import AgentState, BaseAgent
+from src.modules.config.core_schemas import AgentSupervisorConfig
 from src.modules.logging import get_logger
 from src.modules.time_utils import now_ms
 from src.modules.tools.registry import ToolRegistry
@@ -56,6 +57,7 @@ class AgentManager:
         *,
         tool_registry: Optional[ToolRegistry] = None,
         memory: Optional[Any] = None,
+        supervisor_config: Optional[AgentSupervisorConfig] = None,
     ) -> None:
         self._agents: Dict[str, AgentRegistration] = {}
         # enable 时记住的构造入参（name → kwargs 字典，含 config 与基建透传）；
@@ -64,6 +66,13 @@ class AgentManager:
         self._tool_registry = tool_registry
         self._memory = memory
         self._lock = asyncio.Lock()
+        # ----- 守护（心跳巡检 + 自动重建 + 风暴保护）-----
+        self._supervisor_config = supervisor_config if supervisor_config is not None else AgentSupervisorConfig()
+        self._supervisor_task: Optional["asyncio.Task[None]"] = None
+        # name → 时间窗内重建失败时刻列表（毫秒时间戳；风暴保护计数）
+        self._rebuild_failures: Dict[str, List[int]] = {}
+        # 达到失败上限后停止自动重建的 Agent 名（人工介入前不再重试）
+        self._supervisor_quarantined: set[str] = set()
 
     # -------------------- 注册 --------------------
 
@@ -242,6 +251,11 @@ class AgentManager:
             instance.name = name
         if not self.register(instance):
             return False
+        # 人工重新启用达限隔离的 Agent 时清除风暴保护记录（重新给出重建
+        # 机会）；rebuild 的内部重试路径 name 不在隔离集，失败计数不被误清
+        if name in self._supervisor_quarantined:
+            self._supervisor_quarantined.discard(name)
+            self._rebuild_failures.pop(name, None)
         # 记住构造入参（重建入口 rebuild 依赖；回退成员后的有效值不回填——
         # 重建时 enable_agent 会再走一次同样的回退逻辑）
         self._enable_args[name] = {
@@ -293,11 +307,117 @@ class AgentManager:
         if args is None:
             logger.warning(f"Agent '{name}' 无 enable 记录，无法重建（仅支持经 enable_agent 启用的 Agent）")
             return False
+        # 重启计数跨实例继承：重建产出全新实例（计数归零），先把累计值读出
+        old_reg = self._agents.get(name)
+        carried_restart_count = old_reg.agent.restart_count if old_reg is not None else 0
         if not await self.disable_agent(name):
             logger.warning(f"Agent '{name}' 重建前清理失败，放弃重建")
             return False
         logger.info(f"Agent '{name}' 开始重建（stop → 重新构造 → start）")
-        return await self.enable_agent(name, **args)
+        if not await self.enable_agent(name, **args):
+            return False
+        new_agent = self.get_agent_by_name(name)
+        if new_agent is not None:
+            # 累计次数 + 1 写到新实例（观测面跨重建连续）
+            new_agent.carry_restart_count(carried_restart_count + 1)
+        return True
+
+    # -------------------- 守护（心跳巡检 + 自动重建） --------------------
+
+    def is_agent_alive(self, name: str) -> Optional[bool]:
+        """按守护配置的判死阈值查询 Agent 存活状态；未注册名返回 None。"""
+        reg = self._agents.get(name)
+        if reg is None:
+            return None
+        return reg.agent.is_alive(dead_threshold_ms=self._supervisor_config.dead_threshold_ms)
+
+    def start_supervisor(self) -> None:
+        """启动低频巡检后台任务（组合根在 start_all 之后调用；幂等）。"""
+        if self._supervisor_config.check_interval_ms <= 0:
+            logger.info("[agent_supervisor].check_interval_ms<=0：巡检关闭，不启动守护循环")
+            return
+        if self._supervisor_task is not None and not self._supervisor_task.done():
+            return
+        self._supervisor_task = asyncio.create_task(self._supervisor_loop(), name="agent-supervisor")
+        cfg = self._supervisor_config
+        logger.info(
+            f"Agent 守护循环已启动（check_interval_ms={cfg.check_interval_ms}, "
+            f"dead_threshold_ms={cfg.dead_threshold_ms}, max_rebuild_failures={cfg.max_rebuild_failures}"
+            f"@{cfg.rebuild_failure_window_ms}ms）"
+        )
+
+    async def stop_supervisor(self) -> None:
+        """停止巡检后台任务（停机路径调用；幂等）。"""
+        task = self._supervisor_task
+        self._supervisor_task = None
+        if task is None or task.done():
+            return
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass  # 预期取消路径
+        logger.info("Agent 守护循环已停止")
+
+    async def _supervisor_loop(self) -> None:
+        """巡检主循环：周期性对活跃 Agent 做存活检查并自动重建死者。"""
+        interval_s = self._supervisor_config.check_interval_ms / 1000
+        while True:
+            await asyncio.sleep(interval_s)
+            try:
+                await self._supervise_once()
+            except Exception as exc:  # noqa: BLE001 - 单轮巡检失败不终止守护
+                logger.warning(f"Agent 巡检单轮异常（忽略，下轮继续）: {type(exc).__name__}: {exc}", exc_info=True)
+
+    async def _supervise_once(self) -> None:
+        """单轮巡检：对 STARTING/RUNNING/PAUSED 的 Agent 判死，超时则自动重建。"""
+        cfg = self._supervisor_config
+        for name in self.list_agents():
+            if name in self._supervisor_quarantined:
+                continue  # 风暴保护：已达失败上限，停止重试
+            reg = self._agents.get(name)
+            if reg is None:
+                continue
+            # 巡检范围：应存活的 Agent（STARTING/RUNNING/PAUSED），加上
+            # 重建失败遗留的 ERRORED（有 enable 记录 = 可重建，窗口内重试）；
+            # 其余终态（STOPPED 等）不误判、不重建
+            if reg.agent.state not in (AgentState.STARTING, AgentState.RUNNING, AgentState.PAUSED, AgentState.ERRORED):
+                continue
+            if reg.agent.state == AgentState.ERRORED and name not in self._enable_args:
+                continue  # 非 enable 途径注册的 ERRORED 实例不可重建，交给人工
+            if reg.agent.is_alive(dead_threshold_ms=cfg.dead_threshold_ms):
+                continue  # 空闲但心跳正常 → 不干预
+            logger.warning(
+                f"Agent '{name}' 心跳超时（>{cfg.dead_threshold_ms}ms，"
+                f"last_heartbeat_ms={reg.agent.heartbeat.last_heartbeat_ms}），尝试自动重建"
+            )
+            if await self.rebuild(name):
+                self._rebuild_failures.pop(name, None)
+                logger.info(f"Agent '{name}' 心跳超时后自动重建成功")
+            else:
+                self._record_rebuild_failure(name)
+
+    def _record_rebuild_failure(self, name: str) -> None:
+        """记录一次重建失败；时间窗内达上限 → 置 ERRORED + 停止自动重试。"""
+        cfg = self._supervisor_config
+        now = now_ms()
+        window = cfg.rebuild_failure_window_ms
+        failures = [t for t in self._rebuild_failures.setdefault(name, []) if now - t < window]
+        failures.append(now)
+        self._rebuild_failures[name] = failures
+        logger.error(f"Agent '{name}' 自动重建失败（窗口内第 {len(failures)}/{cfg.max_rebuild_failures} 次）")
+        if len(failures) < cfg.max_rebuild_failures:
+            return
+        self._supervisor_quarantined.add(name)
+        logger.error(
+            f"Agent '{name}' 在 {window}ms 窗口内重建失败 {len(failures)} 次，达到上限，"
+            f"停止自动重建（防重启风暴）；需人工介入后重新 enable 恢复"
+        )
+        # 状态置 ERRORED：重建路径大概率已把实例停在 ERRORED/STOPPED；
+        # 若实例仍在名册且状态非终态，强制标死以如实反映"不可自动恢复"。
+        reg = self._agents.get(name)
+        if reg is not None and reg.agent.state not in (AgentState.ERRORED, AgentState.STOPPED):
+            reg.agent._state = AgentState.ERRORED  # noqa: SLF001 - manager 对自身名册的标死特权
 
     def __len__(self) -> int:
         return len(self._agents)

@@ -206,3 +206,42 @@ class SubtitleInfraConfig(BaseConfig):
         default_factory=dict,
         description="Tk GUI 字幕后端参数（SubtitleGuiService.ConfigSchema 键；缺失键自动补齐）",
     )
+
+
+# ---------------------------------------------------------------------------
+# Agent 守护（心跳 + 巡检 + 自动重建）—— infra.toml [agent_supervisor] 段
+# ---------------------------------------------------------------------------
+
+
+class AgentSupervisorConfig(BaseConfig):
+    """Agent 心跳与自动重建（守护）配置
+
+    全部框架侧参数集中于此（默认值的唯一权威处）：BaseAgent 心跳任务与
+    AgentManager 巡检循环构造时未显式传参，均从此处默认值解析。
+    """
+
+    heartbeat_interval_ms: int = Field(
+        default=10000,
+        ge=0,
+        description="Agent 心跳间隔（毫秒）；0 = 关闭心跳任务",
+    )
+    check_interval_ms: int = Field(
+        default=30000,
+        ge=0,
+        description="AgentManager 巡检循环周期（毫秒）；0 = 关闭巡检",
+    )
+    dead_threshold_ms: int = Field(
+        default=60000,
+        ge=1000,
+        description="心跳距今超过该阈值判死（毫秒）；需显著大于心跳间隔",
+    )
+    rebuild_failure_window_ms: int = Field(
+        default=300000,
+        ge=1000,
+        description="重建失败计数时间窗（毫秒）",
+    )
+    max_rebuild_failures: int = Field(
+        default=3,
+        ge=1,
+        description="时间窗内重建失败达到该次数 → 置 ERRORED 并停止自动重试",
+    )

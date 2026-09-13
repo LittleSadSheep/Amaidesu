@@ -199,10 +199,13 @@ class AgentControl:
         agent = self._manager.get_agent_by_name(name)
         if agent is None:
             return None
+        # is_alive 走 manager 的守护阈值（config 化）；能走到这里说明 agent 在名册，不会是 None
+        alive = self._manager.is_agent_alive(name)
         return {
             "name": agent.name,
             "state": agent.state.value,
             "heartbeat_ms": agent.heartbeat.last_heartbeat_ms,
+            "is_alive": alive if alive is not None else agent.is_alive(),
             "restart_count": agent.restart_count,
         }
 

@@ -30,7 +30,11 @@ from src.modules.agents.factory import instantiate_agent
 from src.modules.agents.manager import AgentManager
 from src.modules.collectors.factory import instantiate_collector
 from src.modules.collectors.manager import CollectorManager
-from src.modules.config.core_schemas import DashboardConfig, EventHistoryConfig
+from src.modules.config.core_schemas import (
+    AgentSupervisorConfig,
+    DashboardConfig,
+    EventHistoryConfig,
+)
 from src.modules.config.service import ConfigService
 from src.modules.dashboard.server import DashboardServer
 from src.modules.dashboard.stream_preview import StreamPreviewHub
@@ -482,7 +486,12 @@ async def create_app_components(
         # 注意不可用 `or 3` 兜底：会把用户显式配置的 0（关闭熔断）吞成 3
         failure_threshold = int(tools_health_cfg.get("failure_threshold", 3))
         tool_registry = ToolRegistry(event_bus=event_bus, failure_threshold=failure_threshold)
-        agent_manager = AgentManager(tool_registry=tool_registry, memory=memory)
+        # Agent 守护（心跳巡检 + 自动重建）：配置来自 [agent_supervisor] 段（infra.toml）
+        supervisor_section = config.get("agent_supervisor", {}) if isinstance(config, dict) else {}
+        if not isinstance(supervisor_section, dict):
+            supervisor_section = {}
+        supervisor_config = AgentSupervisorConfig.from_dict(supervisor_section)
+        agent_manager = AgentManager(tool_registry=tool_registry, memory=memory, supervisor_config=supervisor_config)
 
         # TTS 引擎实例（基础设施，不经 ToolRegistry）：按 [tts] 段装配；
         # 失败 / 关闭时返回 None，StreamerAgent 走 TTS 关闭路径。
@@ -642,6 +651,8 @@ async def create_app_components(
             logger.info(f"framework 工具已注册（控制+委派，新增 {framework_count} 个）")
 
         await agent_manager.start_all()
+        # 守护循环在所有 Agent 启动后开启（巡检只看活跃 Agent）
+        agent_manager.start_supervisor()
         logger.info(f"AgentManager 已启动（{len(agent_manager)} 个 Agent）")
 
     # --- ToolRegistry 工具审计：所有 Agent 声明的工具是否都已注册实现 ---
@@ -1043,6 +1054,7 @@ async def run_shutdown(
 
     if agent_manager is not None:
         logger.info("正在停止 AgentManager...")
+        await safe_log(agent_manager.stop_supervisor(), "AgentManager.stop_supervisor")
         await safe_log(agent_manager.stop_all(), "AgentManager.stop_all")
         await safe_log(agent_manager.cleanup_all(), "AgentManager.cleanup_all")
         logger.info("AgentManager 已停止")
