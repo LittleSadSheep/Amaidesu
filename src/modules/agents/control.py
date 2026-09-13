@@ -1,13 +1,14 @@
 """
 AgentControl —— 框架级 Agent 控制与委派
 
-- pause / resume / shutdown / restart 框架级控制工具
 - framework_delegate / framework_task_status：跨 Agent 委派原语
   ——派活拿回执（accepted + task_id），任务进度随时可查；指令只当自然
   语言（给目标，不给步骤），不加编排/条件分支
 - provider="framework"（框架内置提供，非独立源；可见名单默认 ["*"]）
+- pause / resume / shutdown / restart / 状态查询等控制能力由 ``AgentControl``
+  类本体承载，不进 LLM 工具面；控制面（DashboardServer）经 API 直调
 
-注册方式：
+LLM 工具面注册方式（framework provider 只含 delegate/task_status 两个 spec）：
 ```python
 provider = build_agent_control_provider(manager, task_ledger)
 tool_registry.register_provider(provider)
@@ -33,70 +34,6 @@ logger = get_logger("AgentControl")
 
 
 _AGENT_CONTROL_SPECS: List[ToolSpec] = [
-    ToolSpec(
-        name="pause_agent",
-        description="暂停指定 Agent（按名）。状态机切到 PAUSED，调用 _on_pause 钩子。",
-        parameters_schema={
-            "type": "object",
-            "properties": {
-                "name": {"type": "string", "description": "Agent 名"},
-            },
-            "required": ["name"],
-        },
-        kind="sync",
-        provider="framework",
-    ),
-    ToolSpec(
-        name="resume_agent",
-        description="恢复指定 Agent（按名）。状态机切回 RUNNING，调用 _on_resume 钩子。",
-        parameters_schema={
-            "type": "object",
-            "properties": {"name": {"type": "string"}},
-            "required": ["name"],
-        },
-        kind="sync",
-        provider="framework",
-    ),
-    ToolSpec(
-        name="shutdown_agent",
-        description="停机指定 Agent（按名）。比 stop 更严格：调 stop + _on_shutdown。",
-        parameters_schema={
-            "type": "object",
-            "properties": {"name": {"type": "string"}},
-            "required": ["name"],
-        },
-        kind="sync",
-        provider="framework",
-    ),
-    ToolSpec(
-        name="restart_agent",
-        description="重启指定 Agent（stop + 工厂重建 + start）。",
-        parameters_schema={
-            "type": "object",
-            "properties": {"name": {"type": "string"}},
-            "required": ["name"],
-        },
-        kind="sync",
-        provider="framework",
-    ),
-    ToolSpec(
-        name="list_agents",
-        description="列出当前已注册的 Agent 名。",
-        parameters_schema={"type": "object", "properties": {}, "required": []},
-        kind="sync",
-        provider="framework",
-    ),
-    ToolSpec(
-        name="agent_state",
-        description="查询指定 Agent 的状态（state + heartbeat）。",
-        parameters_schema={
-            "type": "object",
-            "properties": {"name": {"type": "string"}},
-            "required": ["name"],
-        },
-        kind="sync",
-        provider="framework",
-    ),
     ToolSpec(
         name="delegate",
         description=(
@@ -215,7 +152,10 @@ class AgentControl:
 
 @dataclass(slots=True)
 class AgentControlProvider(BaseToolProvider):
-    """把 AgentControl 工具（控制 6 件 + 委派 2 件）注册到 ToolRegistry 的 Provider。
+    """把 framework LLM 工具面（委派 2 件）注册到 ToolRegistry 的 Provider。
+
+    控制工具（pause/resume/shutdown/restart/list/state）不在本 provider 中——
+    控制面由 DashboardServer 经 API 直调 ``AgentControl`` 类本体。
 
     委派原语：
     - ``framework_delegate(agent, instruction)``：名册校验 + **禁自派** +
@@ -227,15 +167,10 @@ class AgentControlProvider(BaseToolProvider):
 
     manager: AgentManager
     task_ledger: Optional[TaskLedger] = None
-    _control: AgentControl = field(init=False)
     _task_seq: int = field(default=0, init=False)
 
     # 工具分类（provider=提供者名、category=分组、tools.toml 段=配置地址，三者正交）
     category: ClassVar[str] = "framework"
-
-    def __post_init__(self) -> None:
-        self._control = AgentControl(self.manager)
-        # 复制 event_bus 引用（如果 manager 上有）— 此处简化，不注入
 
     @property
     def name(self) -> str:
@@ -247,52 +182,16 @@ class AgentControlProvider(BaseToolProvider):
     async def invoke(self, invocation: ToolInvocation) -> ToolExecutionResult:
         args = invocation.arguments or {}
         name = invocation.tool_name
-        # 调用方使用的就是派生全名（framework_pause_agent 等），等值对照分发
-        target_name = str(args.get("name", ""))
+        # 调用方使用的就是派生全名（framework_delegate 等），等值对照分发
         try:
             if name == "framework_delegate":
                 return await self._invoke_delegate(args, caller=invocation.source)
             if name == "framework_task_status":
                 return self._invoke_task_status(args)
-            if name == "framework_pause_agent":
-                ok = await self._control.pause(target_name)
-            elif name == "framework_resume_agent":
-                ok = await self._control.resume(target_name)
-            elif name == "framework_shutdown_agent":
-                ok = await self._control.shutdown(target_name)
-            elif name == "framework_restart_agent":
-                ok = await self._control.restart(target_name)
-            elif name == "framework_list_agents":
-                return ToolExecutionResult(
-                    tool_name=name,
-                    success=True,
-                    content=", ".join(self._control.list_agents()) or "（无 Agent）",
-                )
-            elif name == "framework_agent_state":
-                info = self._control.state_of(target_name)
-                if info is None:
-                    return ToolExecutionResult(
-                        tool_name=name,
-                        success=False,
-                        error_message=f"Agent '{target_name}' 不存在",
-                    )
-                return ToolExecutionResult(
-                    tool_name=name,
-                    success=True,
-                    content=str(info),
-                )
-            else:
-                return ToolExecutionResult(
-                    tool_name=name,
-                    success=False,
-                    error_message=f"未知 AgentControl 工具 '{name}'",
-                )
-
             return ToolExecutionResult(
                 tool_name=name,
-                success=ok,
-                content="OK" if ok else "FAILED",
-                error_message="" if ok else f"Agent '{target_name}' 操作失败",
+                success=False,
+                error_message=f"未知 AgentControl 工具 '{name}'",
             )
         except Exception as exc:  # noqa: BLE001 - 边界兜底
             logger.error(f"AgentControl 工具 '{name}' 执行失败: {exc}", exc_info=True)

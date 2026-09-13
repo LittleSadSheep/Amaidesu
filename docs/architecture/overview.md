@@ -50,7 +50,7 @@ flowchart TB
         Per["vision 分类（modules/vision/）<br/>vision_look_at_screen"]
         CE["text_adv 动作工具<br/>（agents/text_adv/ 内聚）"]
         Mem["memory 分类<br/>memory_query_memory"]
-        Ctrl["framework 分类<br/>framework_pause_agent 等 6 个 AgentControl 工具"]
+        Ctrl["framework 分类<br/>framework_delegate / framework_task_status"]
     end
 
     subgraph InFra["共享基础设施 src/modules/"]
@@ -93,7 +93,7 @@ Amaidesu/
 │   │       ├── text_adv/        #     文字冒险 GameAgent 范例（内容引擎为包内私有接口）
 │   │       └── minecraft/       #     Minecraft GameAgent（maicraft MCP 语义工具 + minecraft_todo/minecraft_notebook/minecraft_report/minecraft_get_state/minecraft_send_prompt）
 │   └── modules/                 # 共享模块（基础设施 + 领域组件）
-│       ├── agents/              # Agent 框架层：BaseAgent 协议六项 / AgentManager / AgentControl 6 工具 / factory(SUPPORTED_AGENTS)
+│       ├── agents/              # Agent 框架层：BaseAgent 协议六项 / AgentManager / AgentControl（控制面直调）/ factory(SUPPORTED_AGENTS)
 │       ├── audio/               # v2.0.10 抽出：AudioDeviceManager（声卡播放 / 录音），原 `src/modules/tts/audio_device_manager.py` 上移
 │       ├── tts/                 # v2.0.12 TTS 基础设施包（基础模块，非工具）：4 引擎 Provider（EdgeTTSProvider / GPTSoVITSProvider / VoiceboxProvider / OmniTTSProvider）+ common.py 共享函数 + gptsovits_client.py（GPT-SoVITS WebSocket 客户端与 Provider 同包）+ wav_decoder.py + assembly.py（build_tts_infrastructure 入口）。详见 [ADR-007](adr/007-tts-infrastructure-pipeline.md)
 │       ├── collectors/          # 输入采集域（BaseCollector + CollectorManager + 各域 Collector）
@@ -125,7 +125,7 @@ Amaidesu/
 └── docs/                        # 文档（架构 / 开发指南 / 决策记录）
 ```
 
-> `src/agents/` 只放业务 Agent；`src/modules/agents/` 放框架层（BaseAgent、AgentManager、AgentControl 工具、工厂）。这是 v2 包边界的硬规则。
+> `src/agents/` 只放业务 Agent；`src/modules/agents/` 放框架层（BaseAgent、AgentManager、AgentControl、工厂）。这是 v2 包边界的硬规则。
 
 ## 启动与关闭
 
@@ -223,7 +223,7 @@ sequenceDiagram
 |------|------|
 | `base.py` | `BaseAgent` 协议六项（§1.49）：1.生命周期（start/stop/cleanup + 工厂重建）、2.工具提供（`list_tools()`）、3.事件上报（`emit_event` + `emits_events` 可选声明）、4.状态读写（`_state` + heartbeat）、5.健康（`note_heartbeat/is_alive/dead_threshold_ms`）、6.元数据（`name/description`）。状态机：`CREATED → STARTING → RUNNING → PAUSED → STOPPING → STOPPED → ERRORED`。 |
 | `manager.py` | `AgentManager`：注册 / 启动（LIFO） / 停止 / cleanup / 动态启停（`start_agent`/`stop_agent`/`enable_agent`/`disable_agent`）；`audit_tools(registry) -> list[str]` 启动后只读审计未实现工具声明（不参与注册） |
-| `control.py` | `AgentControl`（直调接口） + `AgentControlProvider`（注册到 ToolRegistry），对外暴露 6 个 framework 工具（注册名带前缀）：`framework_pause_agent` / `framework_resume_agent` / `framework_shutdown_agent` / `framework_restart_agent` / `framework_list_agents` / `framework_agent_state` |
+| `control.py` | `AgentControl`（控制面直调接口——DashboardServer 经 `/api/v1/agents` 端点调用，不经 LLM 工具面） + `AgentControlProvider`（注册到 ToolRegistry，仅委派两件：`framework_delegate` / `framework_task_status`） |
 | `factory.py` | `SUPPORTED_AGENTS = ("streamer", "game")` + `instantiate_agent(name, config, ...)` 中央化配置名 → 类映射，供组合根与 Dashboard 动态启停共用 |
 
 #### 业务层（`src/agents/`）
@@ -265,8 +265,8 @@ sequenceDiagram
 | game | `minecraft` | 5 | `minecraft_todo` / `minecraft_notebook` / `minecraft_report` / `minecraft_get_state` / `minecraft_send_prompt`（`agents/minecraft/` 内聚；maicraft_* MCP 工具另见 mcp 行） |
 | memory | `memory` | 1 | `memory_query_memory`（绑定 `MemoryProvider` 后才可用） |
 | mcp | `<server 名>` | 按 server | `maicraft_*` 等（MCP server 工具经通道注册，provider = server 名） |
-| Streamer 自带 | `streamer` | 3 | `reply` / `should_speak_proactively` / `parse_command`（Agent 内部协议工具，**不入 ToolRegistry**） |
-| framework | `framework` | 6 | `framework_pause_agent` / `framework_resume_agent` / `framework_shutdown_agent` / `framework_restart_agent` / `framework_list_agents` / `framework_agent_state` |
+| Streamer 自带 | `streamer` | 1 | `streamer_reply`（声明名 reply，经 ToolRegistry 注册 + 名单隔离；proactive/command 为代码直连内部件，不是工具） |
+| framework | `framework` | 2 | `framework_delegate` / `framework_task_status`（跨 Agent 委派与任务查询；控制动作不经 LLM 工具面） |
 
 ## 核心概念
 
@@ -290,7 +290,7 @@ sequenceDiagram
 | **`BaseCollector`** | `start()` → 内部 `_start_collect_task()` 后台消费 `collect()` 生成器（v2 主动推事件模式） | `stop()` → 取消后台任务 | `cleanup()` → `_on_cleanup()` | `collect()`（子类实现，自产自发：内部构造事件载荷并 emit） |
 | **`BaseAgent`** | `start()` → `_on_start()` 钩子 + 心跳 | `stop()` → `_on_stop()` 钩子；额外 `pause()`/`resume()`/`shutdown()`（更严格） | `cleanup()` → `_on_cleanup()` 钩子 | `list_tools()` 抽象 + 自由 `emit_event` + 可选 `emits_events` 声明 |
 
-状态机（两者镜像）：`CREATED → STARTING → RUNNING → STOPPING → STOPPED → ERRORED`；Agent 额外有 `PAUSED` 用于 `framework_pause_agent` 控制。
+状态机（两者镜像）：`CREATED → STARTING → RUNNING → STOPPING → STOPPED → ERRORED`；Agent 额外有 `PAUSED`（控制面 pause 动作置入，pause/resume 不经 LLM 工具面）。
 
 ### 事件系统（摘要）
 

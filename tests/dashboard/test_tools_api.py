@@ -9,7 +9,8 @@
    经统一写回器 update_config_values 写 tools.toml（重启后生效；未知成员 /
    Agent 自声明分类 400）
 4. **POST /api/v1/tools/{name}/control** — 工具级停用/启用（写
-   tools.disabled_tools，重启后生效）；关键内部件需 confirm 确认
+   tools.disabled_tools，重启后生效）；关键内部件（当前清单为空）需 confirm
+   确认
 5. tool_registry=None → 503
 """
 
@@ -124,8 +125,8 @@ def _default_specs():
             kind="async",
             result_event="tool.result.reply_to_user",
         ),
-        # 关键内部件代表（AgentControl 框架工具）：覆盖警示确认语义测试
-        _make_spec("shutdown_agent", "关闭 Agent", provider="framework"),
+        # framework provider 的 LLM 工具面代表（委派原语）
+        _make_spec("framework_delegate", "委派工作", provider="framework"),
     ]
 
 
@@ -133,7 +134,7 @@ def _default_categories() -> dict[str, str]:
     return {
         "vts_trigger_hotkey": "avatar",
         "reply_to_user": "streamer",
-        "shutdown_agent": "framework",
+        "framework_delegate": "framework",
     }
 
 
@@ -535,30 +536,8 @@ def test_tool_control_enable_unregistered_name_is_noop(tools_client: TestClient)
 
 
 # ==================== 关键内部件停用保护（警示确认语义） ====================
-
-
-def test_tool_control_critical_tool_requires_confirm(tools_client: TestClient) -> None:
-    """新契约：停用关键内部件（AgentControl 框架工具）缺 confirm → 400 + 中文风险说明。"""
-    resp = tools_client.post("/api/v1/tools/shutdown_agent/control", json={"action": "disable"})
-    assert resp.status_code == 400
-    assert "关键内部件" in resp.json()["detail"]
-    assert "confirm" in resp.json()["detail"]
-
-
-def test_tool_control_critical_tool_with_confirm_disables(tools_client: TestClient, tools_config_dir: Path) -> None:
-    """关键内部件停用携带 confirm=true → 正常写入停用列表。"""
-    resp = tools_client.post(
-        "/api/v1/tools/shutdown_agent/control",
-        json={"action": "disable", "confirm": True},
-    )
-    assert resp.status_code == 200
-    assert _load_tools_toml(tools_config_dir)["tools"]["disabled_tools"] == ["shutdown_agent"]
-
-
-def test_tool_control_critical_tool_enable_needs_no_confirm(tools_client: TestClient) -> None:
-    """启用方向不受关键件保护约束（无 confirm 也放行）。"""
-    resp = tools_client.post("/api/v1/tools/shutdown_agent/control", json={"action": "enable"})
-    assert resp.status_code == 200
+# 控制类工具已移出 LLM 工具面（控制面直调 AgentControl），关键件清单当前为空；
+# 警示确认语义由 tools.py 保留，此处仅覆盖非关键工具不受 confirm 约束。
 
 
 def test_tool_control_non_critical_tool_ignores_confirm(tools_client: TestClient) -> None:

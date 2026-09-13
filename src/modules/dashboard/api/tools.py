@@ -90,18 +90,11 @@ _CATEGORY_LEVEL_KEYS = {"vision", "memory"}
 # MCP 分类（提供者 = 各 server，动态来自 [tools.mcp.config.servers]）。
 _MCP_CATEGORY = "mcp"
 
-# 关键内部件停用保护清单：这些工具是宿主 Agent 运行控制的唯一操纵面
-# （AgentControl 框架工具——暂停/恢复/关闭/重启/状态内省）。误停用会让
-# Agent 失去自我控制通道（含 Dashboard 之外无替代入口的 shutdown/restart），
-# 因此停用走警示确认语义：请求必须显式携带 confirm=true。
-_CRITICAL_TOOL_NAMES: Tuple[str, ...] = (
-    "pause_agent",
-    "resume_agent",
-    "shutdown_agent",
-    "restart_agent",
-    "list_agents",
-    "agent_state",
-)
+# 关键内部件停用保护清单：控制类工具（暂停/恢复/关闭/重启/状态内省）已移出
+# LLM 工具面，控制面由 DashboardServer 直调 AgentControl，不经工具停用开关；
+# 委派原语（delegate/task_status）停用只影响 LLM 委派能力，无自我控制锁死
+# 风险，不列入。当前清单为空，警示确认语义保留供后续关键工具复用。
+_CRITICAL_TOOL_NAMES: Tuple[str, ...] = ()
 
 
 class ProviderControlRequest(BaseModel):

@@ -27,6 +27,7 @@ from src.modules.agents import (
 )
 from src.modules.tools import ToolInvocation, ToolProvider, ToolRegistry
 from src.modules.tools.models import ToolExecutionResult, ToolSpec
+from src.modules.tools.tasks import TaskLedger
 
 
 # =============================================================================
@@ -412,7 +413,7 @@ def test_agent_manager_get_and_contains(sample_agent: _SampleAgent) -> None:
 
 
 async def test_agent_control_list_tools_via_registry(sample_agent: _SampleAgent) -> None:
-    """AgentControlProvider 注册到 ToolRegistry 后能 list/has。"""
+    """framework provider 只含委派 2 件；6 个控制工具不在 LLM 工具面。"""
     mgr = AgentManager()
     mgr.register(sample_agent)
     await sample_agent.start()
@@ -420,10 +421,10 @@ async def test_agent_control_list_tools_via_registry(sample_agent: _SampleAgent)
     control_provider = build_agent_control_provider(mgr)
     reg = ToolRegistry()
     n = reg.register_provider(control_provider)
-    assert n >= 6, "AgentControl 应暴露 pause/resume/shutdown/restart/list_agents/agent_state 等工具"
+    assert n == 2, "framework provider 应只暴露 delegate/task_status 两个工具"
 
-    # 注册名统一带 provider 前缀（framework_）
-    expected = {
+    # 控制工具已移出 LLM 工具面（控制面经 DashboardServer 直调 AgentControl）
+    removed = {
         "framework_pause_agent",
         "framework_resume_agent",
         "framework_shutdown_agent",
@@ -431,12 +432,15 @@ async def test_agent_control_list_tools_via_registry(sample_agent: _SampleAgent)
         "framework_list_agents",
         "framework_agent_state",
     }
-    names = {spec.full_name for spec in reg.list_tools()}
-    assert expected.issubset(names)
+    names = {spec.full_name for spec in reg.list_tools(for_agent="streamer")}
+    assert {"framework_delegate", "framework_task_status"}.issubset(names)
+    assert removed.isdisjoint(names)
 
 
-async def test_agent_control_invoke_pause_agent(sample_agent: _SampleAgent) -> None:
-    """通过工具调用 framework_pause_agent（不直接调 Agent 方法）。"""
+async def test_agent_control_invoke_removed_tool_returns_unknown(
+    sample_agent: _SampleAgent,
+) -> None:
+    """对已移出的控制工具发起 invoke → 失败结果（未知工具），不抛异常。"""
     mgr = AgentManager()
     mgr.register(sample_agent)
     await sample_agent.start()
@@ -446,54 +450,27 @@ async def test_agent_control_invoke_pause_agent(sample_agent: _SampleAgent) -> N
     reg.register_provider(control_provider)
 
     res = await reg.invoke(ToolInvocation(tool_name="framework_pause_agent", arguments={"name": "sample_agent"}))
-    assert res.success is True
-    assert sample_agent.state == AgentState.PAUSED
-
-
-async def test_agent_control_invoke_list_agents(sample_agent: _SampleAgent) -> None:
-    """framework_list_agents 工具返回 Agent 名字列表。"""
-    mgr = AgentManager()
-    mgr.register(sample_agent)
-
-    control_provider = build_agent_control_provider(mgr)
-    reg = ToolRegistry()
-    reg.register_provider(control_provider)
-
-    res = await reg.invoke(ToolInvocation(tool_name="framework_list_agents", arguments={}))
-    assert res.success is True
-    assert "sample_agent" in res.content
-
-
-async def test_agent_control_invoke_agent_state(sample_agent: _SampleAgent) -> None:
-    """framework_agent_state 工具返回状态信息。"""
-    mgr = AgentManager()
-    mgr.register(sample_agent)
-    await sample_agent.start()
-
-    control_provider = build_agent_control_provider(mgr)
-    reg = ToolRegistry()
-    reg.register_provider(control_provider)
-
-    res = await reg.invoke(ToolInvocation(tool_name="framework_agent_state", arguments={"name": "sample_agent"}))
-    assert res.success is True
-    assert "running" in res.content
-    assert "sample_agent" in res.content
+    assert res.success is False
+    assert "未知" in res.error_message
+    assert sample_agent.state == AgentState.RUNNING
 
 
 async def test_agent_control_invoke_unknown_agent_returns_failure(
     sample_agent: _SampleAgent,
 ) -> None:
-    """AgentControl 对未知 Agent 返回失败 result，不抛。"""
+    """委派对未知目标 Agent 返回受理失败 result，不抛。"""
     mgr = AgentManager()
     mgr.register(sample_agent)
 
-    control_provider = build_agent_control_provider(mgr)
+    control_provider = build_agent_control_provider(mgr, task_ledger=TaskLedger())
     reg = ToolRegistry()
     reg.register_provider(control_provider)
 
-    res = await reg.invoke(ToolInvocation(tool_name="framework_pause_agent", arguments={"name": "absent"}))
+    res = await reg.invoke(
+        ToolInvocation(tool_name="framework_delegate", arguments={"agent": "absent", "instruction": "干活"})
+    )
     assert res.success is False
-    assert "未找到" in res.error_message or "absent" in res.error_message
+    assert "absent" in res.error_message
 
 
 async def test_agent_control_provider_is_provider(sample_agent: _SampleAgent) -> None:
