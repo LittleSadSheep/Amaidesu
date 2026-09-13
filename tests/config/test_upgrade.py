@@ -92,7 +92,7 @@ class TestAdvanceFileVersions:
 
     def test_hooks_outside_interval_skipped(self):
         """target <= old 或 > baseline 的钩子不执行"""
-        raw = {"agents.toml": {"meta": {"version": "2.0.31"}, "agents": {"bot_name": "麦麦"}}}
+        raw = {"agents.toml": {"meta": {"version": "2.0.32"}, "agents": {"bot_name": "麦麦"}}}
         upgrade.register_file_hook("agents.toml", "sample", "2.0.31", sample_hook_v2_0_31)
         try:
             changed = advance_file_versions(raw)
@@ -115,9 +115,7 @@ class TestAdvanceFileVersions:
             "agents.toml": {"meta": {"version": "2.0.30"}, "agents": {"sample_migrated": True}},
             "tools.toml": {"meta": {"version": "2.0.31"}, "tools": {}},
         }
-        upgrade.register_cross_file_hook(
-            "agents.toml", "tools.toml", "mover", "2.0.31", sample_cross_hook
-        )
+        upgrade.register_cross_file_hook("agents.toml", "tools.toml", "mover", "2.0.31", sample_cross_hook)
         try:
             changed = advance_file_versions(raw)
         finally:
@@ -190,7 +188,7 @@ class TestVersionPipeline:
         generate_default_configs(tmp_path)
         path = tmp_path / "tools.toml"
         content = path.read_text(encoding="utf-8-sig")
-        content = content.replace('version = "2.0.31"', "", 1)
+        content = content.replace(f'version = "{CONFIG_BASELINE_VERSION}"', "", 1)
         path.write_text(content, encoding="utf-8-sig")
 
         with pytest.raises(ConfigValidationError, match="version"):

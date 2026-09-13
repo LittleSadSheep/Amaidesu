@@ -223,7 +223,7 @@ class StreamerAgent(BaseAgent):
             enable_idle_compensation=config.batch.enable_idle_compensation,
         )
         self._timing_gate = TimingGate(
-            force_message_types=config.force.force_data_types,
+            force_message_types=config.force.force_message_types,
         )
 
         # 房间态势（纯规则滑动窗口）

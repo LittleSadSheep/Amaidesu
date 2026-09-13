@@ -100,7 +100,7 @@ class TestStreamerConfigInAgentsTree:
         assert s.background.compressor.concurrency == 1
         assert s.background.compressor.queue_max == 100
         assert s.batch.batch_window_ms == 3_000
-        assert s.force.force_data_types == ["super_chat", "guard", "gift"]
+        assert s.force.force_message_types == ["super_chat", "guard", "gift"]
         assert s.proactive.enabled is True
         assert s.word_filter.enabled is False
         assert s.command.prefix == "/"

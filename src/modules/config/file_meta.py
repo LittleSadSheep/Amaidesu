@@ -9,7 +9,7 @@ from pydantic import Field
 from src.modules.config.schemas.base import BaseConfig
 
 # 新布局六文件的起始版本基线；此后各文件独立递增
-CONFIG_BASELINE_VERSION = "2.0.31"
+CONFIG_BASELINE_VERSION = "2.0.32"
 
 
 class FileMetaConfig(BaseConfig):

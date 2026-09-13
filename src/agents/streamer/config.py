@@ -23,7 +23,7 @@
     batch_window_ms, batch_max_size, tick_interval_ms, enable_idle_compensation
 
     [agents.streamer.force]
-    force_data_types, force_importance
+    force_message_types
 
     [agents.streamer.proactive]
     (
@@ -181,15 +181,9 @@ class StreamerForceConfig(BaseConfig):
     强制响应触发条件。
     """
 
-    force_data_types: List[str] = Field(
+    force_message_types: List[str] = Field(
         default_factory=lambda: ["super_chat", "guard", "gift"],
-        description="强制响应的数据类型",
-    )
-    force_importance: float = Field(
-        default=0.8,
-        ge=0.0,
-        le=1.0,
-        description="importance 达到该值则强制响应",
+        description="强制响应的消息类型（与 TimingGate 构造参数一致）",
     )
 
 

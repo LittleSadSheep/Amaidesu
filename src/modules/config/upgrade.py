@@ -64,9 +64,30 @@ class _VersionedHook:
     target_file: str | None  # None = 单文件钩子；否则为跨文件钩子
 
 
-# 升级钩子注册表（当前为空表：历史钩子已清除，登记处从零开始）
+# 升级钩子注册表
 _FILE_HOOKS: Dict[str, List[_VersionedHook]] = {}
 # 演示样例钩子只存在于测试中（见 tests/config/test_upgrade.py），不注册生效
+
+
+def _upgrade_agents_force_rename(data: Dict[str, Any]) -> List[str]:
+    """agents.toml v2.0.32：force 段字段正名 + 死字段清理。
+
+    ``force_data_types`` 重命名为 ``force_message_types``（与 TimingGate 构造参数
+    名对齐）；``force_importance`` 经核实为零消费者死字段（TimingGate 只收类型
+    列表，无 importance 数值路径），一并删除。对已迁移数据零变更（幂等）。
+    """
+    streamer = (data.get("agents") or {}).get("streamer")
+    force = streamer.get("force") if isinstance(streamer, dict) else None
+    if not isinstance(force, dict):
+        return []
+    changed: List[str] = []
+    if "force_data_types" in force:
+        force["force_message_types"] = force.pop("force_data_types")
+        changed.append("agents.streamer.force.force_data_types -> force_message_types")
+    if "force_importance" in force:
+        del force["force_importance"]
+        changed.append("agents.streamer.force.force_importance")
+    return changed
 
 
 def register_file_hook(
@@ -89,6 +110,10 @@ def register_cross_file_hook(
         host_file=host_file, name=name, target_version=target_version, run=run, target_file=target_file
     )
     _FILE_HOOKS.setdefault(host_file, []).append(hook)
+
+
+# 生产钩子登记：agents.toml v2.0.32（force 段字段正名 + 死字段清理）
+register_file_hook("agents.toml", "agents_force_field_rename", "2.0.32", _upgrade_agents_force_rename)
 
 
 def _version_tuple(version: str) -> tuple[int, ...]:
