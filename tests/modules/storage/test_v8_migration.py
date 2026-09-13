@@ -94,7 +94,7 @@ async def test_fresh_db_has_new_columns(temp_db_path: Path) -> None:
     store = SQLiteDatabase(temp_db_path)
     await store.initialize()
     try:
-        assert await store.get_schema_version() == 8
+        assert await store.get_schema_version() == 9
 
         def _exec() -> tuple:
             with store.manager.transaction() as conn:
@@ -129,7 +129,7 @@ async def test_v7_db_upgrades_keeps_rows_and_defaults(temp_db_path: Path) -> Non
     store = SQLiteDatabase(temp_db_path)
     await store.initialize()
     try:
-        assert await store.get_schema_version() == 8
+        assert await store.get_schema_version() == 9
         usage_rows = await store.execute("SELECT * FROM llm_usage")
         assert len(usage_rows) == 1
         # 旧行保留；新增连接键列对存量行为 NULL
@@ -150,7 +150,7 @@ async def test_v7_db_upgrades_keeps_rows_and_defaults(temp_db_path: Path) -> Non
     again = SQLiteDatabase(temp_db_path)
     await again.initialize()
     try:
-        assert await again.get_schema_version() == 8
+        assert await again.get_schema_version() == 9
         n_usage = await again.execute("SELECT COUNT(*) AS n FROM llm_usage")
         n_request = await again.execute("SELECT COUNT(*) AS n FROM llm_requests")
         assert int(n_usage[0]["n"]) == 1

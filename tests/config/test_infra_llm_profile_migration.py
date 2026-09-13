@@ -44,8 +44,9 @@ def test_version_advance_via_scheduler():
     changed = advance_file_versions({"infra.toml": raw})
     assert "simulator.llm_profile" in changed["infra.toml"]
     assert "meta.version" in changed["infra.toml"]
-    # 版本推进到本文件钩子的 target，与全局基线种子无关（各文件版本流独立）
-    assert raw["meta"]["version"] == "2.0.32"
+    # 版本推进到本文件钩子链最后一个钩子的 target，与全局基线种子无关
+    # （infra.toml 链上现有两个生产钩子：llm_profile @2.0.32 + events.persist @2.0.33）
+    assert raw["meta"]["version"] == "2.0.33"
     assert "llm_profile" not in raw["simulator"]
 
 
@@ -58,4 +59,4 @@ def test_migration_writeback_on_load(tmp_path: Path):
 
     content = infra.read_text(encoding="utf-8")
     assert "llm_profile" not in content
-    assert 'version = "2.0.32"' in content
+    assert 'version = "2.0.33"' in content
