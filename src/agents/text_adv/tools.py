@@ -311,10 +311,12 @@ class TextAdvToolProvider(BaseToolProvider):
     # ==================================================================
 
     async def _invoke_choose(self, args: Dict[str, Any], started_ms: int) -> ToolExecutionResult:
-        raw_option = args.get("option")
+        raw_option: object = args.get("option")
+        if not isinstance(raw_option, (int, str)):
+            return self._fail("text_adv_choose", started_ms, f"option 必须是整数序号，得到 {raw_option!r}")
         try:
-            option = int(raw_option)  # type: ignore[arg-type]
-        except (TypeError, ValueError):
+            option = int(raw_option)
+        except ValueError:
             return self._fail("text_adv_choose", started_ms, f"option 必须是整数序号，得到 {raw_option!r}")
 
         ok, reason = self._guard_window()

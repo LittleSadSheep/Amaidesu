@@ -24,7 +24,7 @@ from pydantic import BaseModel, Field
 
 from src.modules.logging import get_logger
 from src.modules.prompts import PromptManager, get_prompt_manager
-from src.modules.tools.models import ToolInvocation
+from src.modules.tools.models import ToolExecutionResult, ToolInvocation
 from src.modules.vision.look_at_screen import PROVIDER_NAME, TOOL_NAME
 
 logger = get_logger("text_adv_vlm")
@@ -276,6 +276,14 @@ class VisionReader(Protocol):
         ...
 
 
+class VisionToolRegistry(Protocol):
+    """读屏所需的注册表最小面：按调用单调用工具并返回执行结果。"""
+
+    async def invoke(self, invocation: ToolInvocation) -> ToolExecutionResult:
+        """执行一次工具调用（失败兜底为失败结果，不抛异常）。"""
+        ...
+
+
 class RegistryVisionReader:
     """经 ToolRegistry 调用 ``vision_look_at_screen`` 的 VisionReader 实现。
 
@@ -286,7 +294,7 @@ class RegistryVisionReader:
 
     def __init__(
         self,
-        tool_registry: Any,
+        tool_registry: VisionToolRegistry,
         *,
         source: str = "text_adv",
         max_width: int = 1280,
