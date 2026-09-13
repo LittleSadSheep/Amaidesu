@@ -48,7 +48,7 @@ class _FakeConfigService:
 
 async def _setup_service(store: SQLiteDatabase) -> SimulatorService:
     """构造并 setup 一个不自动启动的 SimulatorService"""
-    service = SimulatorService(event_bus=EventBus(), sim_repo=store.sim, chat_repo=store.chat, event_repo=store.events, session_manager=_FakeSessionManager())
+    service = SimulatorService(event_bus=EventBus(), sim_repo=store.sim, chat_repo=store.chat, session_manager=_FakeSessionManager())
     await service.setup(_FakeConfigService())
     return service
 

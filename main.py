@@ -428,7 +428,6 @@ async def create_app_components(
             event_bus=event_bus,
             sim_repo=database.sim,
             chat_repo=database.chat,
-            event_repo=database.events,
             services_by_type={type(llm_service): llm_service},
             session_manager=session_manager,
         )

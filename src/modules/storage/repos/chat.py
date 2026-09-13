@@ -134,6 +134,53 @@ class ChatRepo(BaseRepo):
 
         return await self._run_in_executor(_exec)
 
+    async def list_danmaku_by_date(
+        self,
+        date_str: str,
+        *,
+        simulated_only: bool = False,
+    ) -> List[sqlite3.Row]:
+        """取指定本地日期的全部弹幕行（``message_type='danmaku'``，时间正序）。
+
+        回放引擎的数据源：业务表 ``live_chat`` 是消息流的单一事实源，录制
+        回放不再依赖事件历史副本。``simulated_only=True`` 时仅返回录制时已
+        标记 simulated 的行。
+        """
+
+        def _exec() -> List[sqlite3.Row]:
+            clauses = [
+                "message_type='danmaku'",
+                "date(timestamp_ms / 1000, 'unixepoch', 'localtime') = ?",
+            ]
+            params: List[Any] = [date_str]
+            if simulated_only:
+                clauses.append("simulated=1")
+            with self._manager.transaction() as conn:
+                cur = conn.execute(
+                    "SELECT * FROM live_chat WHERE " + " AND ".join(clauses) + " ORDER BY timestamp_ms ASC",
+                    params,
+                )
+                return list(cur.fetchall())
+
+        return await self._run_in_executor(_exec)
+
+    async def list_chat_dates(self) -> List[str]:
+        """列出 live_chat 有弹幕记录的本地日期（``YYYY-MM-DD``，时间正序）。
+
+        回放日期选择器的数据源：从业务表取 DISTINCT 日期，无场次数据则
+        返回空列表。
+        """
+
+        def _exec() -> List[str]:
+            with self._manager.transaction() as conn:
+                rows = conn.execute(
+                    "SELECT DISTINCT date(timestamp_ms / 1000, 'unixepoch', 'localtime') AS d"
+                    " FROM live_chat WHERE message_type='danmaku' ORDER BY d"
+                ).fetchall()
+            return [str(row["d"]) for row in rows if row["d"] is not None]
+
+        return await self._run_in_executor(_exec)
+
     async def list_recent_live_chat(
         self,
         *,

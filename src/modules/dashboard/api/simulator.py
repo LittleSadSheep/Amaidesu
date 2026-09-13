@@ -32,7 +32,6 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 
 from src.modules.dashboard.dependencies import get_dashboard_server
-from src.modules.events.names import CoreEvents
 from src.modules.logging import get_logger
 from src.modules.storage.database import sqlite_database as get_default_db
 
@@ -286,14 +285,14 @@ async def stop_simulator(server: ServerDep) -> Dict[str, Any]:
 # ------------------------------------------------------------------ #
 
 
-@router.get("/replay/dates", summary="可回放的录制日期列表（event_history 表）")
+@router.get("/replay/dates", summary="可回放的录制日期列表（live_chat 业务表）")
 async def list_replay_dates(server: ServerDep) -> Dict[str, Any]:
-    """列出有弹幕录制记录的日期（按时间正序），供回放选择器使用。
+    """列出有弹幕记录的日期（按时间正序），供回放选择器使用。
 
-    数据源为 ``event_history`` 表（与 SimulatorService 实例无关），经
-    默认数据库工厂取事件仓储；enabled=false 也可用。
+    数据源为 ``live_chat`` 业务表（消息流单一事实源，与 SimulatorService
+    实例无关），经默认数据库工厂取明细仓储；enabled=false 也可用。
     """
-    dates = await get_default_db().events.list_event_dates(CoreEvents.ROOM_MESSAGE_DANMAKU)
+    dates = await get_default_db().chat.list_chat_dates()
     return {"dates": dates}
 
 

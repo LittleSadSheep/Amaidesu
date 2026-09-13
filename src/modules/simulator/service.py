@@ -43,7 +43,7 @@ from src.modules.simulator.replay_engine import ReplayEngine
 from src.modules.simulator.seed_data import seed_simulator_data
 from src.modules.simulator.token_budget import TokenBudgetController
 from src.modules.simulator.types import PersonaRole, StreamerContextSnapshot
-from src.modules.storage.repos import ChatRepo, EventRepo, SimRepo
+from src.modules.storage.repos import ChatRepo, SimRepo
 from src.modules.time_utils import now_ms
 
 if TYPE_CHECKING:
@@ -76,14 +76,12 @@ class SimulatorService:
         event_bus: EventBus,
         sim_repo: Optional[SimRepo] = None,
         chat_repo: Optional[ChatRepo] = None,
-        event_repo: Optional[EventRepo] = None,
         services_by_type: Optional[Dict[type, Any]] = None,
         session_manager: Optional[Any] = None,
     ) -> None:
         self.event_bus = event_bus
         self._sim = sim_repo
         self._chat = chat_repo
-        self._events = event_repo
         # 场次管理器：世界窗口读取按其解析当前场次；回放启停自动开/关场次
         self._session_manager = session_manager
         self._opened_session_pk: Optional[int] = None
@@ -157,7 +155,7 @@ class SimulatorService:
         await self._gift_generator.load()
 
         self._token_budget = TokenBudgetController(budget_per_hour=self._config_obj.token_budget_per_hour)
-        self._replay_engine = ReplayEngine(config=self._config_obj, event_repo=self._events)
+        self._replay_engine = ReplayEngine(config=self._config_obj, chat_repo=self._chat)
 
         # 实例化 LLM 包装器（需 LLMManager，DI 注入或 warning；replay 模式不需要）
         llm_service = self._find_llm_service()

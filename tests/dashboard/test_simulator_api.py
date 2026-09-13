@@ -16,7 +16,6 @@ from fastapi.testclient import TestClient
 
 from src.modules.events.event_bus import EventBus
 from src.modules.simulator import SimulatorService
-from src.modules.simulator.config_schema import SimulatorConfigSchema
 from src.modules.simulator.seed_data import seed_simulator_data
 from src.modules.storage.database import SQLiteDatabase
 
@@ -29,7 +28,7 @@ class _FakeConfigService:
 
 
 def _make_service(store: SQLiteDatabase) -> SimulatorService:
-    return SimulatorService(event_bus=EventBus(), sim_repo=store.sim, chat_repo=store.chat, event_repo=store.events)
+    return SimulatorService(event_bus=EventBus(), sim_repo=store.sim, chat_repo=store.chat)
 
 
 @pytest.fixture
@@ -106,33 +105,40 @@ def test_replay_dates_empty(client: TestClient, monkeypatch: pytest.MonkeyPatch,
         asyncio.run(store.close())
 
 
-def test_replay_dates_from_event_history(client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
-    """event_history 表有弹幕录制时按时间正序返回日期（其他事件名不混入）。"""
+def test_replay_dates_from_live_chat(client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    """live_chat 业务表有弹幕时按时间正序返回日期（非弹幕行不混入）。"""
     import asyncio
 
-    from src.modules.events.names import CoreEvents
     from src.modules.storage.database import SQLiteDatabase
 
     async def _make() -> SQLiteDatabase:
         store = SQLiteDatabase(tmp_path / "replay-dates-populated.db")
         await store.initialize()
-        await store.events.insert_event(
-            record_id="rec-2",
-            event_name=CoreEvents.ROOM_MESSAGE_DANMAKU,
+        await store.chat.insert_live_chat(
+            live_session_id=1,
             timestamp_ms=1_790_000_000_000,  # 晚日期
-            payload_json="{}",
+            sender_role="viewer",
+            sender_id="u1",
+            sender_name="观众甲",
+            content="晚上好",
+            message_type="danmaku",
         )
-        await store.events.insert_event(
-            record_id="rec-1",
-            event_name=CoreEvents.ROOM_MESSAGE_DANMAKU,
+        await store.chat.insert_live_chat(
+            live_session_id=1,
             timestamp_ms=1_750_000_000_000,  # 早日期
-            payload_json="{}",
+            sender_role="viewer",
+            sender_id="u2",
+            sender_name="观众乙",
+            content="来了来了",
+            message_type="danmaku",
         )
-        await store.events.insert_event(
-            record_id="rec-noise",
-            event_name="core.startup",
+        await store.chat.insert_live_chat(
+            live_session_id=1,
             timestamp_ms=1_760_000_000_000,
-            payload_json="{}",
+            sender_role="assistant",
+            sender_name="主播",
+            content="欢迎欢迎",
+            message_type="speech",  # 主播发言行，不计入可回放日期
         )
         return store
 

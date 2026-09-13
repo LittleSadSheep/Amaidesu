@@ -1,23 +1,22 @@
-"""录制回放引擎：把 event_history 表录制的世界快照按原节奏重新发射。
+"""录制回放引擎：把 ``live_chat`` 业务表中的历史弹幕按原节奏重新发射。
 
-录制源是 ``event_history`` 表（EventHistoryService 全量事件落库），
-本引擎过滤出 ``room.message.danmaku`` 事件、还原原始 payload，按相邻消息的
-毫秒时间戳差值调度重放。回放消息统一携带 ``simulated=True`` 溯源标记——
-它们是"被重新注入的输入流"，不进真实数据统计。
+录制源是 ``live_chat`` 表（消息流的单一事实源，真实直播与模拟数据同表、
+以 ``simulated`` 列区分）。本引擎取出指定日期的 ``danmaku`` 行、还原成
+``RoomMessagePayload``，按相邻消息的毫秒时间戳差值调度重放。回放消息统一
+携带 ``simulated=True`` 溯源标记——它们是"被重新注入的输入流"，不进真实
+数据统计。
 """
 
 from __future__ import annotations
 
-import json
 from typing import TYPE_CHECKING, List, Optional
 
-from src.modules.events.names import CoreEvents
-from src.modules.events.payloads.room import RoomMessagePayload
+from src.modules.events.payloads.room import RoomMessagePayload, RoomMessageUser
 from src.modules.logging import get_logger
 from src.modules.simulator.config_schema import SimulatorConfigSchema
 
 if TYPE_CHECKING:
-    from src.modules.storage.repos import EventRepo
+    from src.modules.storage.repos import ChatRepo
 
 
 class ReplayEngine:
@@ -27,9 +26,9 @@ class ReplayEngine:
     ``next_gap_seconds()`` 的间隔调度 emit → 队列空即回放结束。
     """
 
-    def __init__(self, config: SimulatorConfigSchema, event_repo: "EventRepo") -> None:
+    def __init__(self, config: SimulatorConfigSchema, chat_repo: "ChatRepo") -> None:
         self._config = config
-        self._event_repo = event_repo
+        self._chat_repo = chat_repo
         self.logger = get_logger("ReplayEngine")
         self._queue: List[RoomMessagePayload] = []
         self._cursor = 0
@@ -61,27 +60,25 @@ class ReplayEngine:
         if simulated_only is None:
             simulated_only = self._config.replay_simulated_only
 
-        rows = await self._event_repo.get_day_events(date_str, event_name=CoreEvents.ROOM_MESSAGE_DANMAKU)
+        rows = await self._chat_repo.list_danmaku_by_date(date_str, simulated_only=simulated_only)
 
         entries: List[RoomMessagePayload] = []
         for row in rows:
             try:
-                data = json.loads(row["payload"])
+                payload = RoomMessagePayload(
+                    # 行序还原：业务列 → payload 字段（写入映射见 storage_ledger）
+                    message_type="danmaku",
+                    user=RoomMessageUser(id=row["sender_id"] or "", name=row["sender_name"] or ""),
+                    content=row["content"],
+                    message_id=row["message_id"] or "",
+                    timestamp_ms=row["timestamp_ms"],
+                    simulated=bool(row["simulated"]),
+                    # live_session_id 统一清零：回放事件经场次盖章拦截器
+                    # 归属到当前回放场次，而非沿用历史场次主键
+                    live_session_id=0,
+                )
             except Exception as exc:
-                self.logger.debug(f"回放跳过无法解析的录制记录: {exc}")
-                continue
-            if not isinstance(data, dict):
-                continue
-            # 兼容旧录制（场次主键化前 live_session_id 为房间字符串）：统一清零，
-            # 回放事件经场次盖章拦截器归属到当前回放场次
-            if not isinstance(data.get("live_session_id"), int):
-                data["live_session_id"] = 0
-            try:
-                payload = RoomMessagePayload.model_validate(data)
-            except Exception as exc:
-                self.logger.debug(f"回放跳过无法解析的录制记录: {exc}")
-                continue
-            if simulated_only and not payload.simulated:
+                self.logger.debug(f"回放跳过无法解析的录制行: {exc}")
                 continue
             if not payload.content:
                 continue

@@ -161,7 +161,6 @@ async def test_enabled_emits_danmaku_with_simulated_flag(sim_store: SQLiteDataba
         event_bus=event_bus,
         sim_repo=sim_store.sim,
         chat_repo=sim_store.chat,
-        event_repo=sim_store.events,
         services_by_type={type(fake_llm): fake_llm},
     )
     await service.setup(
@@ -232,7 +231,6 @@ class TestStopCleanupIdempotent:
             event_bus=event_bus,
             sim_repo=sim_store.sim,
             chat_repo=sim_store.chat,
-            event_repo=sim_store.events,
             services_by_type={type(fake_llm): fake_llm},
         )
         await service.setup(_FakeConfigService(_enabled_config(cadence_mode="fixed", fixed_interval_s=1.0)))
@@ -263,7 +261,6 @@ class TestCancelledErrorPropagation:
             event_bus=event_bus,
             sim_repo=sim_store.sim,
             chat_repo=sim_store.chat,
-            event_repo=sim_store.events,
             services_by_type={type(fake_llm): fake_llm},
         )
         await service.setup(_FakeConfigService(_enabled_config(cadence_mode="fixed", fixed_interval_s=1.0)))
@@ -287,7 +284,6 @@ class TestCancelledErrorPropagation:
             event_bus=event_bus,
             sim_repo=sim_store.sim,
             chat_repo=sim_store.chat,
-            event_repo=sim_store.events,
             services_by_type={type(fake_llm): fake_llm},
         )
         await service.setup(_FakeConfigService(_enabled_config(cadence_mode="fixed", fixed_interval_s=1.0)))

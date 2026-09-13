@@ -80,7 +80,6 @@ async def _start_with_cadence(
         event_bus=event_bus,
         sim_repo=store.sim,
         chat_repo=store.chat,
-        event_repo=store.events,
         services_by_type={type(fake_llm): fake_llm},
     )
     await service.setup(

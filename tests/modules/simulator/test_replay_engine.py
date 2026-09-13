@@ -1,16 +1,13 @@
-"""ReplayEngine 测试：录制读回（event_history 表）、过滤、节奏调度、队列耗尽语义。"""
+"""ReplayEngine 测试：录制读回（live_chat 业务表）、过滤、节奏调度、队列耗尽语义。"""
 
 from __future__ import annotations
 
-import json
-import uuid
 from datetime import datetime
 from pathlib import Path
-from typing import AsyncGenerator, List, Optional
+from typing import AsyncGenerator, List
 
 import pytest
 
-from src.modules.events.names import CoreEvents
 from src.modules.events.payloads.room import RoomMessagePayload, RoomMessageUser
 from src.modules.simulator.config_schema import SimulatorConfigSchema
 from src.modules.simulator.replay_engine import ReplayEngine
@@ -35,37 +32,40 @@ async def _seed_day(
     date_str: str,
     payloads: List[RoomMessagePayload],
     *,
-    extra_event_names: Optional[List[str]] = None,
-    corrupt_payloads: bool = False,
+    extra_speech_rows: bool = False,
+    empty_content_rows: bool = False,
 ) -> None:
-    """向 event_history 表写入一天的录制（danmaku + 可选混入其他事件/坏 payload）。"""
+    """向 live_chat 表写入一天的弹幕（可选混入主播发言行/空 content 行）。"""
     base = _day_base_ms(date_str)
     for p in payloads:
-        await store.events.insert_event(
-            record_id=str(uuid.uuid4()),
-            event_name=CoreEvents.ROOM_MESSAGE_DANMAKU,
+        await store.chat.insert_live_chat(
+            live_session_id=1,
             timestamp_ms=p.timestamp_ms,
-            payload_json=p.model_dump_json(),
+            sender_role="viewer",
+            sender_id=p.user.id,
+            sender_name=p.user.name,
+            content=p.content,
+            message_type="danmaku",
+            simulated=p.simulated,
         )
-    for offset, event_name in enumerate(extra_event_names or []):
-        await store.events.insert_event(
-            record_id=str(uuid.uuid4()),
-            event_name=event_name,
-            timestamp_ms=base + offset * 1000,
-            payload_json="{}",
-        )
-    if corrupt_payloads:
-        await store.events.insert_event(
-            record_id=str(uuid.uuid4()),
-            event_name=CoreEvents.ROOM_MESSAGE_DANMAKU,
+    if extra_speech_rows:
+        await store.chat.insert_live_chat(
+            live_session_id=1,
             timestamp_ms=base + 500_000,
-            payload_json="{ this is not json }",
+            sender_role="assistant",
+            sender_name="主播",
+            content="主播发言行（不入回放）",
+            message_type="speech",
         )
-        await store.events.insert_event(
-            record_id=str(uuid.uuid4()),
-            event_name=CoreEvents.ROOM_MESSAGE_DANMAKU,
+    if empty_content_rows:
+        await store.chat.insert_live_chat(
+            live_session_id=1,
             timestamp_ms=base + 600_000,
-            payload_json='{"id": "x"}',  # 缺必填字段
+            sender_role="viewer",
+            sender_id="uid_x",
+            sender_name="观众X",
+            content="",
+            message_type="danmaku",
         )
 
 
@@ -86,7 +86,7 @@ def _payload(
 
 
 def _engine(store: SQLiteDatabase, **cfg_kwargs) -> ReplayEngine:
-    return ReplayEngine(SimulatorConfigSchema(**cfg_kwargs), event_repo=store.events)
+    return ReplayEngine(SimulatorConfigSchema(**cfg_kwargs), chat_repo=store.chat)
 
 
 DATE = "2026-09-01"
@@ -94,12 +94,12 @@ DATE = "2026-09-01"
 
 @pytest.mark.asyncio
 async def test_load_filters_non_danmaku(store: SQLiteDatabase) -> None:
-    """非 room.message.danmaku 事件不入回放队列。"""
+    """非弹幕行（主播发言等）不入回放队列。"""
     await _seed_day(
         store,
         DATE,
         [_payload(content="弹幕", ts_ms=_day_base_ms(DATE) + 1000)],
-        extra_event_names=["planner.checkpoint"],
+        extra_speech_rows=True,
     )
 
     engine = _engine(store)
@@ -123,6 +123,7 @@ async def test_load_simulated_only_filter(store: SQLiteDatabase) -> None:
     assert await engine.load(DATE, simulated_only=True) == 1
     first = engine.pop_next()
     assert first is not None and first.content == "模拟弹幕"
+    assert first.simulated is True
     assert engine.pop_next() is None
 
 
@@ -187,13 +188,13 @@ async def test_load_missing_date_returns_zero(store: SQLiteDatabase) -> None:
 
 
 @pytest.mark.asyncio
-async def test_corrupt_payload_skipped(store: SQLiteDatabase) -> None:
-    """坏 payload 跳过不中断读取。"""
+async def test_empty_content_row_skipped(store: SQLiteDatabase) -> None:
+    """空 content 的弹幕行跳过不中断读取。"""
     await _seed_day(
         store,
         DATE,
         [_payload(content="好数据", ts_ms=_day_base_ms(DATE) + 1000)],
-        corrupt_payloads=True,
+        empty_content_rows=True,
     )
 
     engine = _engine(store)
@@ -201,20 +202,50 @@ async def test_corrupt_payload_skipped(store: SQLiteDatabase) -> None:
 
 
 @pytest.mark.asyncio
-async def test_live_session_id_non_int_normalized(store: SQLiteDatabase) -> None:
-    """旧录制 live_session_id 非整数（房间字符串时代）统一清零。"""
+async def test_row_fields_restored_to_payload(store: SQLiteDatabase) -> None:
+    """业务行字段正确还原为 payload：user/content/message_id/simulated。"""
     base = _day_base_ms(DATE)
-    p = _payload(content="旧场次弹幕", ts_ms=base + 1000)
-    data = p.model_dump(mode="json")
-    data["live_session_id"] = "room_123"  # 模拟旧录制（原始 payload，未经过模型校验）
-    await store.events.insert_event(
-        record_id=str(uuid.uuid4()),
-        event_name=CoreEvents.ROOM_MESSAGE_DANMAKU,
-        timestamp_ms=p.timestamp_ms,
-        payload_json=json.dumps(data, ensure_ascii=False),
+    await store.chat.insert_live_chat(
+        live_session_id=7,
+        timestamp_ms=base + 1000,
+        sender_role="viewer",
+        sender_id="uid_观众甲",
+        sender_name="观众甲",
+        content="还原检查",
+        message_type="danmaku",
+        message_id="msg-001",
+        simulated=True,
+    )
+
+    engine = _engine(store)
+    assert await engine.load(DATE) == 1
+    loaded = engine.pop_next()
+    assert loaded is not None
+    assert loaded.user == RoomMessageUser(id="uid_观众甲", name="观众甲")
+    assert loaded.content == "还原检查"
+    assert loaded.message_id == "msg-001"
+    assert loaded.simulated is True
+
+
+@pytest.mark.asyncio
+async def test_live_session_id_normalized_to_zero(store: SQLiteDatabase) -> None:
+    """历史场次主键不入回放队列：live_session_id 统一清零，由场次盖章归属当前场次。"""
+    base = _day_base_ms(DATE)
+    await store.chat.insert_live_chat(
+        live_session_id=42,  # 历史场次主键
+        timestamp_ms=base + 1000,
+        sender_role="viewer",
+        sender_id="uid_观众甲",
+        sender_name="观众甲",
+        content="旧场次弹幕",
+        message_type="danmaku",
     )
 
     engine = _engine(store)
     assert await engine.load(DATE) == 1
     loaded = engine.pop_next()
     assert loaded is not None and loaded.live_session_id == 0
+
+
+if __name__ == "__main__":
+    pytest.main([__file__, "-v", "-s"])
