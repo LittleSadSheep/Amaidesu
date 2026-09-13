@@ -628,7 +628,7 @@ class FakeTextReader:
         self._queue: List[str] = []
         self.calls: List[dict[str, Any]] = []
         self._raise: Optional[BaseException] = None
-        self._hang_until: Optional[float] = None  # asyncio.get_event_loop().time() 截止时刻
+        self._hang_until: Optional[float] = None  # 运行中事件循环的 monotonic 截止时刻
 
     def queue_text(self, text: str) -> None:
         self._queue.append(text)
@@ -639,7 +639,7 @@ class FakeTextReader:
 
     def set_hang_until_ms(self, deadline_ms_from_now: int) -> None:
         """挂起到指定时间点后返回空串（用于测试 reader 超时降级）。"""
-        loop_now = asyncio.get_event_loop().time()
+        loop_now = asyncio.get_running_loop().time()
         self._hang_until = loop_now + deadline_ms_from_now / 1000.0
 
     async def read(
@@ -661,7 +661,7 @@ class FakeTextReader:
             self._raise = None
             raise exc
         if self._hang_until is not None:
-            now = asyncio.get_event_loop().time()
+            now = asyncio.get_running_loop().time()
             remaining = self._hang_until - now
             if remaining > 0:
                 await asyncio.sleep(remaining)
