@@ -32,6 +32,7 @@ import pytest
 from src.agents.streamer.config import StreamerConfig
 from src.agents.streamer.streamer_agent import StreamerAgent
 from src.modules.llm.manager import LLMResponse
+from src.modules.llm.payload import Response
 from src.modules.tools import ToolExecutionResult, ToolInvocation
 from src.modules.tools.registry import ToolRegistry
 
@@ -87,6 +88,7 @@ def _build_streamer_agent(
     """
     llm = MagicMock()
     llm.call_tools = AsyncMock(return_value=LLMResponse(success=False, error="not used"))
+    llm.generate = AsyncMock(return_value=Response(success=False, error="not used"))
     llm.chat = AsyncMock()  # 兼容旧调用（不应被实际触发）
     prompt = MagicMock()
     prompt.render = MagicMock(return_value="PROMPT")
@@ -576,6 +578,7 @@ async def test_decision_loop_unaffected_when_tts_disabled():
     """
     llm = MagicMock()
     llm.call_tools = AsyncMock(return_value=LLMResponse(success=False, error="not used"))
+    llm.generate = AsyncMock(return_value=Response(success=False, error="not used"))
     prompt = MagicMock()
     prompt.render = MagicMock(return_value="PROMPT")
 

@@ -28,16 +28,18 @@ from src.modules.events.event_bus import EventBus
 from src.modules.events.names import CoreEvents
 from src.modules.events.payloads.speech import StreamerSpeechPayload
 from src.modules.llm.manager import LLMResponse
+from src.modules.llm.payload import Response
+
 
 def _make_agent_config(**overrides: Any) -> StreamerConfig:
     """构造测试用 StreamerAgentConfig。"""
     defaults: Dict[str, Any] = {
         "batch": {"batch_window_ms": 100, "tick_interval_ms": 50},
-
         "proactive": {"enabled": False},
     }
     defaults.update(overrides)
     return StreamerConfig.from_dict(defaults)
+
 
 def _build_streamer_agent_with_bus(
     *,
@@ -48,6 +50,7 @@ def _build_streamer_agent_with_bus(
     """构造最小化 StreamerAgent：注入真 EventBus + 可选 TTS。"""
     llm = MagicMock()
     llm.call_tools = AsyncMock(return_value=LLMResponse(success=False, error="not used"))
+    llm.generate = AsyncMock(return_value=Response(success=False, error="not used"))
     llm.chat = AsyncMock()  # 兼容旧调用（不应被实际触发）
     prompt = MagicMock()
     prompt.render = MagicMock(return_value="PROMPT")
@@ -63,6 +66,7 @@ def _build_streamer_agent_with_bus(
         tts_engine=tts_engine,
     )
 
+
 class _MockTTSEngine:
     """TTS 引擎 mock：录制所有 handle_speech 调用。"""
 
@@ -71,6 +75,7 @@ class _MockTTSEngine:
 
     async def handle_speech(self, text: str, utterance_id: Optional[str] = None) -> None:
         self.handle_speech_calls.append((text, utterance_id))
+
 
 async def _wait_for_speech_event(event_bus: EventBus, timeout: float = 2.0) -> Optional[StreamerSpeechPayload]:
     """辅助：等待 fire-and-forget 任务把 STREAMER_SPEECH 推出去。"""
@@ -89,9 +94,11 @@ async def _wait_for_speech_event(event_bus: EventBus, timeout: float = 2.0) -> O
         return None
     return received[0] if received else None
 
+
 # ---------------------------------------------------------------------------
 # TTS 关闭仍 emit 业务事件
 # ---------------------------------------------------------------------------
+
 
 @pytest.mark.asyncio
 async def test_streamer_speech_emitted_when_tts_disabled():
@@ -124,6 +131,7 @@ async def test_streamer_speech_emitted_when_tts_disabled():
     finally:
         await agent._on_stop()
 
+
 @pytest.mark.asyncio
 async def test_streamer_speech_emitted_when_tts_enabled_and_no_engine():
     """speech_config.enabled=True 但 tts_engine=None → 降级关闭，仍 emit。"""
@@ -153,9 +161,11 @@ async def test_streamer_speech_emitted_when_tts_enabled_and_no_engine():
     finally:
         await agent._on_stop()
 
+
 # ---------------------------------------------------------------------------
 # TTS 启用：emit 与 TTS 队列复用同一 utterance_id
 # ---------------------------------------------------------------------------
+
 
 @pytest.mark.asyncio
 async def test_streamer_speech_and_tts_share_same_utterance_id():
@@ -207,9 +217,11 @@ async def test_streamer_speech_and_tts_share_same_utterance_id():
     finally:
         await agent._on_stop()
 
+
 # ---------------------------------------------------------------------------
 # speech 空 / 仅空白：不 emit
 # ---------------------------------------------------------------------------
+
 
 @pytest.mark.asyncio
 async def test_empty_speech_does_not_emit_streamer_speech():

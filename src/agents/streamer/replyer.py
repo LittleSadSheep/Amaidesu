@@ -8,8 +8,9 @@
   **不**持有任何工具列表（reply 是唯一 function 定义，纯结构化输出口）。
 
 职责边界：
-- 调用 LLMManager.call_tools(prompt, tools=[reply_fn_def])——LLM 只见 reply。
-- 解析 response.tool_calls：reply call 取 speech/emotion/intensity；其余忽略。
+- 调用 LLMManager.generate(prompt, tools=[reply_fn_def], profile=...)——LLM 只见 reply。
+- 解析 response.tool_calls（中立 payload.ToolCall 扁平形状）：reply call 取
+  speech/emotion/intensity；其余忽略。
 - **敏感词净化**（输出端）：内置 WordFilter 做"嘴"端净化——speech 输出前
   经词表过滤（替换或丢弃）。
 - 两者使用不同的 LLM profile：Planner 用 ``planner`` profile，Replyer 用 ``replyer`` profile。
@@ -48,6 +49,10 @@ _REPLYER_TEMPLATE = "amaidesu_replyer"
 # reply function 名称（Agent 内部协议工具，与 tools/reply_tool.py 的 _REPLY_TOOL_NAME 对齐）
 _REPLY_FUNCTION_NAME = "reply"
 
+# Replyer 绑定的 LLM profile（封闭六成员之一）。绑定由代码显式声明，
+# 配置不承载绑定、无静默兜底——表达引擎固定走 replyer 档位。
+REPLYER_PROFILE = "replyer"
+
 
 class Replyer:
     """表达引擎：消费 DecisionPlan + 弹幕 + 人设，生成实际回复。
@@ -68,17 +73,18 @@ class Replyer:
 
         Args:
             config: 配置字典（兼容 StreamerConfig 的子集字段），
-                    读取 profile / bot_name / personality / style_constraints /
-                    audience_salutation（人设四件套由 StreamerAgent 构造期注入）。
+                    读取 bot_name / personality / style_constraints /
+                    audience_salutation（人设四件套由 StreamerAgent 构造期注入；
+                    LLM profile 绑定不读配置，固定 REPLYER_PROFILE 常量）。
             llm_service: LLM 管理器（使用 profile 指定的高质量客户端）。
             prompt_service: 提示词管理器（渲染 amaidesu_replyer 模板）。
             tool_registry: 工具注册表（仅作占位注入，表达引擎自身不消费工具列表）。
             word_filter: 敏感词过滤器（输出端净化入口；None 表示不净化）。
         """
         self._config: Dict[str, Any] = config or {}
-        # LLM profile 用途名由 StreamerAgent 装配期硬编码传入（_PROFILE_REPLYER）；
-        # 保留为实例属性以兼容工具列表与日志输出（仅展示用）。
-        self.profile: str = self._config.get("profile", "llm")
+        # LLM profile 绑定是模块级显式常量（REPLYER_PROFILE），不读配置、无兜底；
+        # 保留为实例属性以兼容日志输出（仅展示用）。
+        self.profile: str = REPLYER_PROFILE
         self._bot_name: str = self._config.get("bot_name", _DEFAULT_BOT_NAME)
         self._personality: str = self._config.get("personality", _DEFAULT_PERSONALITY)
         self._style_constraints: str = self._config.get("style_constraints", _DEFAULT_STYLE_CONSTRAINTS)
@@ -101,11 +107,11 @@ class Replyer:
         """根据 Planner 的决策计划 + 弹幕批次，生成本方人设下的实际回复。
 
         流程：注入人设渲染 'amaidesu_replyer'（含 $personality/$style_constraints/
-        $bot_name）→ 调用高质量 LLM（profile，**call_tools 标准接口**，
+        $bot_name）→ 调用 LLM（profile 固定 REPLYER_PROFILE，**generate 标准接口**，
         tools=[reply_fn_def]，reply 是唯一 function 定义）→ 解析
-        response.tool_calls 提取 reply(speech/emotion/intensity) → 情绪降级
-        neutral → 敏感词净化 → 返回 dict（不发布事件；reply_tool 负责
-        ToolExecutionResult 包装）。
+        response.tool_calls（中立 payload.ToolCall）提取 reply(speech/emotion/intensity)
+        → 情绪降级 neutral → 敏感词净化 → 返回 dict（不发布事件；reply_tool
+        负责 ToolExecutionResult 包装）。
 
         Args:
             plan: Planner 产出的决策计划（should_reply=True 时才应到达此处）。
@@ -137,10 +143,10 @@ class Replyer:
 
         try:
             self.logger.info(f"Replyer 生成回复中 (plan.target={plan.target!r}, client={self.profile})")
-            response = await self._llm_service.call_tools(
-                prompt=prompt,
+            response = await self._llm_service.generate(
+                prompt,
                 tools=tools,
-                client_type=self.profile,
+                profile=self.profile,
                 on_delta=on_delta,
             )
         except Exception as e:
@@ -267,15 +273,15 @@ class Replyer:
 
     @staticmethod
     def _parse_tool_calls(
-        tool_calls: Optional[List[Dict[str, Any]]],
+        tool_calls: Optional[List[Any]],
     ) -> Tuple[str, Optional[str], float]:
-        """从 LLMResponse.tool_calls 解析 reply(speech/emotion/intensity)。
+        """从 payload.Response.tool_calls 解析 reply(speech/emotion/intensity)。
 
         Replyer 工具列表只有 reply，非 reply 调用一律忽略。
 
         Args:
-            tool_calls: LLM 返回的 tool_calls 列表（OpenAI 形态：
-                        ``{"name": str, "arguments": str|dict, "id": str, "type": "function"}``）
+            tool_calls: LLM 返回的 tool_calls 列表（中立 payload.ToolCall
+                        扁平形状：``name`` / ``arguments``（已解析 dict）。
 
         Returns:
             ``(speech, emotion_name, emotion_intensity)``：
@@ -292,12 +298,12 @@ class Replyer:
         emotion_intensity = 0.5
 
         for call in tool_calls:
-            if not isinstance(call, dict):
+            name = getattr(call, "name", None)
+            if name != _REPLY_FUNCTION_NAME:
                 continue
-            fn = call.get("function") if isinstance(call.get("function"), dict) else call
-            if fn.get("name", "") != _REPLY_FUNCTION_NAME:
-                continue
-            args = _parse_call_arguments(call)
+            args = getattr(call, "arguments", None)
+            if not isinstance(args, dict):
+                args = _parse_call_arguments(args)
             if isinstance(args, dict):
                 raw_speech = args.get("speech", "")
                 if isinstance(raw_speech, str):
@@ -434,15 +440,12 @@ class WordFilter:
 # ============================================================================
 
 
-def _parse_call_arguments(call: Dict[str, Any]) -> Any:
-    """从单个 tool_call 中解析 arguments（兼容 str/dict 两种形态）。
+def _parse_call_arguments(raw: Any) -> Any:
+    """解析 tool_call 的 arguments（兜底兼容 str/dict 两种形态）。
 
-    OpenAI 标准 tool_call.arguments 是 JSON 字符串；部分客户端/测试可能直接传 dict。
-    解析失败时返回原始值（让 caller 自行降级）。
+    中立 payload.ToolCall 的 arguments 已由适配端解析为 dict，此函数仅在
+    形态异常（如 JSON 字符串）时兜底；解析失败返回原始值（让 caller 自行降级）。
     """
-    raw = call.get("arguments", {}) if isinstance(call, dict) else {}
-    if not raw and isinstance(call.get("function"), dict):
-        raw = call["function"].get("arguments", {})
     if isinstance(raw, dict):
         return raw
     if isinstance(raw, str):

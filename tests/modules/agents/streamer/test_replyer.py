@@ -1,8 +1,7 @@
-"""Replyer 单元测试（Y 模型：标准 function calling）。"""
+"""Replyer 单元测试（中立 payload 契约：generate + payload.Response）。"""
 
 from __future__ import annotations
 
-import json
 from typing import List, Optional
 from unittest.mock import AsyncMock, MagicMock
 
@@ -10,7 +9,7 @@ import pytest
 
 from src.agents.streamer.plan import DecisionPlan
 from src.agents.streamer.replyer import WordFilter, Replyer
-from src.modules.llm.manager import LLMResponse
+from src.modules.llm.payload import Response, ToolCall
 
 
 def _make_plan(should_reply: bool = True) -> DecisionPlan:
@@ -27,38 +26,36 @@ def _tool_call_reply(
     speech: str = "好耶！",
     emotion: str = "happy",
     call_id: str = "call_1",
-) -> dict:
-    """构造一个 reply tool_call（标准 OpenAI 形态）。"""
-    return {
-        "name": "reply",
-        "arguments": json.dumps({"speech": speech, "emotion": emotion}, ensure_ascii=False),
-        "id": call_id,
-        "type": "function",
-    }
+) -> ToolCall:
+    """构造一个 reply tool_call（中立 payload 扁平形状，arguments 已解析）。"""
+    return ToolCall(
+        name="reply",
+        arguments={"speech": speech, "emotion": emotion},
+        id=call_id,
+    )
 
 
 def _tool_call_action(
     name: str = "warudo.wave",
     parameters: Optional[dict] = None,
     call_id: str = "call_2",
-) -> dict:
-    """构造一个动作工具 tool_call。"""
-    return {
-        "name": name,
-        "arguments": json.dumps(parameters or {}, ensure_ascii=False),
-        "id": call_id,
-        "type": "function",
-    }
+) -> ToolCall:
+    """构造一个动作工具 tool_call（中立 payload 扁平形状）。"""
+    return ToolCall(
+        name=name,
+        arguments=parameters or {},
+        id=call_id,
+    )
 
 
 def _make_llm_response(
     *,
-    tool_calls: Optional[List[dict]] = None,
+    tool_calls: Optional[List[ToolCall]] = None,
     success: bool = True,
     error: Optional[str] = None,
-) -> LLMResponse:
-    """构造 LLMResponse（call_tools 返回值）。"""
-    return LLMResponse(
+) -> Response:
+    """构造 payload.Response（generate 返回值）。"""
+    return Response(
         success=success,
         content="",
         tool_calls=tool_calls or [],
@@ -67,7 +64,7 @@ def _make_llm_response(
 
 
 def _make_replyer(
-    llm_response: Optional[LLMResponse] = None,
+    llm_response: Optional[Response] = None,
     llm_side_effect: Optional[Exception] = None,
     action_tools=None,
     config: Optional[dict] = None,
@@ -81,12 +78,12 @@ def _make_replyer(
     """
     llm = MagicMock()
     if llm_side_effect is not None:
-        llm.call_tools = AsyncMock(side_effect=llm_side_effect)
+        llm.generate = AsyncMock(side_effect=llm_side_effect)
     else:
         resp = llm_response or _make_llm_response()
-        llm.call_tools = AsyncMock(return_value=resp)
-    # 兼容旧测试可能用到的 chat 属性（不应被调用）
-    llm.chat = AsyncMock()
+        llm.generate = AsyncMock(return_value=resp)
+    # 旧入口不应被新代码触碰
+    llm.call_tools = AsyncMock()
 
     prompt = MagicMock()
     prompt.render = MagicMock(return_value="PROMPT")
@@ -161,15 +158,15 @@ class TestReplyerGenerate:
         assert "action_list" not in kwargs
 
     @pytest.mark.asyncio
-    async def test_replyer_uses_llm_client(self) -> None:
-        """断言 call_tools 使用 replyer_llm（默认 'llm'，与 Planner 的 llm_fast 分离）。"""
+    async def test_replyer_uses_replyer_profile(self) -> None:
+        """断言 generate 绑定 replyer profile（代码显式常量，与 Planner 的 planner 分离）。"""
         r, llm, _prompt = _make_replyer(
             llm_response=_make_llm_response(tool_calls=[_tool_call_reply()]),
         )
         plan = _make_plan()
         await r.generate(plan, [])
 
-        assert llm.call_tools.await_args.kwargs.get("client_type") == "llm"
+        assert llm.generate.await_args.kwargs.get("profile") == "replyer"
 
     @pytest.mark.asyncio
     async def test_replyer_only_reply_tool_visible(self) -> None:
@@ -189,10 +186,22 @@ class TestReplyerGenerate:
         plan = _make_plan()
         await r.generate(plan, [])
 
-        kwargs = llm.call_tools.await_args.kwargs
+        kwargs = llm.generate.await_args.kwargs
         tool_names = [t["name"] for t in kwargs["tools"]]
         assert tool_names == ["reply"]
         registry.list_tools.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_replyer_on_delta_passthrough(self) -> None:
+        """on_delta 回调透传给 generate（流式行为不变）。"""
+        r, llm, _prompt = _make_replyer(
+            llm_response=_make_llm_response(tool_calls=[_tool_call_reply()]),
+        )
+        plan = _make_plan()
+        on_delta = MagicMock()
+        await r.generate(plan, [], on_delta=on_delta)
+
+        assert llm.generate.await_args.kwargs.get("on_delta") is on_delta
 
     @pytest.mark.asyncio
     async def test_replyer_ignores_non_reply_tool_calls(self) -> None:
@@ -265,7 +274,7 @@ class TestReplyerGenerate:
 
     @pytest.mark.asyncio
     async def test_replyer_llm_response_failure_silent(self) -> None:
-        """LLMResponse.success=False → 返回 None（silent 降级）。"""
+        """payload.Response.success=False → 返回 None（silent 降级）。"""
         r, _llm, _prompt = _make_replyer(
             llm_response=_make_llm_response(success=False, error="upstream error"),
         )
@@ -284,7 +293,7 @@ class TestReplyerGenerate:
         result = await r.generate(plan, [])
 
         assert result is None
-        llm.call_tools.assert_not_called()
+        llm.generate.assert_not_called()
 
 
 class TestReplyerWordFilter:

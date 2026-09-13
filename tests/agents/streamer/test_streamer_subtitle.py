@@ -28,16 +28,18 @@ from src.modules.events.event_bus import EventBus
 from src.modules.events.names import CoreEvents
 from src.modules.events.payloads.speech import StreamerSpeechPayload
 from src.modules.llm.manager import LLMResponse
+from src.modules.llm.payload import Response
+
 
 def _make_agent_config(**overrides: Any) -> StreamerConfig:
     """构造测试用 StreamerAgentConfig。"""
     defaults: Dict[str, Any] = {
         "batch": {"batch_window_ms": 100, "tick_interval_ms": 50},
-
         "proactive": {"enabled": False},
     }
     defaults.update(overrides)
     return StreamerConfig.from_dict(defaults)
+
 
 def _build_streamer_agent(
     *,
@@ -49,6 +51,7 @@ def _build_streamer_agent(
     """构造最小化 StreamerAgent：mock LLM/Prompt/Context/字幕。"""
     llm = MagicMock()
     llm.call_tools = AsyncMock(return_value=LLMResponse(success=False, error="not used"))
+    llm.generate = AsyncMock(return_value=Response(success=False, error="not used"))
     llm.chat = AsyncMock()  # 兼容旧调用（不应被实际触发）
     prompt = MagicMock()
     prompt.render = MagicMock(return_value="PROMPT")
@@ -64,6 +67,7 @@ def _build_streamer_agent(
         subtitle_service=subtitle_service,
     )
 
+
 class _MockTTSEngine:
     """TTS 引擎 mock：录制所有 handle_speech 调用。"""
 
@@ -73,9 +77,11 @@ class _MockTTSEngine:
     async def handle_speech(self, text: str, utterance_id: Optional[str] = None) -> None:
         self.handle_speech_calls.append((text, utterance_id))
 
+
 # ---------------------------------------------------------------------------
 # subtitle_service 注入 + 正确参数调用
 # ---------------------------------------------------------------------------
+
 
 @pytest.mark.asyncio
 async def test_subtitle_service_show_called_with_speech_and_utterance_id():
@@ -115,6 +121,7 @@ async def test_subtitle_service_show_called_with_speech_and_utterance_id():
         assert isinstance(uid, str) and uid.startswith("utt_"), f"utterance_id 应为 utt_ 前缀字符串，实际 {uid!r}"
     finally:
         await agent._on_stop()
+
 
 @pytest.mark.asyncio
 async def test_subtitle_service_shares_utterance_id_with_streamer_speech_and_tts():
@@ -168,9 +175,11 @@ async def test_subtitle_service_shares_utterance_id_with_streamer_speech_and_tts
     finally:
         await agent._on_stop()
 
+
 # ---------------------------------------------------------------------------
 # subtitle_service=None / 缺注入：跳过 + 不抛
 # ---------------------------------------------------------------------------
+
 
 @pytest.mark.asyncio
 async def test_subtitle_service_none_skips_show_without_error():
@@ -198,9 +207,11 @@ async def test_subtitle_service_none_skips_show_without_error():
     finally:
         await agent._on_stop()
 
+
 # ---------------------------------------------------------------------------
 # speech 空 / 仅空白：不触发字幕
 # ---------------------------------------------------------------------------
+
 
 @pytest.mark.asyncio
 async def test_empty_speech_does_not_trigger_subtitle():
@@ -235,9 +246,11 @@ async def test_empty_speech_does_not_trigger_subtitle():
     finally:
         await agent._on_stop()
 
+
 # ---------------------------------------------------------------------------
 # 字幕服务抛异常：决策循环不受影响
 # ---------------------------------------------------------------------------
+
 
 @pytest.mark.asyncio
 async def test_subtitle_service_exception_does_not_break_decision_loop(loguru_capture):
