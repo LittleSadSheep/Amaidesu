@@ -84,7 +84,6 @@ _MAX_GAME_NARRATIVE = 10
 # LLM profile 用途名（与 [llm_profiles.<name>] 三层结构对齐；model.toml 必填 6 成员）
 _PROFILE_PLANNER = "planner"
 _PROFILE_REPLYER = "replyer"
-_PROFILE_SUMMARY = "summary"
 
 
 # ---------------------------------------------------------------------------
@@ -310,7 +309,6 @@ class StreamerAgent(BaseAgent):
             "light_tick_ms": bg.light_tick_ms,
             "cold_timeout_ms": bg.cold_timeout_ms,
             "summary_interval_ms": bg.summary_interval_ms,
-            "summary_client": _PROFILE_SUMMARY,
             "window_event_threshold": bg.window_event_threshold,
             "compressor_concurrency": bg.compressor.concurrency,
             "compressor_queue_max": bg.compressor.queue_max,

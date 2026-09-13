@@ -23,6 +23,7 @@ from src.agents.streamer.room_state import RoomState
 from src.agents.streamer.streamer_agent import StreamerAgent
 from src.agents.streamer.config import StreamerConfig
 from src.modules.llm.manager import LLMResponse
+from src.modules.llm.payload import Response
 from src.modules.storage.database import SQLiteDatabase
 
 
@@ -59,9 +60,7 @@ class _FakeSessionManager:
 @pytest.mark.asyncio
 async def test_initialize_creates_live_chat_session_ts_index(store: SQLiteDatabase) -> None:
     """全新库 initialize → sqlite_master 含组合索引。"""
-    rows = await store.execute(
-        "SELECT name FROM sqlite_master WHERE type='index' AND name='idx_live_chat_session_ts'"
-    )
+    rows = await store.execute("SELECT name FROM sqlite_master WHERE type='index' AND name='idx_live_chat_session_ts'")
     assert len(rows) == 1
 
 
@@ -85,12 +84,20 @@ async def test_list_recent_live_chat_role_filter(store: SQLiteDatabase) -> None:
     assert empty == []
 
     await store.chat.insert_live_chat(
-        live_session_id=1, timestamp_ms=100, sender_role="viewer",
-        sender_name="观众A", content="你好", message_type="danmaku",
+        live_session_id=1,
+        timestamp_ms=100,
+        sender_role="viewer",
+        sender_name="观众A",
+        content="你好",
+        message_type="danmaku",
     )
     await store.chat.insert_live_chat(
-        live_session_id=1, timestamp_ms=200, sender_role="assistant",
-        sender_name="主播", content="欢迎", message_type="speak",
+        live_session_id=1,
+        timestamp_ms=200,
+        sender_role="assistant",
+        sender_name="主播",
+        content="欢迎",
+        message_type="speak",
     )
     rows = await store.chat.list_recent_live_chat(live_session_id=1, sender_role="viewer")
     assert [r["content"] for r in rows] == ["你好"]
@@ -99,6 +106,7 @@ async def test_list_recent_live_chat_role_filter(store: SQLiteDatabase) -> None:
 def _make_agent(store: SQLiteDatabase, session_manager) -> StreamerAgent:
     llm = MagicMock()
     llm.call_tools = AsyncMock(return_value=LLMResponse(success=False, error="not used"))
+    llm.generate = AsyncMock(return_value=Response(success=False, error="not used"))
     prompt = MagicMock()
     prompt.render = MagicMock(return_value="PROMPT")
     return StreamerAgent(
@@ -132,12 +140,20 @@ async def test_read_history_empty_session_returns_empty(store: SQLiteDatabase) -
 async def test_read_history_returns_turns_in_chronological_order(store: SQLiteDatabase) -> None:
     """历史按时间正序返回，role 承载 sender_role。"""
     await store.chat.insert_live_chat(
-        live_session_id=1, timestamp_ms=100, sender_role="viewer",
-        sender_name="观众A", content="先问", message_type="danmaku",
+        live_session_id=1,
+        timestamp_ms=100,
+        sender_role="viewer",
+        sender_name="观众A",
+        content="先问",
+        message_type="danmaku",
     )
     await store.chat.insert_live_chat(
-        live_session_id=1, timestamp_ms=200, sender_role="assistant",
-        sender_name="主播", content="后答", message_type="speak",
+        live_session_id=1,
+        timestamp_ms=200,
+        sender_role="assistant",
+        sender_name="主播",
+        content="后答",
+        message_type="speak",
     )
     agent = _make_agent(store, _FakeSessionManager(1))
     history = await agent._read_history()
@@ -155,9 +171,7 @@ async def test_read_history_returns_turns_in_chronological_order(store: SQLiteDa
 def _make_maintainer(store: SQLiteDatabase) -> tuple[BackgroundMaintainer, MagicMock]:
     room_state = RoomState()
     llm = MagicMock()
-    llm.chat = AsyncMock(
-        return_value=LLMResponse(success=True, content="观众在聊新版本更新")
-    )
+    llm.generate = AsyncMock(return_value=Response(success=True, content="观众在聊新版本更新"))
     memory = MagicMock()
     memory.ingest = AsyncMock(return_value=None)
     maintainer = BackgroundMaintainer(
@@ -176,14 +190,18 @@ async def test_summarize_topic_reads_live_chat_viewer_rows(store: SQLiteDatabase
     """seed live_chat viewer 行 → 摘要 LLM 收到弹幕文本，topic_summary 被写入。"""
     maintainer, llm = _make_maintainer(store)
     await store.chat.insert_live_chat(
-        live_session_id=1, timestamp_ms=100, sender_role="viewer",
-        sender_name="观众A", content="新版本什么时候上线", message_type="danmaku",
+        live_session_id=1,
+        timestamp_ms=100,
+        sender_role="viewer",
+        sender_name="观众A",
+        content="新版本什么时候上线",
+        message_type="danmaku",
     )
 
     await maintainer._summarize_topic(now_ms=200_000)
 
     # LLM 输入含观众弹幕（摘要输入不再恒空）
-    prompt_text = llm.chat.await_args.kwargs["prompt"]
+    prompt_text = llm.generate.await_args.args[0]
     assert "新版本什么时候上线" in prompt_text
     # topic_summary 写入房间态势（下游 ProactiveTrigger 的 topic 门据此放行）
     snap = maintainer._room_state.get_snapshot(now_ms=300_000)
@@ -195,7 +213,7 @@ async def test_summarize_topic_no_active_session_is_noop(store: SQLiteDatabase) 
     """无显式场次 → 静默跳过（不调 LLM、不写摘要）。"""
     room_state = RoomState()
     llm = MagicMock()
-    llm.chat = AsyncMock(return_value=LLMResponse(success=True, content="x"))
+    llm.generate = AsyncMock(return_value=Response(success=True, content="x"))
     maintainer = BackgroundMaintainer(
         {"enabled": True},
         room_state=room_state,
@@ -206,7 +224,7 @@ async def test_summarize_topic_no_active_session_is_noop(store: SQLiteDatabase) 
 
     await maintainer._summarize_topic(now_ms=200_000)
 
-    llm.chat.assert_not_awaited()
+    llm.generate.assert_not_awaited()
     assert room_state.get_snapshot(now_ms=300_000).topic_summary == ""
 
 
@@ -216,12 +234,16 @@ async def test_summarize_topic_only_assistant_rows_clears_summary(store: SQLiteD
     maintainer, llm = _make_maintainer(store)
     maintainer._room_state.set_topic_summary("旧话题", now_ms=1)
     await store.chat.insert_live_chat(
-        live_session_id=1, timestamp_ms=100, sender_role="assistant",
-        sender_name="主播", content="大家好", message_type="speak",
+        live_session_id=1,
+        timestamp_ms=100,
+        sender_role="assistant",
+        sender_name="主播",
+        content="大家好",
+        message_type="speak",
     )
 
     await maintainer._summarize_topic(now_ms=200_000)
 
-    llm.chat.assert_not_awaited()
+    llm.generate.assert_not_awaited()
     snap = maintainer._room_state.get_snapshot(now_ms=300_000)
     assert snap.topic_summary == ""

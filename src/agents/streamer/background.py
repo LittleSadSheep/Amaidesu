@@ -19,7 +19,7 @@
 - **压缩 worker**（asyncio.Queue 触发）：
   - queue.get() → LLM 压缩（一次调用：时间线摘要 + 话题总结句）→ 写摘要层
   - 并发 = 1（顺序保证：摘要块必须按时间序——乱序 = 倒叙）
-  - 失败可丢弃可重算；LLM 用 chat_fast（不抢主决策优先级）
+  - 失败可丢弃可重算；摘要用 summary profile（不抢主决策优先级）
 """
 
 from __future__ import annotations
@@ -47,8 +47,9 @@ __all__ = ["BackgroundMaintainer"]
 _DEFAULT_LIGHT_TICK_MS = 5_000
 _DEFAULT_COLD_TIMEOUT_MS = 60_000
 _DEFAULT_SUMMARY_INTERVAL_MS = 60_000
-# 摘要专用 LLM profile（与 Planner / Replyer 隔离；model.toml [llm_profiles.summary]）
-_DEFAULT_SUMMARY_CLIENT = "summary"
+# 摘要 LLM 绑定：由代码显式声明（配置不承载绑定；封闭 profile 六成员之一，
+# 与 Planner / Replyer 隔离，对应 model.toml [llm_profiles.summary]）
+SUMMARY_PROFILE = "summary"
 # 窗口触发压缩的条数阈值
 _DEFAULT_WINDOW_EVENT_THRESHOLD = 200
 # 压缩队列上限（与 StreamerCompressorConfig.queue_max 默认对齐）
@@ -105,7 +106,6 @@ class BackgroundMaintainer:
                 - ``light_tick_ms``（默认 5000）
                 - ``cold_timeout_ms``（默认 60000）
                 - ``summary_interval_ms``（默认 60000）
-                - ``summary_client``（默认 ``summary``）
                 - ``window_event_threshold``（默认 200）
                 - ``compressor_concurrency``（默认 1）
                 - ``compressor_queue_max``（默认 100）
@@ -150,7 +150,6 @@ class BackgroundMaintainer:
         self._light_tick_ms: int = _cfg(config, "light_tick_ms", _DEFAULT_LIGHT_TICK_MS)
         self._cold_timeout_ms: int = _cfg(config, "cold_timeout_ms", _DEFAULT_COLD_TIMEOUT_MS)
         self._summary_interval_ms: int = _cfg(config, "summary_interval_ms", _DEFAULT_SUMMARY_INTERVAL_MS)
-        self._summary_client: str = _cfg(config, "summary_client", _DEFAULT_SUMMARY_CLIENT)
         self._window_event_threshold: int = _cfg(config, "window_event_threshold", _DEFAULT_WINDOW_EVENT_THRESHOLD)
 
         self._light_task: Optional[asyncio.Task] = None
@@ -365,7 +364,7 @@ class BackgroundMaintainer:
         )
 
     async def _maybe_summarize(self, now_ms: int) -> None:
-        """摘要门控：按热度频率调用 LLM（走 chat_fast profile）。"""
+        """摘要门控：按热度频率投递摘要任务。"""
         if self._llm_service is None or self._chat_repo is None:
             return
         snap = self._room_state.get_snapshot(now_ms=now_ms)
@@ -435,7 +434,7 @@ class BackgroundMaintainer:
         # 其它类型（暂不实现；留给后续）
 
     async def _summarize_topic(self, now_ms: int) -> None:
-        """调 LLM 生成话题摘要（chat_fast profile）。
+        """调 LLM 生成话题摘要（summary profile）。
 
         摘要输入 = live_chat 当前场次的最近 viewer 行（"真实观众弹幕"语义
         由 SQL 的 ``sender_role='viewer'`` 过滤承载——主播发言行是
@@ -472,10 +471,10 @@ class BackgroundMaintainer:
 
         prompt = f"以下是最近直播间弹幕历史，请总结当前讨论的主要话题：\n\n{history_text}"
         try:
-            response = await self._llm_service.chat(
-                prompt=prompt,
-                client_type=self._summary_client,
-                system_message=self._get_summary_system_prompt(),
+            response = await self._llm_service.generate(
+                prompt,
+                profile=SUMMARY_PROFILE,
+                system=self._get_summary_system_prompt(),
             )
         except Exception as exc:
             self._logger.warning(f"话题摘要 LLM 调用异常: {exc}")
