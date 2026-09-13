@@ -11,6 +11,9 @@
     - ``random``：随机选一个
 - **故障切换**：当前模型失败切下一个；超 ``slow_threshold_ms`` 仅告警（不切）。
   成功后立即返回，不再尝试。
+- **硬超时墙**：profile 级 ``hard_timeout_ms`` 包住整个单模型尝试（含墙内
+  重试），到点取消 in-flight 请求；超时切下一个模型。流式首 token 已产出
+  后到点则只中止，部分增量不外泄。
 - **厂商无关**：本模块不 import 任何厂商适配端（``clients/<vendor>/``），
   provider 客户端构造与能力解析一律经 ``clients`` 包的调度表完成。
 
@@ -35,10 +38,12 @@ from src.modules.llm.bootstrap import (
     register_providers,
     resolve_profile_name,
     validate_profile_binding,
+    warn_hard_timeout_conflicts,
 )
 from src.modules.llm.client import LLMResponse
 from src.modules.llm.clients import resolve_client_method
 from src.modules.llm.errors import FatalError, LLMError, LLMInterruptedError, LLMTimeoutError, RetryableError
+from src.modules.llm.interrupt import HardTimeoutExceeded, guarded_call
 from src.modules.llm.observation import record_usage
 from src.modules.llm.payload import GenerateRequest, ImagePart, Message, Response, TextPart, ToolCall, ToolSpec, Usage
 from src.modules.logging import get_logger
@@ -73,6 +78,38 @@ _RETRY_POLICY: Dict[type, str] = {
 
 _PAYLOAD_METHODS = frozenset({"generate", "generate_vision"})
 """走中立 payload 契约的客户端能力名（Client 返回 payload.Response）。"""
+
+
+class _StreamGate:
+    """流式增量闸门：先把增量缓冲在 Engine 侧，成功后统一放行给调用方。
+
+    流式语义下增量回调是即发即失的，一旦吐出就无法收回；为了保证
+    "首 token 之后失败只中止、部分 token 不外泄"，Engine 以回调包装的
+    方式持有增量，仅在整次调用成功时回放，切换模型 / 超时中止时丢弃。
+    ``started`` 同时作为首 token 判据：硬超时发生在首 token 前仍可
+    failover，发生在首 token 后只能中止。
+    """
+
+    def __init__(self, on_delta: Optional[Callable[[str, str], None]]) -> None:
+        self.has_consumer = on_delta is not None
+        self._on_delta = on_delta
+        self._buffered: List[Tuple[str, str]] = []
+        self.started = False
+
+    @property
+    def callback(self) -> Callable[[str, str], None]:
+        def _gate(kind: str, text_delta: str) -> None:
+            self.started = True
+            self._buffered.append((kind, text_delta))
+
+        return _gate
+
+    def flush(self) -> None:
+        """调用成功后按原顺序回放缓冲增量。"""
+        if self._on_delta is None:
+            return
+        for kind, text_delta in self._buffered:
+            self._on_delta(kind, text_delta)
 
 
 def _content_to_parts(content: Any) -> List[Any]:
@@ -325,6 +362,9 @@ class LLMManager:
             self._profiles[pname] = build_resolved_profile(pname, pcfg, self._models)
             self._profile_call_counts[pname] = 0
             self._model_call_counts[pname] = {}
+
+        # 启动期弱校验：profile 硬超时小于 provider 请求超时时告警（防请求级超时变死配置）
+        warn_hard_timeout_conflicts(self._profiles, self._providers, self.logger)
 
         # 初始化 token manager
         # 必须函数体内 import：测试用 patch 拦截（src.modules.llm.clients.token_usage_manager.TokenUsageManager），
@@ -790,11 +830,15 @@ class LLMManager:
         slow_threshold_ms: int,
         **kwargs: Any,
     ) -> Tuple[Optional[LLMResponse], Optional[str]]:
-        """单模型上的重试 + 慢调用告警 + 硬超时。
+        """单模型尝试整体（含内部重试）置于 profile 硬超时墙内。
 
-        重试决策按 ``_RETRY_POLICY`` 分类表执行：Retryable 在本模型有上限
-        重试；Fatal / Timeout 立即交还故障切换（切下一个模型）；Interrupted
-        整体中止并向调用方传播中断。
+        语义口径：hard_timeout 是墙，重试在墙内尽力、可能被截断——墙到点
+        取消 in-flight 请求（含退避等待），整个尝试标记失败交还故障切换。
+        两个分支例外：
+
+        - 流式首 token 已产出：部分结果不得吐给调用方也不得切换模型，
+          只能整体中止（以 ``LLMInterruptedError`` 表达，向上传播）
+        - 调用方中断 / 父任务取消：同一取消路径收割子任务后原样传播
 
         Returns:
             (response, error)：成功 → (LLMResponse, None)；失败 → (None, 错误描述)
@@ -808,6 +852,56 @@ class LLMManager:
         if call_kwargs.get("max_tokens") is None:
             call_kwargs["max_tokens"] = profile.max_tokens
 
+        # 流式增量先过闸门：成功回放、中止/切换丢弃（首 token 前后分支判据在 gate.started）
+        gate = _StreamGate(call_kwargs.get("on_delta"))
+        if gate.has_consumer:
+            call_kwargs["on_delta"] = gate.callback
+
+        hard_timeout_ms = profile.hard_timeout_ms
+        try:
+            response, error = await guarded_call(
+                lambda: self._retry_loop(
+                    method=method,
+                    client=client,
+                    provider_cfg=provider_cfg,
+                    model_identifier=model_identifier,
+                    model_name=model_name,
+                    profile_name=profile_name,
+                    request_id=request_id,
+                    start_time=start_time,
+                    slow_threshold_ms=slow_threshold_ms,
+                    call_kwargs=call_kwargs,
+                ),
+                timeout_ms=hard_timeout_ms,
+                interrupt_flag=call_kwargs.get("interrupt_flag"),
+            )
+        except HardTimeoutExceeded:
+            if gate.started:
+                raise LLMInterruptedError(
+                    f"流式输出已开始后触达硬超时（{hard_timeout_ms}ms），部分结果不外泄，整体中止"
+                ) from None
+            error = f"硬超时（{hard_timeout_ms}ms）：重试在墙内被截断"
+            self.logger.warning(f"[LLM 硬超时] profile={profile_name} model={model_name} {error}，切下一个模型")
+            return None, error
+        if response is not None:
+            gate.flush()
+        return response, error
+
+    async def _retry_loop(
+        self,
+        *,
+        method: str,
+        client: Any,
+        provider_cfg: Dict[str, Any],
+        model_identifier: str,
+        model_name: str,
+        profile_name: str,
+        request_id: str,
+        start_time: float,
+        slow_threshold_ms: int,
+        call_kwargs: Dict[str, Any],
+    ) -> Tuple[Optional[LLMResponse], Optional[str]]:
+        """墙内的单模型重试循环：按 ``_RETRY_POLICY`` 分类表驱动重试/切换/中止。"""
         max_retries = int(provider_cfg.get("max_retries", self._retry_config.max_retries) or 0)
         base_delay = float(provider_cfg.get("retry_delay", self._retry_config.base_delay) or 0.0)
         max_delay = self._retry_config.max_delay
