@@ -5,8 +5,9 @@ AgentControl —— 框架级 Agent 控制与委派
   ——派活拿回执（accepted + task_id），任务进度随时可查；指令只当自然
   语言（给目标，不给步骤），不加编排/条件分支
 - provider="framework"（框架内置提供，非独立源；可见名单默认 ["*"]）
-- pause / resume / shutdown / restart / 状态查询等控制能力由 ``AgentControl``
+- pause / resume / shutdown / 状态查询等控制能力由 ``AgentControl``
   类本体承载，不进 LLM 工具面；控制面（DashboardServer）经 API 直调
+  （重建走 ``AgentManager.rebuild``，不经本类）
 
 LLM 工具面注册方式（framework provider 只含 delegate/task_status 两个 spec）：
 ```python
