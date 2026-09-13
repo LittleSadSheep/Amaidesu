@@ -198,7 +198,7 @@ v2 不再有"插件系统"。所有新功能通过 Agent 包内聚实现，框�
    └─ ToolExecutionResult.success=True，structured_content 为 dict（`{speech, emotion, actions, metadata}`）
    └─ 存储层写入 live_chat 表（danmaku → message；reply → 同表关联 user=bot）
    └─ 空转检测信号由 ProactiveTrigger 承载（BackgroundMaintainer 轻循环供周期 tick；流程单超时提醒走 rundown_overdue 触发源）
-   └─ **StreamerAgent 消费 reply 结构化结果触发发言管线**（`streamer_agent.py` _dispatch_speech_and_emotion）：
+   └─ **发言管线消费 reply 结构化结果触发下游扇出**（`speech_dispatcher.py` SpeechDispatcher.dispatch，由 `decision_executor.py` 在决策收口处调用）：
       ├─ speech 非空 → 生成 `utt_{epoch_ms}_{seq}` → UtteranceQueue.enqueue（fire-and-forget）→ 后台 worker 串行 `await speak(text, utterance_id)`（`speak` 是构造期注入的适配器，绑定 `tts_engine.handle_speech`）
       │  └─ `tts_engine` 是装配期由 `build_tts_infrastructure(core [tts], event_bus)` 按 `[tts].provider` 选中的唯一引擎实例（edge_tts / gptsovits / voicebox / omni_tts），构造期直接注入 StreamerAgent
       │     └─ 引擎播放时按 `tts.utterance.*` 三事件发布生命周期（started / finished / failed）；事件是终点广播，消费者不得触发新决策

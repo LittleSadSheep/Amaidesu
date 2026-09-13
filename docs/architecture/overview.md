@@ -232,17 +232,17 @@ sequenceDiagram
 | 角色 | 模块 |
 |------|------|
 | **入口与编排** | `streamer_agent.py`（继承 `BaseAgent`，编排子组件）、`__init__.py` |
-| **决策循环（Planner）** | `planner.py`（ReAct 循环：`generate` 携带注册表工具列表，查信息 → 说与不说由工具调用行为表达）、`plan.py`（plan 数据结构） |
+| **决策循环（Planner）** | `planner.py`（ReAct 循环：`generate` 携带注册表工具列表，查信息 → 说与不说由工具调用行为表达）、`plan.py`（plan 数据结构）、`decision_executor.py`（决策轮执行器：round_id 生成、`streamer.stage`/`planner.decision` 发射、发言派发与记账；flush 调度半留 `streamer_agent.py`） |
 | **表达引擎（Replyer）** | `replyer.py`（`generate` 只见 reply 函数定义，纯文本 JSON + 敏感词过滤） |
 | **主动发言规则** | `proactive_trigger.py`（ProactiveTrigger 代码直连内部件，非 LLM 工具；主循环直接驱动） |
-| **流程单（Rundown）** | `rundown/` 子包：`rundown.py`（数据契约 + 内置默认流程单）/ `rundown_state.py`（游标 + 计时 + 唯一变更边界）/ `rundown_tool.py`（Agent 推进工具）；备忘录 + 闹钟——环节推进由 Agent 经工具自主决定，超时闹钟并入 ProactiveTrigger 只提醒不执法 |
-| **房间与消息** | `room_state.py`（直播间状态聚合）、`message_buffer.py`（弹幕聚合窗口：默认 3s/20 条） |
+| **流程单（Rundown）** | `rundown/` 子包：`rundown.py`（数据契约 + 内置默认流程单）/ `rundown_state.py`（游标 + 计时 + 唯一变更边界）/ `rundown_tool.py`（Agent 推进工具）/ `presentation.py`（Dashboard 视图拼装 + 手动控制翻译）；备忘录 + 闹钟——环节推进由 Agent 经工具自主决定，超时闹钟并入 ProactiveTrigger 只提醒不执法 |
+| **房间与消息** | `room_state.py`（直播间状态聚合）、`message_buffer.py`（弹幕聚合窗口：默认 3s/20 条）、`stats.py`（`StreamerStats` 7 项运行时计数器） |
 | **对话映射与参考段** | `canonical.py`（live_chat 行/弹幕批 → 原生消息的单一序列化点 + 成块丢最旧截断）、`planner_context.py`（Planner 参考段纯函数组装，固定在消息序列尾部） |
 | **后台维护** | `background.py`（双任务 BackgroundMaintainer 取代旧 RoomStateLoop） |
-| **发言管线** | `utterance_queue.py`（v2.0.10 新增：`UtteranceQueue` FIFO 串行队列，丢最旧 / 单 worker / 渲染超时看门狗；构造期注入 `speak` 可调用对象（绑定 `tts_engine.handle_speech`），后台串行直接 `await speak(text, utterance_id)`，不再经 ToolRegistry） |
+| **发言管线** | `speech_dispatcher.py`（`SpeechDispatcher`：消费 reply 结构化结果，扇出到业务事件/TTS 队列/字幕/VTS/动作工具；自持 TTS 队列生命周期）、`utterance_queue.py`（`UtteranceQueue` FIFO 串行队列，丢最旧 / 单 worker / 渲染超时看门狗；构造期注入 `speak` 可调用对象（绑定 `tts_engine.handle_speech`），后台串行直接 `await speak(text, utterance_id)`，不再经 ToolRegistry） |
 | **工具壳层** | `tools/` 子包：`reply_tool.py`（`streamer_reply`）、`rundown_tool.py`（`rundown_control`，流程单推进）——Agent 专属工具入口，注册进 ToolRegistry 由 Planner ReAct 循环统一调用，只包装顶层内部件，不含决策/表达逻辑 |
 | **时序门** | `timing_gate.py` |
-| **命令解析** | `command/command.py` + `command/command_parser.py` + `command/command_registry.py`——观众 `/命令` 经代码直连解析 + `mappings` 白名单 + 限频后经 `framework_delegate` 委派游戏 Agent（最小接线：玩法待扩展；命令不是 LLM 工具，不进 ToolRegistry） |
+| **命令解析** | `command/router.py`（`CommandRouter`：识别 + 白名单 + 限频 + 委派）+ `command/command.py` + `command/command_parser.py` + `command/command_registry.py`——观众 `/命令` 经代码直连解析 + `mappings` 白名单 + 限频后经 `framework_delegate` 委派游戏 Agent（最小接线：玩法待扩展；命令不是 LLM 工具，不进 ToolRegistry） |
 | **提示词** | `prompts/amaidesu_planner_react.md` + `prompts/amaidesu_replyer.md` + `prompts/summary_system.md` |
 
 `src/agents/text_adv/` 文字冒险 GameAgent 范例：`agent.py`（继承 `BaseAgent`）、`state.py`（剧情状态）、`tools.py`（游戏侧 dispatch）、`content_engine/` 子包（引擎 Protocol + Stub/Fake，**包内私有**：构造注入、Agent 与工具直连调用，不注册不暴露），构造时注入 `content_engine=StubContentEngine(engine_kind="text_adv")`。
