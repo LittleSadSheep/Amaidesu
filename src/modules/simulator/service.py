@@ -445,11 +445,29 @@ class SimulatorService:
         except Exception as exc:
             self.logger.error(f"模拟器回放循环异常: {exc}", exc_info=True)
 
+    # message_type → room.message.* 事件名映射；未知类型回退弹幕事件
+    _MESSAGE_TYPE_EVENT: Dict[str, str] = {
+        "danmaku": CoreEvents.ROOM_MESSAGE_DANMAKU,
+        "gift": CoreEvents.ROOM_MESSAGE_GIFT,
+        "super_chat": CoreEvents.ROOM_MESSAGE_SUPER_CHAT,
+        "guard": CoreEvents.ROOM_MESSAGE_GUARD,
+    }
+
+    @classmethod
+    def _resolve_message_event(cls, message_type: str) -> str:
+        """按 message_type 选 room.message.* 事件名；未知类型回退弹幕。"""
+        event_name = cls._MESSAGE_TYPE_EVENT.get(message_type)
+        if event_name is None:
+            get_logger("SimulatorService").warning(f"未知 message_type={message_type!r}，回退为弹幕事件发射")
+            event_name = CoreEvents.ROOM_MESSAGE_DANMAKU
+        return event_name
+
     async def _emit_replay_payload(self, payload: RoomMessagePayload) -> None:
         """原样回放一条录制消息（时间戳刷新 + simulated 标记保持）。
 
         场次归属不在此填写——回放启动时已自动开启回放场次，事件经场次盖章
         拦截器归属到该场；message_id 保留录制值（跨回放可复现同一条消息）。
+        事件名按 message_type 选择，与录制时的消息类型一致。
         """
         replayed = payload.model_copy(
             update={
@@ -458,7 +476,7 @@ class SimulatorService:
             }
         )
         await self.event_bus.emit(
-            CoreEvents.ROOM_MESSAGE_DANMAKU,
+            self._resolve_message_event(payload.message_type),
             replayed,
             source="simulated_live_stream",
         )
@@ -478,10 +496,12 @@ class SimulatorService:
 
         场次归属（live_session_id）不在此填写——由事件总线的场次盖章拦截器
         统一注入当前场次；message_id 现场生成，作为回复关联键落库。
+        未知 message_type 回退为弹幕（事件名与 payload 同步钳制），不抛错。
         """
+        known_type = message_type if message_type in self._MESSAGE_TYPE_EVENT else "danmaku"
         payload = RoomMessagePayload(
             message_id=uuid.uuid4().hex,
-            message_type=message_type,  # type: ignore[arg-type]
+            message_type=known_type,  # type: ignore[arg-type]
             user=RoomMessageUser(
                 id=str(getattr(persona, "user_id", "") or f"sim-{uuid.uuid4().hex[:6]}"),
                 name=str(getattr(persona, "user_nickname", "") or "模拟观众"),
@@ -491,7 +511,7 @@ class SimulatorService:
             simulated=True,  # 数据溯源标记：模拟/回放源，统计与入库需过滤
         )
         await self.event_bus.emit(
-            CoreEvents.ROOM_MESSAGE_DANMAKU,
+            self._resolve_message_event(message_type),  # 未知类型在此记日志并回退弹幕
             payload,
             source="simulated_live_stream",
         )
