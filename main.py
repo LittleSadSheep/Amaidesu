@@ -26,9 +26,7 @@ from typing import Any, Dict, Optional, Tuple
 
 from loguru import logger as loguru_logger
 
-from src.agents.text_adv import TextAdvConfig, TextAdvGameAgent
-from src.agents.streamer.config import StreamerConfig
-from src.agents.streamer.streamer_agent import StreamerAgent
+from src.modules.agents.factory import instantiate_agent
 from src.modules.agents.manager import AgentManager
 from src.modules.collectors.factory import instantiate_collector
 from src.modules.collectors.manager import CollectorManager
@@ -67,15 +65,22 @@ from src.modules.storage.storage_ledger import StorageLedger
 from src.modules.tools import TaskLedger, TaskTracker, ToolHealthMonitor, ToolRegistry
 from src.modules.tools.tasks import resolve_tasks_config
 from src.modules.tools.bootstrap import bind_core_tools
-from src.agents.text_adv.content_engine import StubContentEngine
 from src.modules.vision.look_at_screen import LookAtScreenProvider
 from src.modules.vision.pil_capture import PillowImageGrabCapture
 
 logger = get_logger("Main")
 _BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-# MinecraftAgent 的游戏侧会话标识（游戏域字符串 id，非存储层 live_sessions 主键）。
-_LIVE_SESSION_ID = "live"
+
+# Agent 注册元数据：spec_provider（工具来源溯源）与描述，键 = 注册名。
+_AGENT_REGISTRATION_META: Dict[str, Tuple[str, str]] = {
+    "streamer": (
+        "builtin",
+        "直播主播决策主体：聚合弹幕 → Planner 决策 → Replyer 表达",
+    ),
+    "minecraft": ("minecraft", "游戏 AI 玩家代理（Minecraft / MaiCraftMod）"),
+    "text_adv": ("text_adv", "游戏 AI 玩家代理（text_adv 文字冒险引擎）"),
+}
 
 
 # ---------------------------------------------------------------------------
@@ -829,6 +834,10 @@ async def _register_agents_from_config(
 ):
     """根据 [agents] 段注册 Agent 实例到 AgentManager。
 
+    构造本身委托 ``factory.instantiate_agent``（与 Dashboard 动态启用
+    enable_agent 同一构造路径），本函数只负责遍历 enabled 列表、
+    收集基础设施服务并落注册元数据。
+
     [agents] 段结构（扁平：每个 Agent 一份顶级子配置）：
         enabled = ["streamer", "minecraft", "text_adv"]
         [agents.streamer]  = { 完整子树（persona / context / background / ...） }
@@ -851,105 +860,39 @@ async def _register_agents_from_config(
         sub_cfg = config_section.get(agent_name, {})
         if not isinstance(sub_cfg, dict):
             sub_cfg = {}
-        if agent_name == "streamer":
-            try:
-                cfg_obj = StreamerConfig.from_dict(sub_cfg) if sub_cfg else StreamerConfig()
-            except Exception as e:
-                logger.warning(f"解析 StreamerConfig 配置失败: {e}; 使用默认配置")
-                cfg_obj = StreamerConfig()
-            logger.info(
-                f"StreamerAgent 配置就绪: "
-                f"bot_name={cfg_obj.persona.bot_name!r}, "
-                f"audience_salutation={cfg_obj.persona.audience_salutation!r}, "
-                f"behavior_style={'<已注入>' if cfg_obj.persona.behavior_style else '<缺失>'}, "
-                f"background.enabled={cfg_obj.background.enabled}, "
-                f"background.light_tick_ms={cfg_obj.background.light_tick_ms}"
-            )
-
-            tts = tts_section if isinstance(tts_section, dict) else {}
-            # render_timeout_ms 兜底与 Schema 默认一致（防引擎卡死的上限语义）
-            speech_cfg = {
-                "enabled": bool(tts.get("enabled", False)),
-                "max_queue": int(tts.get("max_queue", 3) or 3),
-                "render_timeout_ms": int(tts.get("render_timeout_ms", 60000) or 0),
-            }
-
-            agent = StreamerAgent(
-                config=cfg_obj,
-                llm_manager=llm_service,
-                prompt_manager=get_prompt_manager(),
-                event_bus=event_bus,
-                tool_registry=tool_registry,
-                memory=memory,
-                speech_config=speech_cfg,
-                tts_engine=tts_engine,
-                subtitle_service=subtitle_service,
-                session_manager=session_manager,
-                thinking_sink=thinking_sink,
-            )
-            manager.register(
-                agent,
-                spec_provider="builtin",
-                description="直播主播决策主体：聚合弹幕 → Planner 决策 → Replyer 表达",
-            )
+        meta = _AGENT_REGISTRATION_META.get(agent_name)
+        if meta is None:
+            logger.warning(f"未知的 Agent 类型: {agent_name}（升级 hook 应已过滤 maibot 等）")
             continue
-        if agent_name == "minecraft":
-            try:
-                from src.agents.minecraft import MinecraftAgent
-                from src.agents.minecraft.config import MinecraftConfig
-
-                mc_section = sub_cfg if isinstance(sub_cfg, dict) else {}
-                try:
-                    minecraft_cfg = MinecraftConfig(**mc_section)
-                except Exception as e:
-                    logger.warning(f"解析 MinecraftConfig 失败: {e}; 使用默认配置")
-                    minecraft_cfg = MinecraftConfig()
-                minecraft_agent = MinecraftAgent(
-                    config=minecraft_cfg,
-                    llm_manager=llm_service,
-                    llm_profile="llm",
-                    prompt_manager=get_prompt_manager(),
-                    event_bus=event_bus,
-                    tool_registry=tool_registry,
-                    live_session_id=_LIVE_SESSION_ID,
-                    thinking_sink=thinking_sink,
-                    task_tracker=task_tracker,
-                )
-                manager.register(
-                    minecraft_agent,
-                    spec_provider="minecraft",
-                    description="游戏 AI 玩家代理（Minecraft / MaiCraftMod）",
-                )
-                logger.info("MinecraftAgent 已注册")
-            except Exception as e:
-                logger.warning(f"minecraft Agent 注册失败: {e}")
+        tts = tts_section if isinstance(tts_section, dict) else {}
+        # render_timeout_ms 兜底与 Schema 默认一致（防引擎卡死的上限语义）
+        speech_cfg = {
+            "enabled": bool(tts.get("enabled", False)),
+            "max_queue": int(tts.get("max_queue", 3) or 3),
+            "render_timeout_ms": int(tts.get("render_timeout_ms", 60000) or 0),
+        }
+        agent = instantiate_agent(
+            agent_name,
+            sub_cfg,
+            llm_manager=llm_service,
+            prompt_manager=get_prompt_manager(),
+            event_bus=event_bus,
+            tool_registry=tool_registry,
+            memory=memory,
+            thinking_sink=thinking_sink,
+            speech_config=speech_cfg,
+            tts_engine=tts_engine,
+            subtitle_service=subtitle_service,
+            session_manager=session_manager,
+            # 组合根无独立 context 组装配置来源：显式 None（Planner 走内置默认）
+            context_assembler_config=None,
+            task_tracker=task_tracker,
+        )
+        if agent is None:
+            logger.warning(f"Agent '{agent_name}' 实例化失败（工厂未返回实例）")
             continue
-        if agent_name == "text_adv":
-            try:
-                text_adv_section = sub_cfg if isinstance(sub_cfg, dict) else {}
-                try:
-                    text_adv_cfg = TextAdvConfig(**text_adv_section)
-                except Exception as e:
-                    logger.warning(f"解析 TextAdvConfig 失败: {e}; 使用默认配置")
-                    text_adv_cfg = TextAdvConfig()
-
-                text_adv_agent = TextAdvGameAgent(
-                    config=text_adv_cfg,
-                    content_engine=StubContentEngine(engine_kind="text_adv"),
-                    llm_manager=llm_service,
-                    prompt_manager=get_prompt_manager(),
-                    event_bus=event_bus,
-                )
-                manager.register(
-                    text_adv_agent,
-                    spec_provider="text_adv",
-                    description="游戏 AI 玩家代理（text_adv 文字冒险引擎）",
-                )
-                logger.info("TextAdvGameAgent 已注册")
-            except Exception as e:
-                logger.warning(f"text_adv Agent 注册失败: {e}")
-            continue
-        logger.warning(f"未知的 Agent 类型: {agent_name}（升级 hook 应已过滤 maibot 等）")
+        spec_provider, description = meta
+        manager.register(agent, spec_provider=spec_provider, description=description)
 
 
 async def _start_dashboard(

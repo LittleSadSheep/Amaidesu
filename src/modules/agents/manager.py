@@ -165,11 +165,22 @@ class AgentManager:
         event_bus: Optional[object] = None,
         tool_registry: Optional[ToolRegistry] = None,
         memory: Optional[Any] = None,
+        thinking_sink: Optional[Any] = None,
+        speech_config: Optional[Dict[str, Any]] = None,
+        tts_engine: Optional[Any] = None,
+        subtitle_service: Optional[Any] = None,
+        session_manager: Optional[Any] = None,
+        context_assembler_config: Optional[Any] = None,
+        task_tracker: Optional[Any] = None,
     ) -> bool:
         """动态启用 Agent：实例化（配置段名）→ 注册 → 启动。
 
         段名 = 注册名：实例化后强制对齐实例 name 为段名，保证
         list_agents()/get_by_name() 与配置 enabled 列表一致。
+
+        构造经 ``factory.instantiate_agent`` 单一构造路径；基础设施参数
+        （speech/tts/subtitle/session/thinking/task_tracker 等）按需透传，
+        Dashboard 场景无对应基建时保持 None（Agent 各自降级）。
 
         ``tool_registry`` / ``memory`` 未显式传入时回退到 ``__init__`` 成员；
         Dashboard 动态启停场景一般不传这两个，回退保证 Agent 不再拿到 None。
@@ -187,6 +198,13 @@ class AgentManager:
             event_bus=event_bus,
             tool_registry=effective_registry,
             memory=effective_memory,
+            thinking_sink=thinking_sink,
+            speech_config=speech_config,
+            tts_engine=tts_engine,
+            subtitle_service=subtitle_service,
+            session_manager=session_manager,
+            context_assembler_config=context_assembler_config,
+            task_tracker=task_tracker,
         )
         if instance is None:
             logger.warning(f"未实现的 Agent: {name}")
