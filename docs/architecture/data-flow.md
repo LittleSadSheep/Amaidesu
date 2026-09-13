@@ -72,7 +72,7 @@ subgraph StreamerAgent["StreamerAgent src/agents/streamer/"]
     Ext --> Collectors
     Collectors -->|emit room.message.*| IC
     IC --> Bus
-    Bus -->|on 精确订阅 priority=50| MB
+    Bus -->|on 精确订阅| MB
     MB --> Planner
     Planner -->|置信度门槛<br/>直接 await invoke| RT
     Reply -->|speech / emotion / action| RT
@@ -168,7 +168,7 @@ v2 不再有"插件系统"。所有新功能通过 Agent 包内聚实现，框�
 2. EventBus 分发（拦截器链 + 精确订阅）
    └─ 拦截器链：RateLimitInterceptor → SimilarFilterInterceptor
       └─ 任一返回 None 即丢弃（不更新统计、不调用任何 handler）
-      └─ 放行 → 按 (priority ASC, specificity DESC) 收集 handlers
+      └─ 放行 → 收集匹配 handlers（精确键 + 通配键并集），并发分发
          └─ StreamerAgent._on_danmaku_received      (streamer_agent.py L462-467 订阅，L470 处理)
 
 3. StreamerAgent 入口（弹幕 → 房间状态 + 缓冲）

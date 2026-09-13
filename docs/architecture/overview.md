@@ -194,7 +194,7 @@ sequenceDiagram
     Main->>Sim: 1.5) stop() + cleanup()（条件：装配了 SimulatorService）
     Main->>Agt: 2) stop_all() + cleanup_all()
     Main->>Dash: 3) stop() + cleanup()
-    Main->>Rec: 4) stop() + event_history.cleanup()
+    Main->>Rec: 4) stop()
     Main->>Bus: 5) cleanup()
     Main->>LLM: 6) cleanup()
 ```

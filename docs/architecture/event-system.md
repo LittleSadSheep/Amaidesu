@@ -1,68 +1,58 @@
 # 事件系统
 
-Amaidesu 项目采用 **发布-订阅（Pub/Sub）模式** 构建事件驱动架构，通过 EventBus 实现组件间的松耦合通信。
+Amaidesu 采用**发布-订阅（Pub/Sub）模式**构建事件驱动架构，EventBus 是组件间松耦合通信的唯一通道，内部分为两条职责清晰的通道：**拦截管道**（有序、可改可拦）与**订阅广播**（并发、互不影响）。
 
-> **架构版本**：本文档对应 Amaidesu v2.0.0 **语义域事件**（无三阶段 Input/Decision/Output 概念）；v1 三阶段事件（`input.message.received` / `decision.intent.generated` / `output.intent.*`）已随 v2 重构删除。命名规范详见 [事件命名规范](event-naming-convention.md)。
+> **架构版本**：本文档对应 v2 **语义域事件**（无三阶段 Input/Decision/Output 概念）。命名规范详见 [事件命名规范](event-naming-convention.md)。
 
 ## 目录
 
 - [架构概述](#架构概述)
 - [核心组件](#核心组件)
 - [核心 API](#核心-api)
-- [通配订阅（MQTT 风格）](#通配订阅mqtt-风格)
-- [事件事实表](#事件事实表)
+- [通配订阅（AMQP topic 风格）](#通配订阅amqp-topic-风格)
+- [事件事实表与拓扑](#事件事实表与拓扑)
+- [WS 类型规则](#ws-类型规则)
 - [事件载荷类型](#事件载荷类型)
 - [事件注册机制](#事件注册机制)
-- [事件拦截器](#事件拦截器interceptor)
+- [事件拦截器（Interceptor）](#事件拦截器interceptor)
+- [边界规则](#边界规则)
 - [时间字段约定](#时间字段约定)
-- [核心特性](#核心特性)
 - [使用示例](#使用示例)
-- [Mermaid 时序图](#mermaid-时序图)
-- [最佳实践](#最佳实践)
-- [旧名处置说明](#旧名处置说明)
 
 ---
 
 ## 架构概述
 
-事件系统是 Amaidesu 各组件通信的核心机制。v2 取消了三阶段流水线，组件通过 **语义域事件** 直接互通（Input 域采集 → EventBus → Agent 决策 → 工具调用 → 写入存储；不再经 Decision/Output 阶段事件中转）。
+一条事件从发布到消费经过两段彼此独立的机制：
+
+1. **拦截管道**（有序）：emit 后、分发前，事件依次过拦截器链（按显式 `priority` 升序）。拦截器可净化/修改 payload，返回 `None` 即丢弃事件——一次拦截，所有订阅者共享净化后的结果。
+2. **订阅广播**（并发）：匹配到的所有订阅者以独立任务并发执行，完成顺序不定；一个订阅者抛异常被计数并写日志，不影响其他订阅者。订阅者之间**没有顺序语义**（有序处理只属于拦截管道）。
 
 ```mermaid
 flowchart LR
-    subgraph Input 域
-        IC[InputCollector<br/>bilibili / console / screen / stt]
+    subgraph 世界接入
+        IC[采集器<br/>bilibili / console / screen / stt]
     end
 
-    subgraph Bus[EventBus 分发层]
-        EB[拦截器链<br/>rate_limit / similar_filter]
+    subgraph EventBus
+        PIPE[拦截管道<br/>rate_limit=100 / similar_filter=100 / session_stamp=200]
+        FAN[订阅广播<br/>并发扇出、互不影响]
     end
 
-    subgraph Agent 域
-        AG[StreamerAgent<br/>订阅 room.message.danmaku]
+    subgraph Agent
+        AG[StreamerAgent]
     end
 
-    subgraph Tool 域
-        TP[Tool Provider<br/>异步工具调用]
+    subgraph 观察面
+        OB[EventRecorder（订阅 #） / Broadcaster / Widget]
     end
 
-    subgraph Observer 域
-        OB[EventRecorder / Broadcaster / Widget]
-    end
-
-    IC -->|emit room.message.*<br/>core.*<br/>live.started/ended| EB
-    EB -->|on: 精确订阅| AG
-    EB -->|on: 监控订阅| OB
-    AG -->|emit planner.decision/verdict<br/>streamer.stage/speech| EB
-    TP -->|emit tool.result.*| EB
+    IC -->|emit room.message.* / perception.screen| PIPE
+    PIPE --> FAN
+    FAN -->|精确订阅| AG
+    FAN -->|订阅 # 全部| OB
+    AG -->|emit planner.decision/verdict<br/>streamer.stage/speech| PIPE
 ```
-
-**数据流规则**：
-
-- 采集器（Input 域）发布 `room.message.*` / `core.*` / `live.*` 等语义域事件，携带结构化 Payload
-- Agent 订阅相关事件，决策后通过**工具调用**（fire-and-forget）触发执行
-- 工具完成后通过 `tool.result.<tool_name>` 事件回传结果
-- EventRecorder / Broadcaster / Widget 等观察器订阅需要监控的事件
-- 事件拦截器（§1.46.1）：emit 后、订阅者收到前，事件先过 EventBus 分发层的拦截器链（去重/限流/相似过滤），一次拦截、所有订阅者共享净化后结果
 
 组件间数据流与边界硬约束（采集器不订阅下游结果、Agent 内部件不注册为工具等）见 [数据流与边界规则](data-flow.md)。
 
@@ -72,157 +62,103 @@ flowchart LR
 
 | 组件 | 文件位置 | 职责 |
 |------|----------|------|
-| **EventBus** | `src/modules/events/event_bus.py` | 事件总线核心，提供 emit/on/off 等核心 API；支持精确订阅 + MQTT 风格通配订阅 + 拦截器链 |
-| **EventRegistry** | `src/modules/events/registry.py` | 事件类型注册表（查询 API） |
-| **CoreEvents** | `src/modules/events/names.py` | 核心事件名称常量（避免魔法字符串） |
-| **Payloads** | `src/modules/events/payloads/*.py` | 事件载荷类型定义（基于 Pydantic） |
-| **EventInterceptor** | `src/modules/events/interceptors/*.py` | 事件拦截器（分发层全局单点） |
+| **EventBus** | `src/modules/events/event_bus.py` | 事件总线核心：emit / on / off、精确 + 通配匹配、拦截器链、统计 |
+| **EventRegistry** | `src/modules/events/registry.py` | `@register_event` 装饰器 + `EVENT_REGISTRY` + 启动一致性硬检查 |
+| **CoreEvents** | `src/modules/events/names.py` | 事件名常量（25 个具名 + 3 个通配占位符） |
+| **Payloads** | `src/modules/events/payloads/*.py` | 事件载荷类型（Pydantic，按语义域分包） |
+| **EventInterceptor** | `src/modules/events/interceptors/*.py` | 拦截管道（限流 / 相似过滤 / 场次盖章） |
+| **EventHistoryRecorder** | `src/modules/events/event_recorder.py` | 事件记录器：订阅 `#`（全部事件）写内存环形缓冲 |
+| **EventBroadcaster** | `src/modules/dashboard/websocket/broadcaster.py` | Dashboard WS 广播（订阅清单见事实表） |
 
 ### 模块结构
 
 ```
 src/modules/events/
 ├── __init__.py           # 模块导出
-├── event_bus.py          # EventBus 核心实现（emit / on / off / 通配 / 拦截器）
-├── event_history.py      # 事件历史查询服务（内存环形缓冲 + event_history 表持久化/重新写入）
-├── event_recorder.py     # 事件记录器（监控组件，订阅语义域事件落库）
-├── registry.py           # @register_event 装饰器 + EVENT_REGISTRY
-├── names.py              # CoreEvents 常量（21 个具体事件 + 3 个通配占位符）
-├── event_type_map.py     # 事件名 → 组件类型映射（组件事件专用）
+├── event_bus.py          # EventBus 核心实现（emit / on / off / 通配匹配 / 拦截器链）
+├── event_history.py      # EventHistoryService（纯内存环形缓冲，运行周期观察窗）
+├── event_recorder.py     # EventHistoryRecorder（订阅 # 全部事件 → 记录）
+├── event_type_map.py     # WS 类型名（room.message 折叠例外，唯一非直通映射）
+├── names.py              # CoreEvents 常量（25 具名 + 3 通配占位符）
+├── registry.py           # @register_event + EVENT_REGISTRY + ensure_registry_consistency
+├── interceptors/
+│   ├── base.py           # EventInterceptor 基类（scope_prefixes / priority / intercept）
+│   ├── chain.py          # InterceptorChain（按 priority 升序执行）
+│   ├── lookup.py         # 拦截器共用 payload 字段查找（嵌套 user.id 优先）
+│   ├── rate_limit.py     # 限流（priority=100）
+│   ├── similar_filter.py # 相似文本过滤（priority=100）
+│   └── session_stamp.py  # 场次盖章（priority=200）
 └── payloads/
-    ├── __init__.py       # Payload 统一导出（10 个域模块）
-    ├── base.py           # BasePayload 基类
-    ├── core.py           # core.* Payload（3 个事件分别注册）
-    ├── live.py           # live.* Payload（两类分别注册：LiveStartedPayload / LiveEndedPayload）
-    ├── room.py           # room.message.* Payload（一类多注册）
+    ├── __init__.py       # Payload 统一导出
+    ├── base.py           # BasePayload / OpenPayload（开放载荷，extra=allow）
+    ├── core.py           # core.* Payload
+    ├── live.py           # live.* Payload（LiveStartedPayload / LiveEndedPayload 两类）
+    ├── room.py           # room.message.* Payload（一类六注册）
     ├── game.py           # game.* Payload（一类四注册）
+    ├── perception.py     # perception.screen Payload
     ├── rundown.py        # rundown.changed Payload
+    ├── tasks.py          # task.changed Payload
     ├── planner.py        # planner.decision / planner.verdict / streamer.stage Payload
-    ├── speech.py         # streamer.speech Payload（主播发言业务事实）
+    ├── speech.py         # streamer.speech Payload
     ├── tool_result.py    # tool.result.* Payload（不绑定具体名）
     ├── tool_health.py    # tool.health.* Payload（不绑定具体名）
-    └── utterance.py     # tts.utterance.* Payload（三类三注册：started / finished / failed）
+    └── utterance.py      # tts.utterance.* Payload
 ```
 
 ---
 
 ## 核心 API
 
-### EventBus 核心方法
-
-```python
-from src.modules.events.event_bus import EventBus
-
-# 创建事件总线
-event_bus = EventBus(enable_stats=True)
-```
-
-#### 发布事件（emit）
+### 发布事件（emit）
 
 ```python
 await event_bus.emit(
-    event_name: str,              # 事件名称（语义域命名）
-    data: BaseModel,              # Pydantic Model 实例（自动 model_dump → model_validate）
-    source: str = "unknown",      # 事件源（通常是发布者类名）
-    error_isolate: bool = True,   # 错误隔离
-    wait: bool = False            # 是否等待处理完成
+    event_name: str,          # 事件名称（语义域命名）
+    data: BaseModel,          # Pydantic Model 实例（自动 model_dump）
+    source: str = "unknown",  # 事件源（通常是发布者类名）
 )
 ```
 
-**参数说明**：
+- emit **立即返回**：订阅者在后台任务中并发执行，发布方不等待完成
+- **只接受 Pydantic Model**：其他类型直接 `TypeError`
+- **判别一致性校验**：payload 类声明 `_DISCRIMINANT_FIELD` 时（`RoomMessagePayload.message_type` / `GamePayload.event_type`），事件名末段必须等于判别字段值，不符即 `ValueError`——同族多注册的 payload 挂错事件名在发布期暴露
 
-| 参数 | 类型 | 默认值 | 说明 |
-|------|------|--------|------|
-| `event_name` | `str` | 必填 | 事件名称（v2 语义域命名，如 `room.message.danmaku`） |
-| `data` | `BaseModel` | 必填 | Pydantic Model 实例。EventBus 自动 `model_dump()` 序列化 |
-| `source` | `str` | `"unknown"` | 事件发布源，通常为 Collector / Agent / Provider 类名 |
-| `error_isolate` | `bool` | `True` | 错误隔离策略 |
-| `wait` | `bool` | `False` | 是否等待所有监听器执行完成 |
-
-**error_isolate 行为**：
-
-- `True`：单个 handler 异常不影响其他 handler 执行（异常被隔离并记录日志）
-- `False`：第一个异常会传播到调用者，中断所有 handler
-
-**wait 行为**：
-
-- `False`：在后台任务中执行，不等待完成（默认）
-- `True`：等待所有监听器执行完成后再返回
-
-**分发流程**（`event_bus.py` L254-259 注释定案）：
-
-1. **类型检查** → `model_dump()` 序列化 → 数据验证
-2. **拦截器链**：仅应用 ``scope_prefixes`` 匹配该事件名的拦截器（未声明作用域的全局生效）；任一拦截器显式返回 `None` 即丢弃事件（不更新统计、不调用任何 handler）
-3. **handler 收集**：精确键 + 所有通配 pattern 键的并集（按 HandlerWrapper 对象身份去重）
-4. **handler 排序**：按 `(priority 升序, specificity 降序)`，精确订阅永远先于通配订阅
-5. **统计**：始终按真实 emit 的 `event_name` 入键（与通配 pattern 解耦）
-
-#### 订阅事件（on）
+### 订阅事件（on）
 
 ```python
 event_bus.on(
-    event_name: str,               # 事件名称（精确名 或 通配 pattern）
-    handler: Callable,              # 处理函数（async 或 sync，sync 自动 run_in_executor）
-    model_class: Type[T],          # Payload 类型（**必填**）
-    priority: int = 100            # 优先级（越小越优先）
+    event_name: str,   # 精确名 或 通配 pattern（如 "tool.result.#"）
+    handler: Callable, # **必须是 async def**（同步函数注册时直接 TypeError）
+    model_class: Type, # Payload 类型（必填；通用消费者用 OpenPayload 保留全部字段）
 )
 ```
 
-**model_class 必填**：`on()` 内部 `typed_wrapper` 强制用 `model_class.model_validate(dict_data)` 反序列化。**不指定 model_class 会导致订阅失败 / 类型不安全**。
+订阅者契约：并发执行、互不影响。一个订阅者抛异常时，其他订阅者照常执行，异常被计入 `EventStats.error_count` 并写 ERROR 日志。**没有 priority、没有顺序**——有序处理属于拦截器。
 
-> 注意：事件记录器（EventRecorder）订阅 `rundown.changed` 时使用注册类型 `RundownChangedPayload`（不再 BasePayload 兜底丢字段）。
-
-#### 取消订阅（off）
+### 取消订阅（off）
 
 ```python
 event_bus.off(event_name: str, handler: Callable)
 ```
 
-**通配 pattern 订阅可直接 `off("tool.result.#", handler)` 移除**（pattern 是 `_handlers` 的字典键，复用既有删除路径）。同一 handler 注册到多个 pattern 时，`off` 仅移除指定 pattern 下的那条。
+通配 pattern 订阅可直接 `off("tool.result.#", handler)` 移除（pattern 是 `_handlers` 的字典键）。
 
-#### 生命周期管理
+### 生命周期与统计
 
 ```python
-# 清理 EventBus
 await event_bus.cleanup(timeout: float = 5.0, force: bool = False)
+stats = event_bus.get_stats(event_name)      # emit_count / listener_count / error_count /
+                                             # last_emit_time / last_error_time / total_execution_time_ms
+event_bus.reset_stats(event_name=None)
 ```
 
-| 参数 | 类型 | 默认值 | 说明 |
-|------|------|--------|------|
-| `timeout` | `float` | `5.0` | 等待活跃 emit 完成的超时时间（秒） |
-| `force` | `bool` | `False` | 是否强制清理（即使有活跃任务） |
-
-#### 统计功能
-
-```python
-# 获取单个事件统计
-stats = event_bus.get_stats(event_name: str)
-
-# 获取所有事件统计
-all_stats = event_bus.get_all_stats()
-
-# 重置统计
-event_bus.reset_stats(event_name: Optional[str] = None)
-```
-
-**EventStats 结构**：
-
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| `emit_count` | `int` | 发布次数 |
-| `listener_count` | `int` | 监听器数量 |
-| `error_count` | `int` | 错误次数 |
-| `last_emit_time` | `float` | 最后发布时间（Unix 时间戳，秒） |
-| `last_error_time` | `float` | 最后错误时间（Unix 时间戳，秒） |
-| `total_execution_time_ms` | `float` | 总执行时间（毫秒） |
-
-> 统计键是**真实 emit 的 event_name**（与通配 pattern 解耦），保证 `tool.result.#` 通配订阅不影响 `tool.result.speak` / `tool.result.summarize_timeline` 的独立统计。
+> 统计键是**真实 emit 的 event_name**（与通配 pattern 解耦）：`tool.result.#` 通配订阅不影响 `tool.result.speak` 的独立统计。
 
 ---
 
-## 通配订阅（MQTT 风格）
+## 通配订阅（AMQP topic 风格）
 
-EventBus 支持 **MQTT 风格**通配订阅（仅订阅名包含 `*` 或 `#` 时启用通配路径；纯字面量名仍走精确匹配，无额外开销）。
+通配匹配采用 **AMQP topic 风格**：`*` 匹配恰好一个词段，`#` 只能放在末尾并匹配零或多个剩余词段。仅订阅名含 `*` / `#` 时启用通配路径，纯字面量名走精确匹配（无额外开销）。
 
 ### 语义
 
@@ -230,7 +166,7 @@ EventBus 支持 **MQTT 风格**通配订阅（仅订阅名包含 `*` 或 `#` 时
 |--------|------|------|
 | `*` | 消耗**恰好 1 个** dot-separated token（单层） | `room.*` 匹配 `room.message`，**不**匹配 `room.message.danmaku` |
 | `#` | **仅在 pattern 末尾**有效，消耗 **≥0 个**剩余 token（多层，可匹配空） | `tool.result.#` 匹配 `tool.result`、`tool.result.speak`、`tool.result.a.b.c` |
-| `#`（独立） | 无前缀，匹配一切 | `#` 匹配 `anything.you.want` |
+| `#`（独立） | 无前缀，匹配一切 | `#` 匹配 `anything.you.want`（事件记录器用它订阅全部事件） |
 
 ### 匹配示例
 
@@ -239,337 +175,166 @@ EventBus 支持 **MQTT 风格**通配订阅（仅订阅名包含 `*` 或 `#` 时
 | `room.*` | `room.message` | `room.message.danmaku`（`*` 只消耗 1 个 token） |
 | `tool.result.#` | `tool.result`、`tool.result.speak`、`tool.result.a.b.c` | `tool.x.speak`（前缀不匹配） |
 | `room.message.#` | `room.message.danmaku` 等所有子类 | `room.control`（前缀不匹配） |
-| `#` | 所有任何事件 | （独立 # 匹配一切） |
-| `room.message.danmaku` | `room.message.danmaku` | `room.message.gift`（字面量 token 必须逐字符相等） |
+| `room.message.danmaku`（精确） | `room.message.danmaku` | `room.message.gift`（字面量逐字符相等） |
 
-### Specificity 排序
-
-精确订阅和通配订阅可能同时命中同一事件，EventBus 按 **specificity** 决定谁先执行：
-
-| Token 类型 | Specificity 贡献 |
-|------------|------------------|
-| 字面量 token（如 `room`、`danmaku`） | **+4** |
-| `*` token（单层通配） | +2 |
-| `#` token（多层通配） | +1 |
-| 精确订阅（`event_name` 是 emit 名本身） | **10000**（固定 `_EXACT_SPECIFICITY`） |
-
-具体计算示例：
-
-| Pattern | Specificity |
-|---------|-------------|
-| `room.message.danmaku`（精确订阅） | 10000 |
-| `a.b`（字面量段） | 8 |
-| `room.message.*` | 4+4+2 = **10** |
-| `room.message.#` | 4+4+1 = 9 |
-| `tool.result.#` | 4+4+1 = 9 |
-| `#`（独立） | 1 |
-
-**排序键** = `(priority ASC, specificity DESC)`。精确订阅永远先于通配订阅（specificity=10000 >> 任何通配 pattern 的上界 ≈ 8）。
-
-**通配订阅可直接 `off(pattern, handler)` 移除**（pattern 即 `_handlers` 的字典键）。
-
-### 当前生产状态
-
-> **生产代码的通配订阅**：Dashboard Broadcaster 订阅 `tool.result.#` 一站式接收工具结果事件（`tool.result` 事件由 `ToolRegistry.invoke` 广播，见事件表）。Planner 如需一次性监听所有工具结果，同样可通过 `event_bus.on("tool.result.#", handler, model_class=ToolResultPayload)` 启用，handler 内按 `payload.tool_name` 字段分发。
+**匹配到的所有订阅者并发执行，无排序**：精确与通配、通配与通配同时命中时没有先后语义。
 
 ---
 
-## 事件事实表
+## 事件事实表与拓扑
 
-> **单一事实源**：本表是 Amaidesu 当前全部 21 个事件常量 + 3 个通配占位符的权威定义。任何新增/删除/重命名事件，**必须先修改本表再写代码**。
+> **单一事实源**：本表是 Amaidesu 当前全部 **25 个具名事件 + 3 个通配占位符**的权威定义（与 `CoreEvents` 一致，启动硬检查 `ensure_registry_consistency()` 守护）。任何新增/删除/重命名事件，**必须先修改本表再写代码**。"发布者 / 订阅者"两列即事件拓扑事实；订阅者均含事件记录器（catch-all），表中不再重复标注。
 
-事件命名遵循 v2 语义域规范（详见 [事件命名规范](event-naming-convention.md)）：`<域>.<子类>.<动作>`，**域 = 领域**（core/live/room/game/rundown/planner/streamer/tts，外加 tool 通配前缀），**不是阶段**。
-
-### 完整事件表
-
-| 事件名 | Payload 类 | 发布者 | 订阅者 | 说明 |
+| 事件名 | Payload 类 | 发布者 | 订阅者（记录器除外） | 说明 |
 |--------|-----------|--------|--------|------|
-| `core.startup` | `CoreStartupPayload` | `main.py` 启动流程 | `EventRecorder`（L64）、`Broadcaster`（L97-100 字典映射 / L120 系统事件循环订阅） | 系统启动通知 |
-| `core.shutdown` | `CoreShutdownPayload` | `main.py` 关闭流程 | `EventRecorder`（L65）、`Broadcaster`（L98 / L120） | 系统关闭通知 |
-| `core.error` | `CoreErrorPayload` | 各组件错误兜底发射 | `EventRecorder`（L66）、`Broadcaster`（L99 / L120） | 系统级错误 |
-| `live.started` | `LiveStartedPayload` | `LiveSessionManager`（`open_session`，手动开启 / 模拟器回放自动开启） | `EventRecorder`、`Broadcaster`（WS type `live.started`）、观察器 | 显式场次开启；Payload 含 `live_session_id`（INTEGER 主键）/ `source`（manual/replay）/ `title` / `room_id` / `started_at_ms`。无显式场次期间不创建兜底行，本事件不发布 |
-| `live.ended` | `LiveEndedPayload` | `LiveSessionManager`（`close_session` / 进程退出收口 / 回放结束） | `EventRecorder`、`Broadcaster`（WS type `live.ended`）、观察器 | 显式场次结束；Payload 含 `reason` / `duration_ms` / `empty_discarded`（空场次已整行丢弃标记）/ `ended_at_ms` |
-| `room.message.danmaku` | `RoomMessagePayload` | **6 处**：`bilibili/official/collector.py` L263（`bili_danmaku_official_collector.py`）；`bilibili/legacy/collector.py` L247（`bili_danmaku_collector.py`）；`console_input_collector.py` L193（_emit_semantic_event，L36-39 `data_type=text→danmaku` 映射）；`collectors/base.py` L157-170（兜底转发，`data_type=text→danmaku`）；`dashboard/api/debug.py` L78（debug 注入）；`simulator/service.py`（generate 生成 / replay 回放统一发射） | `StreamerAgent`（`streamer_agent.py`，priority=50）；`EventRecorder`（`event_recorder.py`）；`StorageLedger`（`storage_ledger.py`，`room.message.#` 通配 → live_chat/gifts/super_chats 落库 + viewers 统计）；`Broadcaster`（`websocket/broadcaster.py` handler_map / `_subscribe_core_events`）；`Widget`（`widget/service.py`） | 弹幕；Payload `message_type="danmaku"`，填 `content` |
-| `room.message.gift` | `RoomMessagePayload` | **4 处**：`bilibili/official/collector.py` L283；`console_input_collector.py` L193（L37 映射 `gift→gift`）；`collectors/base.py` L158（兜底，`data_type=gift→gift`） | `StreamerAgent`（`streamer_agent.py`，priority=50，付费消息强制进决策轮）；`EventRecorder`（L57）；`StorageLedger`（`storage_ledger.py`，通配订阅 → gifts 落库 + viewers 礼物计数） | 礼物；Payload `message_type="gift"`，填 `gift` 结构体 |
-| `room.message.super_chat` | `RoomMessagePayload` | **4 处**：`bilibili/official/collector.py` L293；`console_input_collector.py` L193（L38 映射）；`collectors/base.py` L159（兜底，`data_type=super_chat→super_chat`） | `StreamerAgent`（`streamer_agent.py`，priority=50，付费消息强制进决策轮）；`EventRecorder`（L58-62）；`StorageLedger`（`storage_ledger.py`，通配订阅 → super_chats 落库） | SuperChat；Payload `message_type="super_chat"`，填 `content` + `sc` |
-| `room.message.guard` | `RoomMessagePayload` | **2 处**：`bili_danmaku_official_collector.py`（`_create_payload` GuardMessage 分支 + `_emit_semantic_event` 映射）；`console_input_collector.py`（`/guard` 命令，`_create_guard_message`） | `StreamerAgent`（`streamer_agent.py`，priority=50，付费消息强制进决策轮）；`EventRecorder`；`StorageLedger`（`storage_ledger.py`，通配订阅 → live_chat，message_type="guard"） | 上舰（舰长/提督/总督，付费消息）；Payload `message_type="guard"`，`content` 填人读描述（"<用户> 开通了<等级>"），供下游识别做优先回应 |
+| `core.startup` | `CoreStartupPayload` | `main.py` 启动流程 | `Broadcaster`（直通） | 系统启动通知 |
+| `core.shutdown` | `CoreShutdownPayload` | `main.py` 关闭流程 | `Broadcaster`（直通） | 系统关闭通知 |
+| `core.error` | `CoreErrorPayload` | 各组件错误兜底发射 | `Broadcaster`（直通）；Dashboard 首页"最近异常"按 `core.error` 判定 | 系统级错误；level 推导为 error |
+| `live.started` | `LiveStartedPayload` | `LiveSessionManager`（`open_session`：手动开启 / 回放自动开启） | `StreamerAgent`（放行主动发言）；`Broadcaster`（直通） | 显式场次开启；payload 含 `live_session_id`（INTEGER 主键）/ `source`（manual/replay）/ `title` / `room_id` / `started_at_ms` |
+| `live.ended` | `LiveEndedPayload` | `LiveSessionManager`（`close_session` / 进程退出收口 / 回放结束） | `StreamerAgent`（收闸主动发言）；`Broadcaster`（直通） | 显式场次结束；payload 含 `reason` / `duration_ms` / `empty_discarded` / `ended_at_ms` |
+| `room.message.danmaku` | `RoomMessagePayload` | bilibili 采集器（official / legacy）；console 输入；`collectors/base.py` 兜底转发；Dashboard debug 注入；模拟器（generate / replay） | `StreamerAgent`（进弹幕缓冲驱动决策）；`StorageLedger`（订 `room.message.#` 落 live_chat + viewers 统计）；`Broadcaster`（WS type `room.message`）；`DanmakuWidgetService` | 弹幕；`message_type="danmaku"`，填 `content` |
+| `room.message.gift` | `RoomMessagePayload` | bilibili 采集器（official / legacy）；console 输入；兜底转发 | `StreamerAgent`（TimingGate 判定付费消息强制进决策轮）；`StorageLedger`（通配 → gifts 落库 + 礼物计数）；`Broadcaster`；`DanmakuWidgetService` | 礼物；`message_type="gift"`，填 `gift` 结构体 |
+| `room.message.super_chat` | `RoomMessagePayload` | bilibili 采集器（official / legacy）；console 输入；兜底转发 | `StreamerAgent`（付费消息强制进决策轮）；`StorageLedger`（通配 → super_chats 落库）；`Broadcaster`；`DanmakuWidgetService` | SuperChat；`message_type="super_chat"`，填 `content` + `sc` |
+| `room.message.guard` | `RoomMessagePayload` | bilibili official 采集器（GuardMessage 分支）；console `/guard` 命令 | `StreamerAgent`（付费消息强制进决策轮）；`StorageLedger`（通配 → live_chat，`sender_role="guard"`） | 上舰（舰长/提督/总督，付费消息）；`content` 填人读描述，供下游优先回应 |
+| `room.message.enter` | `RoomMessagePayload` | bilibili 采集器；console 输入；兜底转发 | `DanmakuWidgetService`；`StorageLedger`（enter 行 debug 丢弃，不落库） | 进房；`message_type="enter"`。决策侧不消费 |
+| `room.message.partner_speech` | `RoomMessagePayload` | STT 采集器（联动对象发言） | `StorageLedger`（通配 → live_chat，`sender_role="partner"`，不计观众统计） | 房间里第三个说话者（非弹幕、非主播） |
+| `perception.screen` | `ScreenDescriptionPayload` | 屏幕变化采集器（screen） | `StreamerAgent`（画面描述进 RoomState，经环境参考进决策上下文） | 主播视觉感知；不落 live_chat（避免"屏幕内容当弹幕"污染） |
+| `game.milestone` | `GamePayload` | 游戏 Agent（BaseAgent 事件上报面） | `StreamerAgent`（叙事收集进 Planner 上下文）；`StorageLedger`（订 `game.*` → `game_events` 表） | 游戏重大进展（挖到钻石 / 通关章节）；`event_type="milestone"` |
+| `game.attention_required` | `GamePayload` | 游戏 Agent | 同上 | 安全阀偏差报告（"我先回血再去挖钻石"）；`event_type="attention_required"` |
+| `game.error` | `GamePayload` | 游戏 Agent | 同上 | 游戏异常（主播由此得知命令失败等原因）；`event_type="error"` |
+| `game.report` | `GamePayload` | 游戏 Agent（`minecraft_report` 工具回调 / 批次终止兜底交付） | 同上；主播"是否回提示词"的决策数据源 | 游戏 Agent 主动上报：`report_kind`（`delivery` / `escalation`，仅本事件有值） |
+| `rundown.changed` | `RundownChangedPayload` | `RundownState`（唯一变更边界：工具 / Dashboard 手动 / 闹钟兜底三路同径） | `Broadcaster`（直通） | 流程单变更：load / goto / next（含 finish）/ pause / resume；`by` 区分 agent/human/system；finish 时 `segment_id=""` 且 `index==total` |
+| `task.changed` | `TaskChangedPayload` | 任务记录表（`TaskLedger` / `TaskTracker`，仅状态真迁移或停滞告警时发） | `BaseAgent`（全部 Agent 基类订阅，按 `payload.initiator == self.name` 过滤唤醒） | 异步任务生命周期（受理 → 进行中 → 终态）；通知是提示、记录表是事实源 |
+| `planner.decision` | `PlannerDecisionPayload` | `StreamerAgent`（两阶段决策收口，每轮恰好一条） | `Broadcaster`（直通，决策卡数据源） | 决策轮记录：`round_id`（本轮全链路关联键）、决策结论、`reply_to_message_id`、`silent_reason`、`llm_request_id`、分段耗时 |
+| `planner.verdict` | `PlannerVerdictPayload` | `ReplyToolProvider`（reply 工具被调用、表达生成之前） | `Broadcaster`（直通，裁决卡实时渲染） | 裁决时刻即时事件：`round_id` / `topic_summary` / `reply_guidance` / `confidence` / `target`。沉默轮无 verdict |
+| `streamer.stage` | `StreamerStagePayload` | `StreamerAgent`（决策循环边界） | `Broadcaster`（直通，状态条数据源） | 决策管线阶段（planning / replying / idle）；LLM 挂起时状态条停格即证据 |
+| `streamer.speech` | `StreamerSpeechPayload` | `StreamerAgent`（speech 非空时统一发射出口） | `SimulatorService`（节奏唤醒）；`StorageLedger`（落 live_chat `sender_role="assistant"` 行）；`Broadcaster`（直通） | 主播发言业务事实（与 TTS 启用正交）；`utterance_id` 与 `tts.utterance.*` 共用关联键；`reply_to_message_id` 与 live_chat 观众行构成互动关联 |
+| `tts.utterance.started` | `UtteranceStartedPayload` | TTS 引擎（流式=首块 PCM 写声卡；全量=`play_audio` 调用；仅 `handle_speech` 收到非空 `utterance_id` 时发） | 无业务订阅者（字幕接线属预留） | 一次发声开始；`utterance_id`（`utt_{epoch_ms}_{seq}`）/ `speech_text` / `engine` / `duration_ms`（流式合成未完=None） |
+| `tts.utterance.finished` | `UtteranceFinishedPayload` | TTS 引擎（播放完成时刻） | 无业务订阅者（句末再决策等消费者预留） | 一次发声播放完成；`duration_ms` 由 PCM 样本数÷采样率计算（百毫秒级精度，不含声卡缓冲残余） |
+| `tts.utterance.failed` | `UtteranceFailedPayload` | TTS 引擎（合成 / 播放失败时） | 无业务订阅者（错误兜底消费者预留） | 一次发声失败；payload 含 `error_message` |
+| `tool.result.<tool_name>` | `ToolResultPayload` | `ToolRegistry.invoke`（工具执行完成即广播，无论成败） | `Broadcaster`（订 `tool.result.#` 通配） | 工具结果回传；事件名 emit 时动态填（`ToolSpec.result_event` 可定制）；payload 含 `tool_name` / `status` / `arguments` / `result` / `error_message` / `round_id` |
+| `tool.health.<tool_name>` | `ToolHealthPayload` | `ToolRegistry`（熔断 → `state="open"`；探活恢复 → `state="closed"`；仅状态切换时发） | `Broadcaster`（订 `tool.health.#` 通配） | 工具健康切换；payload 含 `tool_name` / `provider` / `state` / `failure_count` / `last_error` |
+| `tool.result.#`（**通配占位符**，不注册到 `EVENT_REGISTRY`） | 无（仅订阅标识） | — | — | `CoreEvents.TOOL_RESULT_WILDCARD` 保留作订阅标识；具体名动态族，见 [事件注册机制](#事件注册机制) |
+| `tool.health.#`（**通配占位符**，不注册到 `EVENT_REGISTRY`） | 无（仅订阅标识） | — | — | `CoreEvents.TOOL_HEALTH_WILDCARD` 保留作订阅标识 |
+| `room.message.#`（**通配占位符**，不注册到 `EVENT_REGISTRY`） | 无（仅订阅标识） | — | — | `CoreEvents.ROOM_MESSAGE_WILDCARD` 保留作订阅标识；`StorageLedger` 用它一站式落库 |
 
-| `room.message.enter` | `RoomMessagePayload` | **4 处**：`bilibili/official/collector.py` L272；`console_input_collector.py` L193；`collectors/base.py` L160（兜底转发） | `EventRecorder`（L63，**仅记账，决策侧未消费**） | 进房；Payload `message_type="enter"` |
-| `game.milestone` | `GamePayload` | 游戏 Agent（§1.49 BaseAgent 事件上报面） | `EventRecorder`（L75 `component_model_map`）；`Broadcaster`（通过 `event_type_map` 转发给组件 handler）；`StorageLedger`（通配订阅 `game.*` → `game_events` 表） | 游戏重大进展（挖到钻石 / 通关章节）；`event_type="milestone"` |
-| `game.attention_required` | `GamePayload` | 游戏 Agent | `EventRecorder`（L76）；`Broadcaster`（`event_type_map` 转发）；`StorageLedger`（`game.*` 通配 → `game_events`） | 安全阀偏差报告（"我先回血再去挖钻石"）；`event_type="attention_required"` |
-| `game.error` | `GamePayload` | 游戏 Agent | `EventRecorder`（L77）；`Broadcaster`（`event_type_map` 转发）；`StorageLedger`（`game.*` 通配 → `game_events`） | 游戏异常；`event_type="error"` |
-| `game.report` | `GamePayload` | 游戏 Agent（`minecraft_report` 工具回调 / 批次终止系统兜底交付） | `StreamerAgent`（`_on_game_event` 叙事收集，主播"是否回提示词"的决策数据源）；`EventRecorder`；`Broadcaster`（`event_type_map` 转发）；`StorageLedger`（`game.*` 通配 → `game_events`） | 游戏 Agent 主动向派发方上报——交付总结 / 升级决策；`event_type="report"`，`report_kind`（`delivery`/`escalation`，仅本事件有值） |
+### WS 类型规则
 
-| `rundown.changed` | `RundownChangedPayload` | `RundownState`（唯一变更边界——`RundownControlTool` / Dashboard 手动 / 闹钟兜底三路均走同一路径） | `EventRecorder`（`_on_named_event`，type=事件名）；Dashboard `Broadcaster`（WS type `rundown.changed`，由 `RUNDOWN_CHANGED_TYPE` 提供）；未来 Dashboard 编排页（订阅实时刷新） | 流程单变更：涵盖 load / goto / next（含 finish）/ pause / resume；`by` 字段区分 `agent`/`human`/`system`；finish 时 `segment_id=""` 且 `index==total`，订阅者据此识别"流程单走完"。详 `docs/architecture/rundown-mechanism.md` |
-
-| `planner.decision` | `PlannerDecisionPayload` | `StreamerAgent`（`_make_two_stage_decision` 收口，每轮恰好一条，成功/失败/低置信度降级全覆盖） | `EventRecorder`（`_on_named_event`，type=事件名）、`Broadcaster`（WS type `planner.decision`）、观察器（决策卡） | 决策轮记录：`round_id`（`rnd_{epoch_ms}_{seq}`，本轮弹幕批次/决策/发言/工具结果共同关联键）、触发原因、批次摘要、决策结论、`reply_to_message_id`（回复关联键）、`silent_reason`（low_confidence=低置信度压制）、`error`、`planner_raw`（截断原文）、`llm_request_id`（请求历史指针）、分段耗时 |
-| `planner.verdict` | `PlannerVerdictPayload` | `ReplyToolProvider`（reply 工具 invoke 入口，Planner 决定回应的时刻、表达生成之前） | `Broadcaster`（WS type `planner.verdict`）、观察器（裁决卡实时渲染） | 裁决时刻即时事件：`round_id` / `topic_summary` / `reply_guidance` / `confidence` / `target`。沉默轮无 verdict；`planner.decision` 轮末按 round_id 回填统计，两者不重复渲染 |
-| `streamer.stage` | `StreamerStagePayload` | `StreamerAgent`（决策循环边界：planning → idle） | `EventRecorder`（`_on_named_event`）、`Broadcaster`（WS type `streamer.stage`）、观察器（状态条） | 决策管线阶段状态（`stage`：planning/replying/idle；`agent_state`：running/wait）；LLM 挂起时状态条停格即证据 |
-| `streamer.speech` | `StreamerSpeechPayload` | `StreamerAgent`（`_dispatch_speech_and_emotion`，speech 非空时；`streamer_agent.py`） | `SimulatorService`（节奏唤醒，`simulator/service.py`）；`Broadcaster`（`websocket/broadcaster.py` handler_map + `_subscribe_core_events`，WS type `streamer.speech`） | 主播发言业务事实（与 TTS 启用正交）；Payload 含 `utterance_id` / `text` / `emotion` / `target_user_id`（可选，回复对象，落库与 `viewers.replied_count` 闭环用）/ `reply_to_message_id`（可选，本条发言回复的那条弹幕的 message_id，与 live_chat 观众行 `message_id` 构成互动分析关联键）/ `live_session_id`（发布方不填，场次盖章拦截器注入） |
-| `tool.result.<tool_name>` | `ToolResultPayload` | `ToolRegistry.invoke`（工具执行完成后，无论成败均广播；未挂载 EventBus 时跳过） | Dashboard Broadcaster（`tool.result.#` 通配）与 traces 查询；handler 按 `payload.tool_name` 分发 | **工具结果回传**（事件名不固定，emit 时用具体 `tool.result.<tool_name>`，如 `tool.result.speak`；`ToolSpec.result_event` 可定制名）。Payload 含 `tool_name` / `live_session_id` / `round_id` / `caller_source` / `status` / `arguments`（透传自 `ToolInvocation.arguments` 的浅拷贝，供 WebUI 等观察器对齐入参展示）/ `result` / `error_message` / `timestamp_ms` |
-| `tool.result.#`（**通配占位符**，**不预注册**到 `EVENT_REGISTRY`） | 无（仅订阅标识） | 无（仅订阅标识） | 无（仅订阅标识） | **仅供订阅者使用的通配 pattern**：订阅 `event_bus.on("tool.result.#", ...)` 一站式监听所有工具结果。`CoreEvents.TOOL_RESULT_WILDCARD = "tool.result.#"` 保留作订阅标识常量，**不在 names.py 的 `get_all_events()` 反射收集范围内**（`_validate_event_data` 找不到具体注册类型时仅 debug 警告，不阻断 emit） |
-| `tool.health.<tool_name>` | `ToolHealthPayload` | `ToolRegistry`（熔断判定与探活恢复的统一出口：连续失败达阈值熔断时广播 `state="open"`；`recover_tool` 复位时广播 `state="closed"`；**仅在状态切换时发**，每次 invoke 不发） | Dashboard 转发层（`tool.health.#` 通配） | **工具健康切换**（熔断→摘除 / 探活通过→恢复；Payload 含 `tool_name` / `provider` / `state` / `failure_count` / `last_error` / `timestamp_ms`）。具体名 `tool.health.<tool_name>` 由 `ToolRegistry` emit 时填；订阅者通过 `event_bus.on("tool.health.#", handler, model_class=ToolHealthPayload)` 通配监听后按 `tool_name` 字段分发 |
-| `tool.health.#`（**通配占位符**，**不预注册**到 `EVENT_REGISTRY`） | 无（仅订阅标识） | 无（仅订阅标识） | 无（仅订阅标识） | **仅供订阅者使用的通配 pattern**：订阅 `event_bus.on("tool.health.#", ...)` 一站式监听所有工具健康切换。`CoreEvents.TOOL_HEALTH_WILDCARD = "tool.health.#"` 保留作订阅标识常量；与 `tool.result.#` 同性质——不在 `EVENT_REGISTRY` 注册，仅供通配订阅 |
-| `tts.utterance.started` | `UtteranceStartedPayload` | TTS 引擎（基础模块，非工具；`src/modules/tts/` 下 4 个 Provider 之一，按 `infra.toml [tts].provider` 装配期单选构造后注入 StreamerAgent）——仅在 `handle_speech` 收到非空 `utterance_id` 参数时发布；流式引擎=首块 PCM 写声卡，全量引擎=`play_audio` 调用 | 字幕写入器、编排层记账器等状态联动消费者（**当前生产代码暂无订阅——字幕订阅接线属后续工作，本表如实标记预留**） | 一次发声开始。Payload 含 `utterance_id`（全链路关联键，编排层生成 `utt_{epoch_ms}_{seq}`）、`speech_text`、`engine`（`edge`/`gptsovits`/`omni`/`voicebox`）、`duration_ms`（Optional[int]：全量引擎=合成后精确值；流式引擎合成未完=None）、`timestamp_ms`。 |
-| `tts.utterance.finished` | `UtteranceFinishedPayload` | TTS 引擎（基础模块）在播放完成时刻（百毫秒级精度，不含声卡硬件缓冲残余） | 编排层（句末再决策 / 释放锁）、存储（落 reply 耗时）、后台记账器（**预留**） | 一次发声播放完成。`duration_ms` 由 PCM 样本数÷采样率精确计算；事件名常量 `CoreEvents.TTS_UTTERANCE_FINISHED`。 |
-| `tts.utterance.failed` | `UtteranceFailedPayload` | 一次性发声失败（合成错误 / WebSocket 断开 / 音频设备异常） | | TTS 引擎在 `src/modules/tts/` 下 4 个 Provider 之一；事件名常量 `CoreEvents.TTS_UTTERANCE_FAILED` |
-| `task.changed` | `TaskChangedPayload` | 异步任务（回执型工具受理 / 跨 Agent 委派）状态真变化或无进展告警。 接收方按 `payload.initiator` 过滤唤醒；事件名常量 `CoreEvents.TASK_CHANGED`（ADR-013） | | 任务记录表写入边界（`src/modules/tools/tasks.py`，`TaskLedger`/ `TaskTracker`）；仅状态迁移或停滞告警时发（接受→运行组内迁移静默）；快照由接收方按需查询 | | TTS 引擎（基础模块）在合成或播放失败时（合成错误、WebSocket 断开、音频设备异常等任何阶段） | 编排层（错误兜底 / 重试决策）、存储（落失败记录）（**预留**） | 一次发声失败。Payload 含 `error_message`（异常 message / 错误码 / 阶段标记）。事件名常量 `CoreEvents.TTS_UTTERANCE_FAILED`。 |
-
-### 类 → 多事件共享
-
-| Payload 类 | 注册到的事件 |
-|---|---|
-| `RoomMessagePayload` | `room.message.danmaku` / `room.message.gift` / `room.message.super_chat` / `room.message.guard` / `room.message.enter`（`room.py` 五重注册，按 `message_type` 字段判别） |
-| `GamePayload` | `game.milestone` / `game.attention_required` / `game.error` / `game.report`（`game.py` 四重注册，按 `event_type` 字段判别） |
-| `ToolResultPayload`（**不绑定**具体事件名） | `tool.result.<tool_name>`（emit 时动态填） | 工具结果回传（`ToolRegistry.invoke` 广播）；订阅者用 `tool.result.#` 通配监听后按 `tool_name` 字段分发；Payload 含 `arguments` 字段（透传自 `ToolInvocation.arguments`，供 WebUI 展示入参） |
-| `ToolHealthPayload` | **不绑定**具体 `tool.health.*` 事件名（`tool_health.py` L20-23 注释明确），emit 时用具体名 `tool.health.<tool_name>`，handler 按 `tool_name` 字段分发 |
-
-### EventRecorder 订阅范围（监控组件典型）
-
-`event_recorder.py` 的 `EventHistoryRecorder.start()` 一次性订阅以下事件做记账：
-
-- `ROOM_MESSAGE_DANMAKU` / `GIFT` / `SUPER_CHAT` / `ENTER`（4 类 RoomMessagePayload）
-- `CORE_STARTUP` / `CORE_SHUTDOWN` / `CORE_ERROR`
-- `PLANNER_DECISION` / `STREAMER_STAGE`（决策可观测，`_on_named_event`，type=事件名）
-- `LIVE_STARTED` / `LIVE_ENDED`（场次生命周期）
-- `RUNDOWN_CHANGED`（流程单变更）
-- `GAME_MILESTONE` / `GAME_ATTENTION_REQUIRED` / `GAME_ERROR` / `GAME_REPORT`（`EventRecorder` 以 `GamePayload` 订阅）
-
-> **注意**：`room.message.gift` / `super_chat` / `guard` 三类付费事件由 `StreamerAgent` 决策侧消费（TimingGate 按 `message_type` 强制判定，必进决策轮并带"优先回应"标注）；`enter` 的订阅者仍仅 `EventRecorder`。
+Dashboard WebSocket 的 `type` 字段 = **事件名直通**；唯一例外是 `room.message.*` 折叠为 `"room.message"`（前端多处按此聚合过滤），该例外名是 `event_type_map.py` 的唯一内容。前端（如 Dashboard 首页异常判定）消费 `core.error` 等精确名。
 
 ---
 
 ## 事件载荷类型
 
-所有事件载荷都继承自 `BasePayload`（基于 Pydantic BaseModel），提供统一的字符串表示和日志格式化。
+所有载荷继承 `BasePayload`（Pydantic），统一携带 uuid4 的 `id` 字段——EventBus 经 `model_dump → model_validate` 分发，所有订阅者从同一 dict 读回该 id，是记录与广播等通道的幂等去重依据。子类可覆盖 `get_log_format()` 自定义日志格式。
 
-### Payload 继承关系
-
-```mermaid
-classDiagram
-    BaseModel <|-- BasePayload
-    BasePayload <|-- CoreStartupPayload
-    BasePayload <|-- CoreShutdownPayload
-    BasePayload <|-- CoreErrorPayload
-    BasePayload <|-- LiveStartedPayload
-    BasePayload <|-- LiveEndedPayload
-    BasePayload <|-- RoomMessagePayload
-    BasePayload <|-- GamePayload
-    BasePayload <|-- RundownChangedPayload
-    BasePayload <|-- PlannerDecisionPayload
-    BasePayload <|-- PlannerVerdictPayload
-    BasePayload <|-- StreamerStagePayload
-    BasePayload <|-- StreamerSpeechPayload
-    BasePayload <|-- ToolResultPayload
-    BasePayload <|-- ToolHealthPayload
-    BasePayload <|-- UtteranceStartedPayload
-    BasePayload <|-- UtteranceFinishedPayload
-    BasePayload <|-- UtteranceFailedPayload
-    BaseModel <|-- RoomMessageUser
-    BaseModel <|-- GiftInfo
-    BaseModel <|-- SuperChatInfo
-```
-
-> 当前实际存在的 18 个 Payload 类（含 `BasePayload`）+ 3 个嵌套子结构（`RoomMessageUser` / `GiftInfo` / `SuperChatInfo`），全部定义在 `src/modules/events/payloads/` 下按域分包。
-
-### 按域分类
-
-#### Core 系统事件
-
-| Payload 类 | 事件名 | 用途 |
-|-----------|--------|------|
-| `CoreStartupPayload` | `core.startup` | 系统启动通知（携带 `event` / `message` / `data` 三选一可选字段） |
-| `CoreShutdownPayload` | `core.shutdown` | 系统关闭通知 |
-| `CoreErrorPayload` | `core.error` | 系统级错误 |
-
-#### Connection 通用
-
-| Payload 类 | 事件名 | 用途 |
-|-----------|--------|------|
-
-#### Live 域（场次生命周期）
-
-| Payload 类 | 事件名 | 用途 |
-|-----------|--------|------|
-| `LiveStartedPayload` | `live.started` | 显式场次开启（发布者 `LiveSessionManager`）；`live_session_id` 为 `live_sessions` INTEGER 主键 |
-| `LiveEndedPayload` | `live.ended` | 显式场次结束；含 `empty_discarded`（空场次整行丢弃标记） |
-
-#### Room 域（直播间行为流）
-
-| Payload 类 | 事件名 | 用途 |
-|-----------|--------|------|
-| `RoomMessagePayload`（一类多注册） | `room.message.danmaku` / `gift` / `super_chat` / `guard` / `enter` | 弹幕 / 礼物 / SC / 上舰 / 进房；通过 `message_type: Literal[...]` 字段判别 |
-
-> `room.state.*` 是**预留层**（见 [事件命名规范 §行为 vs 状态分层](event-naming-convention.md)），当前不实现任何事件。
-
-#### Game 域
-
-| Payload 类 | 事件名 | 用途 |
+| 形态 | 类 | 事件 |
 |---|---|---|
-| `GamePayload`（一类四注册） | `game.milestone` / `game.attention_required` / `game.error` / `game.report` | 游戏重大进展 / 安全阀偏差 / 异常 / 交付上报；通过 `event_type: Literal[...]` 字段判别 |
+| 一类多注册 + 判别字段 | `RoomMessagePayload`（`_DISCRIMINANT_FIELD="message_type"`） | `room.message.*` 六事件 |
+| 一类多注册 + 判别字段 | `GamePayload`（`_DISCRIMINANT_FIELD="event_type"`） | `game.*` 四事件 |
+| 一事件一个类 | `LiveStartedPayload` / `LiveEndedPayload`（字段本就不同） | `live.started` / `live.ended` |
+| 一事件一个类 | `CoreStartupPayload` / `CoreShutdownPayload` / `CoreErrorPayload` / `ScreenDescriptionPayload` / `RundownChangedPayload` / `TaskChangedPayload` / `PlannerDecisionPayload` / `PlannerVerdictPayload` / `StreamerStagePayload` / `StreamerSpeechPayload` | 各自对应 |
+| 一事件一个类（形状不同） | `UtteranceStartedPayload` / `UtteranceFinishedPayload` / `UtteranceFailedPayload` | `tts.utterance.*` 三事件 |
+| 不绑定具体名（动态族） | `ToolResultPayload` / `ToolHealthPayload` | `tool.result.<name>` / `tool.health.<name>` |
+| 开放载荷 | `OpenPayload`（`extra="allow"`，保留任意字段） | 无绑定事件；通用消费者（记录器）的 model_class |
 
-#### Rundown / Planner / Streamer 域
-
-| Payload 类 | 事件名 | 用途 |
-|---|---|---|
-| `RundownChangedPayload` | `rundown.changed` | 流程单变更（`rundown_id` / `segment_id` / `segment_title` / `index` / `total` / `by` / `at_ms`；finish 时 `segment_id=""` 且 `index==total`） |
-| `PlannerDecisionPayload` | `planner.decision` | 决策轮记录（`round_id` 关联键 + 决策结论 + `reply_to_message_id` + 失败原因 + 耗时） |
-| `PlannerVerdictPayload` | `planner.verdict` | 裁决时刻即时事件（reply 工具被调用、表达生成之前；`round_id` / `topic_summary` / `reply_guidance` / `confidence` / `target`） |
-| `StreamerStagePayload` | `streamer.stage` | 决策管线阶段状态（planning/replying/idle + agent_state） |
-| `StreamerSpeechPayload` | `streamer.speech` | 主播发言业务事实（`utterance_id` / `text` / `emotion` / `target_user_id` / `reply_to_message_id`，与 TTS 启用与否正交） |
-
-> **v2.0.8 收口**：原 `Output Sticker（特例）` 节（`output.sticker.command` / `StickerCommandPayload`）已随 C1 治理删除——StickerHelper 零实例化零调用、消费端 VTSProvider 仅空转订阅；接电线也救不了（无 LLM 工具暴露贴纸触发）。未来做表情功能时重新设计，本轮不留事件链。
-
-#### Tool Result 域
-
-| Payload 类 | 事件名 | 用途 |
-|-----------|--------|------|
-| `ToolResultPayload`（**不绑定**具体事件名） | `tool.result.<tool_name>`（emit 时动态填） | 工具结果回传（`ToolRegistry.invoke` 广播）；订阅者用 `tool.result.#` 通配监听后按 `tool_name` 字段分发 |
-
-#### TTS Utterance 域（v2.0.10 新增）
-
-| Payload 类 | 事件名 | 用途 |
-|-----------|--------|------|
-| `UtteranceStartedPayload` | `tts.utterance.started` | 一次发声开始。Payload 含 `utterance_id`（编排层生成 `utt_{epoch_ms}_{seq}`，全链路关联键）、`speech_text`、`engine`、`duration_ms`（Optional：全量引擎=合成后精确值；流式引擎合成未完=None）、`timestamp_ms`。 |
-| `UtteranceFinishedPayload` | `tts.utterance.finished` | 一次发声播放完成。`duration_ms` 由 PCM 样本数÷采样率精确计算（百毫秒级精度，不含声卡硬件缓冲残余）。 |
-| `UtteranceFailedPayload` | `tts.utterance.failed` | 一次发声失败（合成错误 / WebSocket 断开 / 音频设备异常）。Payload 含 `error_message`。 |
-
-**契约要点**：
-
-- **发布者**：仅 TTS 引擎自身（基础模块，非工具；`src/modules/tts/` 下 4 个 Provider：`EdgeTTSProvider` / `GPTSoVITSProvider` / `VoiceboxProvider` / `OmniTTSProvider`，由 `build_tts_infrastructure(core [tts], event_bus)` 按 `infra.toml [tts].provider` 单选构造后注入 StreamerAgent），且**只在 `handle_speech` 收到非空 `utterance_id` 参数时**发布——调用方（StreamerAgent 通过 UtteranceQueue）未携带该参数则不发事件，纯基础设施语义。
-- **started 时机**：流式引擎 = 首块 PCM 写声卡；全量引擎 = `play_audio` 调用。
-- **finished 精度**：百毫秒级（不达 DAC 采样点精度）；声卡硬件缓冲残余**不在**信号内，因此 finished 事件是引擎回调信号而非播放端物理信号。
-- **订阅者**：当前生产代码**暂无订阅者**——字幕订阅接线属后续工作（事实：现有字幕 Provider 由 `StreamerAgent._dispatch_speech_and_emotion` 通过 speech 文本直接 fire-and-forget，不订阅 utterance 事件）；编排层记账、释放锁等消费者同样预留。Consumer taxonomy 与通道选择依据见 [数据流规则 §6](data-flow.md)。
-- **防环约束**：`tts.utterance.*` 是**终点广播**，消费者不得基于这些事件触发新一轮决策（会形成 "TTS→决策→TTS" 无限循环）。
-- **发布-only**：TTS 引擎自身只发事件、不订阅任何事件（`utterance_queue.py` 注释明文约束）。
-- **Payload 形状差异**：三个事件 Payload 形状不同（started 含 `speech_text` + `duration_ms` 可选；finished 强调播放时长；failed 强调错误信息）——分开定义比统一形状加判别字段更不易误填。
-
-### BasePayload 特性
-
-所有 Payload 继承 `BasePayload`，提供以下特性：
-
-```python
-from src.modules.events.payloads.base import BasePayload
-
-class MyPayload(BasePayload):
-    """自定义 Payload"""
-
-    text: str
-    user_name: str
-
-    def get_log_format(self):
-        """自定义日志格式"""
-        return self.text, self.user_name, None
-```
-
-| 方法/字段 | 说明 |
-|------|------|
-| `id: str` | 事件唯一 ID（uuid4），`EventBus` 经 `model_dump → model_validate` 分发，所有订阅者从同一 dict 读回该字段，保证记录与广播等通道拿到同一 id（**幂等去重依据**） |
-| `__str__()` | 返回易读的调试字符串 |
-| `get_log_format()` | 返回 `(text, user_name, extra)` 元组，用于日志优化 |
-| `_format_field_value()` | 格式化字段值 |
+> `tts.utterance.*` 三事件是终点广播：消费者不得基于这些事件触发新一轮决策（防环，见[边界规则](#边界规则)）。
 
 ---
 
 ## 事件注册机制
 
-EventBus 通过 `@register_event` 装饰器把 Pydantic Payload 类注册到模块级 `EVENT_REGISTRY` 字典。
-
-### 装饰器 API
+`@register_event` 装饰器把 Payload 类注册到模块级 `EVENT_REGISTRY` 字典：
 
 ```python
-from src.modules.events.registry import register_event
-from src.modules.events.payloads.base import BasePayload
-
-
 @register_event("room.message.danmaku")
-class RoomMessagePayload(BasePayload):
-    ...
+@register_event("room.message.gift")   # 同类可堆叠注册多个事件名
+class RoomMessagePayload(BasePayload): ...
 ```
 
-- **幂等**：同一类重复注册到同一事件名不会出错（`EVENT_REGISTRY[event_name] = cls` 覆盖检查会先比对 `existing is cls`，仅在**不同类型**时抛 `ValueError`）
-- **一类多事件名**（v2 增量）：`RoomMessagePayload` / `GamePayload` 通过堆叠装饰器注册到多个事件名（`@register_event("room.message.danmaku") @register_event("room.message.gift") ... class RoomMessagePayload`）
-- **反向引用**：被装饰类获得 `cls._registered_event_name` 属性（单名 = 字符串；多名 = `_MultiName` 对象，与任意已注册名 `==` 相等）
-- **`cls._all_registered_names`**：列出全部已注册名（`frozenset[str]`）
+- **反向引用**：被装饰类获得 `_registered_event_name`（多名时为 `_MultiName` 对象，`==` 与任意已注册名相等）与 `_all_registered_names`（`frozenset`）
+- **冲突检查**：同一事件名被注册为**不同类型**时抛 `ValueError`
 
-### 查询 API
-
-`registry.py` 提供以下查询入口：
-
-| API | 说明 |
-|-----|------|
-| `EVENT_REGISTRY: Dict[str, Type[BaseModel]]` | 模块级注册表（由装饰器填充） |
-| `get_registered_event(name: str) -> Optional[Type[BaseModel]]` | 通过事件名查 Payload 类型 |
-| `list_registered_events() -> Dict[str, Type[BaseModel]]` | 列出全部（返回副本） |
-| `EventRegistry.get(name)` | 类方法版（同上） |
-| `EventRegistry.is_registered(name) -> bool` | 检查是否已注册 |
-| `EventRegistry.list_all_events()` | 类方法版（同上） |
-
-### 启动钩子
-
-`registry.register_core_events()` 在应用启动时触发所有 Payload 模块的 import，保证 `@register_event` 装饰器执行：
+### 启动钩子与硬检查
 
 ```python
-def register_core_events() -> None:
-    from src.modules.events.payloads import (  # noqa: F401
-        core as _core_payloads, game as _game_payloads,
-        live as _live_payloads, planner as _planner_payloads,
-        room as _room_payloads, tool_result as _tool_result_payloads,
-        utterance as _utterance_payloads,
-    )
+register_core_events()          # 触发全部 payload 模块 import（装饰器随之执行），
+                                # 并登记动态事件族（tool.result. / tool.health. 前缀 → payload 类型）
+ensure_registry_consistency()   # 启动硬检查：EVENT_REGISTRY 与 CoreEvents 具名事件
+                                # 集合必须完全一致（动态族成员豁免），缺失/多余即 RuntimeError 拒启
 ```
 
-> v2 增量为 9 个 Payload 模块（`core` / `game` / `live` / `planner` / `room` / `rundown` / `speech` / `tool_result` / `utterance`），均在 `register_core_events()` 一并触发 import。`tool_result` 模块即使无具体 `@register_event` 装饰器调用也一并 import 以触发模块级代码（保留供后续扩展）；`utterance` 模块承担 v2.0.10 新增的 `tts.utterance.*` 三事件 Payload。
+`main.py` 启动序列在 `register_core_events()` 之后立即调用硬检查——事件契约漂移（漏注册 / 多注册）在启动期暴露，不进入运行时。
 
 ---
 
 ## 事件拦截器（Interceptor）
 
-> **作用域说明**：拦截器通过类属性 ``scope_prefixes`` 声明作用的事件域前缀（空元组 = 不限域）；事件名不匹配任何前缀时链直接跳过该拦截器。内置的 `RateLimitInterceptor` / `SimilarFilterInterceptor` 显式声明 **`room.message.*` 域**（按 user_id/text 字段设计，对其他域 payload 无意义），因此 `core.*` / `live.*` / `game.*` / `tool.result.*` 等下游事件不会经过它们。
+"在事件路上拦一下做点事"的全局单点：emit 后、订阅者收到前，**所有事件过同一道拦截器链**。拦截器看到的 payload 是 `model_dump()` 后的 dict（与下游 handler 形态一致）；返回 dict 放行（可原地修改），返回 `None` 丢弃事件；拦截器自身抛异常被捕获并视为 pass-through（异常不丢事件）。
 
-"在事件路上拦一下做点事"的全局单点（§1.46.1，取代旧输入/输出管道）：emit 后、订阅者收到前，**所有事件过同一道拦截器链**。一次拦截，所有订阅者共享净化后结果。
+### 内置拦截器
 
-### 位置与语义
+| 拦截器 | priority | 作用域 | 职责 |
+|--------|----------|--------|------|
+| `RateLimitInterceptor` | 100 | `room.message.*` | 全局 / 单用户滑动窗口限流（防刷屏）；用户标识经共用 `lookup.extract_user_id` 提取（嵌套 `user.id` 优先，顶层键兜底） |
+| `SimilarFilterInterceptor` | 100 | `room.message.*` | 相似文本合并（滑动窗口内相似度超阈值丢弃） |
+| `SessionStampInterceptor` | 200 | room.message. / streamer. / planner.decision / tool.result. / game. | 场次盖章：`live_session_id=0` 的业务事件统一注入当前场次主键（单点注入、全链一致；归属解析失败放行原 payload 不阻断） |
 
-```
-collectors → emit 事件 → 【事件拦截器 · EventBus 分发层 · 全局一次】→ 订阅者
-                            去重 / 限流 / 敏感词 / 转换 / 统计
-```
-
-- **与订阅正交**：拦截器处理"数据噪声"，订阅模型处理"谁关心什么"
-- **被动驱动**：被事件流触发才干活，不是自主角色
+**执行顺序 = `priority` 升序**（数值小者先行，同值按注册顺序），与 `add_interceptor` 的注册顺序解耦：净化类（限流 / 相似过滤）先于加工类（场次盖章），被净化丢弃的消息不消耗归属解析。
 
 ### 核心 API
 
 ```python
-from src.modules.events.interceptors import EventInterceptor, InterceptorChain
-
 class MyInterceptor(EventInterceptor):
+    priority = 150                     # 显式优先级（可选，默认 100）
+    scope_prefixes = ("room.message.",)  # 作用域（空元组 = 不限域）
+
     @property
     def name(self) -> str:
         return "my_filter"
 
     async def intercept(self, event_name, payload, source):
-        # payload 是 model_dump() 后的 dict（可原地修改）
         if is_noise(payload):
-            return None          # None = 丢弃事件，handler 不会被调用
-        return payload           # dict = 放行（可原地修改后返回）
+            return None          # None = 丢弃事件
+        return payload           # dict = 放行（可原地修改）
 
-event_bus.add_interceptor(MyInterceptor())   # 挂载（emit 时自动过链）
+event_bus.add_interceptor(MyInterceptor())   # 挂载
 event_bus.remove_interceptor("my_filter")    # 按 name 卸载
-event_bus.get_interceptor_names()            # 查看已挂载拦截器
+event_bus.get_interceptor_names()            # 已挂载拦截器（按执行顺序）
 ```
 
-### 内置拦截器
+注册入口在 `main.py` 的 `register_event_interceptors()`，配置来自 `infra.toml` 的 `[interceptors.<name>]`。
 
-| 拦截器 | 文件 | 作用域 | 职责 |
-|--------|------|--------|------|
-| `RateLimitInterceptor` | `interceptors/rate_limit.py` | `room.message.*` | 全局/单用户频率限制（防刷屏） |
-| `SimilarFilterInterceptor` | `interceptors/similar_filter.py` | `room.message.*` | 相似文本合并 |
+> 敏感词净化不在拦截器层，主播发言统一出口在 Replyer 的 ProfanityFilter。
 
-注册入口在 `main.py` 的 `register_event_interceptors()`（L239），配置来自 `infra.toml` 的 `[interceptors.<name>]`（`enabled` 缺省视为启用）。
+---
 
-> 敏感词净化不在拦截器层，主播发言统一出口在 Replyer 的 ProfanityFilter（§1.46.1 定案）。
+## 边界规则
+
+事件系统作为公共通道，以下边界由[架构红线](../AGENTS.md)派生，违反即架构回退：
+
+**谁可以发布**
+
+- 采集器只发布数据事件（`room.message.*` / `perception.screen`）；下游结果的查询诉求走工具实现——"能挥手吗"可问，"刚才挥手成功了吗"不可问
+- 工具是被动调用方：执行完成后由 `ToolRegistry` 统一发布 `tool.result.<name>`，工具本体不发布其他事件
+- TTS 引擎是基础模块：只发 `tts.utterance.*`、不订阅任何事件（发布-only）
+- 快照型能力（被调才看）实现为工具，持续流型实现为采集器
+
+**谁可以订阅**
+
+- Agent 订阅语义域事件驱动决策（如 `StreamerAgent` 订阅 `room.message.danmaku`）；Agent 内部的 Planner / Replyer 本体代码直连，不经事件订阅
+- 观察面组件（记录器 / Broadcaster / Widget）订阅只读，不得反向触发表演类副作用
+
+**防环约束**
+
+- `tts.utterance.*` 是**终点广播**：消费者不得基于这些事件触发新一轮决策（否则形成 "TTS→决策→TTS" 无限循环）
+- `streamer.speech` 是业务信号：订阅者（节奏唤醒 / 落库 / 字幕）不得反向触发表演类副作用
+- 工具不订阅 Input 事件（仅 fire-and-forget 后回传 `tool.result.*`）
+
+**通道选择**
+
+- 需要跨组件广播"已发生的事实"→ 事件（本通道）
+- 需要调用并拿返回值 → 直接函数调用或工具调用，不发事件（禁止 RPC 式 `request` / 同步 `emit_sync` 复活）
 
 ---
 
@@ -592,51 +357,27 @@ format_duration_ms(1234)             # "1.2s"
 
 ---
 
-## 核心特性
-
-| 特性 | 说明 |
-|------|------|
-| **错误隔离** | 单个 handler 异常不影响其他 handler 执行 |
-| **优先级控制** | `priority` 参数控制 handler 执行顺序（数字越小越优先） |
-| **统计功能** | 跟踪 emit 次数、错误率、执行时间（按真实 emit 名入键） |
-| **类型安全** | 强制要求 `model_class` 参数，自动 `model_validate` 反序列化 |
-| **生命周期管理** | `cleanup()` 方法确保优雅关闭 |
-| **数据验证** | 支持事件数据格式验证（基于 `EventRegistry`；未注册事件仅 debug 警告不阻断） |
-| **日志优化** | Payload 自定义 `__str__` 和 `get_log_format()` 方法 |
-| **并发安全** | 使用锁保护统计数据，支持并发 emit |
-| **通配订阅** | MQTT 风格 `*`（单层）/ `#`（多层，仅末尾），specificity 排序精确订阅先于通配 |
-| **拦截器链** | 分发层全局单点，过滤后所有订阅者共享净化结果 |
-
----
-
 ## 使用示例
 
-### 基本发布-订阅（v2 语义域）
+### 基本发布-订阅
 
 ```python
 from src.modules.events.event_bus import EventBus
 from src.modules.events.names import CoreEvents
 from src.modules.events.payloads import RoomMessagePayload, RoomMessageUser
 
-# 创建事件总线
 event_bus = EventBus(enable_stats=True)
 
-# 订阅事件（类型化）
+# 订阅（类型化；handler 必须 async）
 async def handle_danmaku(event_name: str, data: RoomMessagePayload, source: str):
     print(f"收到弹幕: {data.content} (用户: {data.user.name})")
 
-event_bus.on(
-    CoreEvents.ROOM_MESSAGE_DANMAKU,
-    handle_danmaku,
-    model_class=RoomMessagePayload,
-    priority=50,  # 高优先级
-)
+event_bus.on(CoreEvents.ROOM_MESSAGE_DANMAKU, handle_danmaku, model_class=RoomMessagePayload)
 
-# 发布事件
+# 发布（立即返回；订阅者后台并发执行）
 await event_bus.emit(
     CoreEvents.ROOM_MESSAGE_DANMAKU,
     RoomMessagePayload(
-        live_session_id="ls_20260822_001",
         message_type="danmaku",
         user=RoomMessageUser(id="12345", name="观众A"),
         content="主播好可爱！",
@@ -645,234 +386,41 @@ await event_bus.emit(
     source="BiliDanmakuOfficialCollector",
 )
 
-# 获取统计（按真实 emit 名入键，与订阅 pattern 解耦）
+# 统计（按真实 emit 名入键）
 stats = event_bus.get_stats(CoreEvents.ROOM_MESSAGE_DANMAKU)
-print(f"Emit 次数: {stats.emit_count}, 监听器数: {stats.listener_count}")
 
-# 清理
 await event_bus.cleanup()
 ```
 
 ### 通配订阅工具结果
 
 ```python
-from src.modules.events.payloads import ToolResultPayload
-
-
 async def handle_any_tool_result(event_name: str, data: ToolResultPayload, source: str):
-    # event_name 形如 "tool.result.speak" / "tool.result.summarize_timeline"
+    # event_name 形如 "tool.result.speak"；handler 内按 payload 字段分发
     if data.tool_name == "speak":
         await on_speak_completed(data)
-    elif data.tool_name == "summarize_timeline":
-        await on_timeline_ready(data)
 
-# 一站式监听所有工具结果（MQTT 风格通配）
-event_bus.on(
-    CoreEvents.TOOL_RESULT_WILDCARD,  # "tool.result.#"
-    handle_any_tool_result,
-    model_class=ToolResultPayload,
-)
+# 一站式监听所有工具结果（AMQP topic 风格通配）
+event_bus.on(CoreEvents.TOOL_RESULT_WILDCARD, handle_any_tool_result, model_class=ToolResultPayload)
 
 # emit 时使用具体名
 await event_bus.emit(
     "tool.result.speak",
-    ToolResultPayload(
-        tool_name="speak",
-        status="success",
-        result={"speech_text": "你好！", "audio_duration_ms": 3200},
-    ),
+    ToolResultPayload(tool_name="speak", status="success", result={...}),
     source="speak_tool",
 )
-# emit 时通过拦截器链 → 精确键 + tool.result.# 通配键合并 → handle_any_tool_result 收到一次事件
 ```
 
-### 发布系统错误事件
+### 通配订阅错误处理
 
-```python
-from src.modules.logging import get_logger
-
-logger = get_logger(__name__)
-
-try:
-    await do_something()
-except Exception as e:
-    # core.error 已绑定 CoreErrorPayload（Broadcaster/EventRecorder 会订阅），
-    # 但业务代码通常直接 logger.exception() 记录，不主动发布 core.error
-    logger.exception("MyHandler 操作失败")
-```
-
-### BasePayload 自定义日志格式
-
-```python
-class MyPayload(BasePayload):
-    text: str
-    user_name: str
-
-    def get_log_format(self):
-        # 返回 (文本, 用户名, 额外信息)
-        return self.text, self.user_name, None
-
-    def __str__(self):
-        return f'{self.text} ({self.user_name})'
-```
-
----
-
-## Mermaid 时序图
-
-### 事件发布-订阅流程（含拦截器 + 通配）
-
-```mermaid
-sequenceDiagram
-    participant P as 发布者
-    participant EB as EventBus
-    participant IC as 拦截器链
-    participant H1 as Handler1 (精确订阅, priority=50)
-    participant H2 as Handler2 (通配订阅 room.message.#)
-
-    P->>EB: emit(room.message.danmaku, RoomMessagePayload)
-    EB->>EB: 类型检查 → model_dump() → 数据验证
-
-    EB->>IC: apply(event_name, dict_data, source)
-    alt 拦截器返回 None
-        IC-->>EB: 丢弃事件
-        EB-->>P: return
-    else 拦截器放行
-        IC-->>EB: 返回净化后 dict
-        EB->>EB: _collect_handlers(): 精确键 + 通配 pattern 键并集
-        EB->>EB: 按 (priority ASC, specificity DESC) 排序
-        Note over H1,H2: H1 specificity=10000 → 先<br/>H2 specificity=9 → 后
-
-        par 并行执行
-            EB->>H1: typed_wrapper → model_validate → handler(event, typed, source)
-            H1-->>EB: result / exception
-        and
-            EB->>H2: typed_wrapper → model_validate → handler(event, typed, source)
-            H2-->>EB: result / exception
-        end
-
-        alt error_isolate=True
-            EB->>EB: 隔离异常, 继续执行其他 handler
-        else error_isolate=False
-            EB->>P: 抛出第一个异常
-        end
-
-        EB->>EB: 更新统计（按真实 emit 名入键）
-    end
-```
-
-### v2 数据流时序
-
-```mermaid
-sequenceDiagram
-    participant IC as InputCollector
-    participant EB as EventBus
-    participant AG as StreamerAgent
-    participant TP as Tool Provider
-    participant OB as EventRecorder
-
-    Note over IC,EB: 采集与发布
-
-    IC->>EB: emit(room.message.danmaku, RoomMessagePayload)
-    EB->>OB: 转发（记账）
-    EB->>AG: 转发（订阅 danmaku 驱动决策）
-
-    Note over AG,TP: 决策与工具调用
-
-    AG->>AG: 决策完成 → 调用工具（fire-and-forget）
-    AG->>TP: invoke(tool_name, params)
-
-    Note over TP,EB: 工具结果回传
-
-    TP->>EB: emit(tool.result.<name>, ToolResultPayload)
-    EB->>AG: 转发结果（订阅 tool.result.# 或具体名）
-```
-
----
-
-## 最佳实践
-
-### 1. 使用 CoreEvents 常量
-
-```python
-# 避免魔法字符串
-await event_bus.emit("room.message.danmaku", payload)  # 不推荐
-
-# 使用常量
-await event_bus.emit(CoreEvents.ROOM_MESSAGE_DANMAKU, payload)  # 推荐
-```
-
-### 2. 正确使用类型化订阅
-
-```python
-# 强制指定 model_class（on() 内部 typed_wrapper 会自动 model_validate）
-event_bus.on(CoreEvents.ROOM_MESSAGE_DANMAKU, handler, model_class=RoomMessagePayload)
-
-# 不指定 model_class 会导致订阅失败 / 类型不安全
-```
-
-### 3. 处理错误隔离
-
-```python
-# 需要确保所有 handler 都执行（默认）
-await event_bus.emit(event, data, error_isolate=True)
-
-# 需要立即知道错误
-await event_bus.emit(event, data, error_isolate=False)
-```
-
-### 4. 优雅关闭
-
-```python
-async def shutdown():
-    await event_bus.cleanup(timeout=5.0)
-    print("EventBus 已清理")
-```
-
-### 5. 避免循环依赖
-
-根据 v2 数据流约束（详见 [数据流规则](data-flow.md)）：
-
-- Agent / Tool 不应订阅 Output 阶段事件（v2 已无 Output 阶段，但"组件订阅下游结果事件"模式仍禁止）
-- Input 采集器只发布数据，不订阅下游结果
-- 工具是被动调用方，**不订阅 Input 事件**（仅 fire-and-forget 后回传 `tool.result.*`）
-
-### 6. 通配订阅的边界
-
-- **优先用精确订阅**：specificity 更高、语义更清晰、调试更直观
-- **仅在需要一站式捕获时**用通配（如 `tool.result.#` 监听所有工具结果）
-- handler 内按 Payload 内部字段（`message_type` / `event_type` / `tool_name`）分发，避免靠事件名字符串做 if/elif
-
-### 7. 日志优化
-
-```python
-class MyPayload(BasePayload):
-    text: str
-    user_name: str
-
-    def get_log_format(self):
-        return self.text, self.user_name, None
-
-    def __str__(self):
-        return f'{self.text} ({self.user_name})'
-```
-
----
-
-## 旧名处置说明
-
-> **v1 三阶段事件（`input.message.received` / `decision.intent.generated` / `output.intent.dispatched` / `output.intent.finished` / `output.handler.completed` / `output.obs.command` / `output.handler.connected` 等）已随 v2 重构删除**。`names.py` 中仅存划线标记（`~~decision.intent.generated~~` 等迁移注释），不提供常量定义。代码中残留的旧名字符串均为迁移注释（如 `src/agents/streamer/__init__.py` L34），不参与运行时事件分发。
-
-如发现代码中实际 emit / on 旧名事件（**非注释**），按"重构未完成"缺陷处理，须立即改为对应 v2 语义域事件。
+订阅者抛异常不影响其他订阅者；异常被计数（`get_stats(event_name).error_count`）并写 ERROR 日志——出错可见、不传播、不中断广播。
 
 ---
 
 ## 相关文档
 
-- [3 阶段架构总览](overview.md)
+- [架构总览](overview.md)
 - [数据流规则](data-flow.md)
 - [事件命名规范](event-naming-convention.md)
-- [阶段参与者开发](../development/component-guide.md)
+- [三范式开发指南](../development/component-guide.md)
 - [架构决策记录](adr/README.md)
-
----
