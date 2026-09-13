@@ -40,3 +40,4 @@ ADR 记录已经作出的决定，不替代实现文档，也不用于记录迁�
 - [ADR-012：工具可见名单机制（注册处生产侧声明）](012-tool-visibility-list.md)
 - [ADR-013：异步任务基建与 Agent 委派原语](013-async-task-infrastructure-and-delegation.md)
 - [ADR-014：配置体系六文件重构（每文件版本 / 包内权威 / 单一管线 / 值迁移不做）](014-config-six-file-refactor.md)
+- [ADR-016：版本号与发布模型（pyproject 单一声明 + tag 事实源 + main 发布线）](016-versioning-and-release-model.md)

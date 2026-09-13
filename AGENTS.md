@@ -106,6 +106,12 @@
 
 **一次提交一个意图**：无关变更分批提交；连环缺陷同因修复可合批，subject 用 "+" 分列。
 
+### 版本与发布
+
+- pyproject `version` 是对外版本号的唯一声明处，git tag `vX.Y.Z` 是发布事实源；版本号只在发布时 bump，发布动作（CHANGELOG + bump + tag）在开发主线 v2.0.0 上完成，main 仅作 `--ff-only` 快进的发布线，不产生自己的提交
+- 配置 `[meta].version` 与存储 `SCHEMA_VERSION` 是数据迁移机制，版本流独立，不参与发布
+- 发布步骤与 CHANGELOG 格式见 `docs/development/release-guide.md`，决策依据见 `docs/architecture/adr/016-versioning-and-release-model.md`
+
 ### 多工作树并行开发
 
 使用 `git worktree` 为并行任务提供隔离检出环境。任务工作树物理路径属机器本地信息，登记于 `AGENTS.local.md`（不入库）；放置于仓库外同级目录；同一分支同时只允许一个工作树。工作树分两类：

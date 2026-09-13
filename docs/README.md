@@ -33,6 +33,7 @@
 | [主播上下文构成](development/streamer-context.md) | 主播 Agent 决策窗消息形态、参考段、缓存硬要求与输入预算 |
 | [依赖注入](development/dependency-injection.md) | 依赖注入约定与决策清单 |
 | [测试指南](development/testing-guide.md) | 测试规范和最佳实践 |
+| [发布指南](development/release-guide.md) | 版本号规则、CHANGELOG 与发布流程 |
 | [模拟直播间工具](development/simulator-guide.md) | 模拟直播间服务（SimulatorService）使用 |
 | [文档维护规范](development/documentation-guide.md) | 文档编写、单一事实源与 ADR 规范 |
 
