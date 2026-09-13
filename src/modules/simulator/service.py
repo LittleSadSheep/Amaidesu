@@ -278,7 +278,7 @@ class SimulatorService:
             self.logger.debug(f"streamer.speech 解绑失败（已忽略）: {exc}")
         self._subscribed_streamer_speech = False
 
-    def _on_streamer_speech(
+    async def _on_streamer_speech(
         self,
         event_name: str,
         payload: StreamerSpeechPayload,

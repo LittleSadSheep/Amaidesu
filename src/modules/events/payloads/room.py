@@ -14,7 +14,7 @@
 - ``room.state.*`` 是**预留层**，本模块不定义其事件（行为/状态分层）
 """
 
-from typing import Literal, Optional
+from typing import ClassVar, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -113,6 +113,10 @@ class RoomMessagePayload(BasePayload):
         sc: SC 信息（仅 ``super_chat`` 类型有值）
         timestamp_ms: 事件时间戳（Unix 毫秒）
     """
+
+    # 判别字段：EventBus 在 emit 期校验"事件名末段 == 该字段值"，
+    # 六重注册共享一类，挂错事件名（如 gift 弹幕发成 danmaku）直接报错
+    _DISCRIMINANT_FIELD: ClassVar[str] = "message_type"
 
     live_session_id: int = Field(
         default=0,

@@ -9,6 +9,7 @@
 """
 
 from __future__ import annotations
+import asyncio
 
 import shutil
 import tempfile
@@ -128,13 +129,14 @@ async def test_streamer_speech_event_triggers_cadence_notify(
         cadence._state = CadenceGenerator.IDLE  # type: ignore[attr-defined]
         assert cadence.get_state() == CadenceGenerator.IDLE
 
-        # 手动 emit 业务事件（wait=True 确保 handler 同步跑完）
+        # 手动 emit 业务事件（emit 后 sleep 等待 handler 跑完）
         payload = StreamerSpeechPayload(
             utterance_id="utt_test_1",
             text="hello",
             emotion=None,
         )
-        await event_bus.emit(CoreEvents.STREAMER_SPEECH, payload, source="test", wait=True)
+        await event_bus.emit(CoreEvents.STREAMER_SPEECH, payload, source="test")
+        await asyncio.sleep(0.05)
 
         # notify_streamer_activity 把 IDLE → NORMAL
         assert cadence.get_state() == CadenceGenerator.NORMAL
@@ -224,7 +226,8 @@ async def test_handler_only_calls_notify_no_llm_side_effect(
             text="防环验证",
             emotion=None,
         )
-        await event_bus.emit(CoreEvents.STREAMER_SPEECH, payload, source="test", wait=True)
+        await event_bus.emit(CoreEvents.STREAMER_SPEECH, payload, source="test")
+        await asyncio.sleep(0.05)
 
         # cadence 被唤醒
         assert cadence.get_state() == CadenceGenerator.NORMAL

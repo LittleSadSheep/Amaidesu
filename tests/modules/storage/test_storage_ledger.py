@@ -13,6 +13,7 @@ StorageLedger 集成测试（溯源链收口）
 """
 
 from __future__ import annotations
+import asyncio
 
 import shutil
 import tempfile
@@ -96,7 +97,8 @@ async def test_ledger_dispatches_danmaku_to_live_chat(
     ledger: StorageLedger, store: SQLiteDatabase, event_bus: EventBus
 ) -> None:
     payload = make_room_message(message_type="danmaku", content="主播好可爱", simulated=False)
-    await event_bus.emit(CoreEvents.ROOM_MESSAGE_DANMAKU, payload, source="test", wait=True)
+    await event_bus.emit(CoreEvents.ROOM_MESSAGE_DANMAKU, payload, source="test")
+    await asyncio.sleep(0.05)
 
     rows = await store.execute("SELECT * FROM live_chat WHERE message_type='danmaku'")
     assert len(rows) == 1
@@ -117,7 +119,8 @@ async def test_ledger_dispatches_gift_to_gifts(
         gift_name="小星星",
         gift_count=5,
     )
-    await event_bus.emit(CoreEvents.ROOM_MESSAGE_GIFT, payload, source="test", wait=True)
+    await event_bus.emit(CoreEvents.ROOM_MESSAGE_GIFT, payload, source="test")
+    await asyncio.sleep(0.05)
 
     rows = await store.execute("SELECT * FROM gifts")
     assert len(rows) == 1
@@ -137,7 +140,8 @@ async def test_ledger_dispatches_super_chat_to_super_chats(
         content="SC 文本",
         sc_amount=99.0,
     )
-    await event_bus.emit(CoreEvents.ROOM_MESSAGE_SUPER_CHAT, payload, source="test", wait=True)
+    await event_bus.emit(CoreEvents.ROOM_MESSAGE_SUPER_CHAT, payload, source="test")
+    await asyncio.sleep(0.05)
 
     rows = await store.execute("SELECT * FROM super_chats")
     assert len(rows) == 1
@@ -152,7 +156,8 @@ async def test_ledger_dispatches_guard_to_live_chat(
 ) -> None:
     """上舰事件落 live_chat（message_type="guard"，content 即人读描述）。"""
     payload = make_room_message(message_type="guard", content="测试观众 开通了舰长")
-    await event_bus.emit(CoreEvents.ROOM_MESSAGE_GUARD, payload, source="test", wait=True)
+    await event_bus.emit(CoreEvents.ROOM_MESSAGE_GUARD, payload, source="test")
+    await asyncio.sleep(0.05)
 
     rows = await store.execute("SELECT * FROM live_chat WHERE message_type='guard'")
     assert len(rows) == 1
@@ -168,7 +173,8 @@ async def test_ledger_dispatches_guard_to_live_chat(
 async def test_ledger_enter_does_not_persist(ledger: StorageLedger, store: SQLiteDatabase, event_bus: EventBus) -> None:
     """enter 事件 schema 无对应明细表——debug 日志后丢弃，不应落任何业务表。"""
     payload = make_room_message(message_type="enter")
-    await event_bus.emit(CoreEvents.ROOM_MESSAGE_ENTER, payload, source="test", wait=True)
+    await event_bus.emit(CoreEvents.ROOM_MESSAGE_ENTER, payload, source="test")
+    await asyncio.sleep(0.05)
 
     for table in ("live_chat", "gifts", "super_chats"):
         rows = await store.execute(f"SELECT * FROM {table}")
@@ -186,7 +192,8 @@ async def test_ledger_simulated_true_flows_to_column(
 ) -> None:
     """模拟器产出的事件 payload.simulated=True → live_chat.simulated=1。"""
     payload = make_room_message(message_type="danmaku", content="模拟弹幕", simulated=True)
-    await event_bus.emit(CoreEvents.ROOM_MESSAGE_DANMAKU, payload, source="test", wait=True)
+    await event_bus.emit(CoreEvents.ROOM_MESSAGE_DANMAKU, payload, source="test")
+    await asyncio.sleep(0.05)
 
     real = await store.execute("SELECT * FROM live_chat WHERE simulated=0")
     all_rows = await store.execute("SELECT * FROM live_chat")
@@ -202,8 +209,10 @@ async def test_ledger_mixed_real_and_simulated_excluded(
     """混合真实+模拟写入后，``WHERE simulated=0`` 只返回真实。"""
     real_payload = make_room_message(message_type="danmaku", content="真弹幕", simulated=False)
     sim_payload = make_room_message(message_type="danmaku", content="假弹幕", simulated=True)
-    await event_bus.emit(CoreEvents.ROOM_MESSAGE_DANMAKU, real_payload, source="t", wait=True)
-    await event_bus.emit(CoreEvents.ROOM_MESSAGE_DANMAKU, sim_payload, source="t", wait=True)
+    await event_bus.emit(CoreEvents.ROOM_MESSAGE_DANMAKU, real_payload, source="t")
+    await asyncio.sleep(0.05)
+    await event_bus.emit(CoreEvents.ROOM_MESSAGE_DANMAKU, sim_payload, source="t")
+    await asyncio.sleep(0.05)
 
     real = await store.execute("SELECT content FROM live_chat WHERE simulated=0 ORDER BY id")
     all_rows = await store.execute("SELECT content FROM live_chat ORDER BY id")
@@ -223,7 +232,8 @@ async def test_ledger_session_pk_resolved_via_session_manager(
     """未盖章（0）的 payload 经 LiveSessionManager 解析归属，多事件落同一主键。"""
     for i in range(3):
         p = make_room_message(message_type="danmaku", content=f"弹幕{i}", simulated=False)
-        await event_bus.emit(CoreEvents.ROOM_MESSAGE_DANMAKU, p, source="t", wait=True)
+        await event_bus.emit(CoreEvents.ROOM_MESSAGE_DANMAKU, p, source="t")
+        await asyncio.sleep(0.05)
 
     rows = await store.execute("SELECT live_session_id FROM live_chat ORDER BY id")
     assert len(rows) == 3
@@ -261,11 +271,13 @@ async def test_ledger_write_failure_does_not_break_subsequent_writes(
         timestamp_ms=1,
         simulated=False,
     )
-    await event_bus.emit(CoreEvents.ROOM_MESSAGE_GIFT, broken, source="t", wait=True)
+    await event_bus.emit(CoreEvents.ROOM_MESSAGE_GIFT, broken, source="t")
+    await asyncio.sleep(0.05)
 
     # 第二条：正常 gift —— 应落库
     good = make_room_message(message_type="gift", gift_name="Y", gift_count=2)
-    await event_bus.emit(CoreEvents.ROOM_MESSAGE_GIFT, good, source="t", wait=True)
+    await event_bus.emit(CoreEvents.ROOM_MESSAGE_GIFT, good, source="t")
+    await asyncio.sleep(0.05)
 
     rows = await store.execute("SELECT * FROM gifts")
     # 上面的 broken 在 ledger 内部 gift=None 分支仅写 debug，不抛；good 应落库 → 至少 1 行
@@ -296,7 +308,8 @@ async def test_ledger_stop_unsubscribes(event_bus: EventBus, store: SQLiteDataba
     await ledger.stop()
 
     payload = make_room_message(message_type="danmaku", content="x")
-    await event_bus.emit(CoreEvents.ROOM_MESSAGE_DANMAKU, payload, source="t", wait=True)
+    await event_bus.emit(CoreEvents.ROOM_MESSAGE_DANMAKU, payload, source="t")
+    await asyncio.sleep(0.05)
 
     rows = await store.execute("SELECT * FROM live_chat")
     assert len(rows) == 0
@@ -365,7 +378,8 @@ async def test_ledger_streamer_speech_writes_live_chat_with_assistant_role(
             emotion="happy",
             timestamp_ms=1_700_000_000_000,
         )
-        await event_bus.emit(CoreEvents.STREAMER_SPEECH, payload, source="t", wait=True)
+        await event_bus.emit(CoreEvents.STREAMER_SPEECH, payload, source="t")
+        await asyncio.sleep(0.05)
 
         rows = await store.execute("SELECT * FROM live_chat WHERE message_type='speak'")
         assert len(rows) == 1
@@ -394,7 +408,8 @@ async def test_ledger_streamer_speech_skips_when_session_id_is_none(event_bus: E
             text="这条不应落库",
             timestamp_ms=1,
         )
-        await event_bus.emit(CoreEvents.STREAMER_SPEECH, payload, source="t", wait=True)
+        await event_bus.emit(CoreEvents.STREAMER_SPEECH, payload, source="t")
+        await asyncio.sleep(0.05)
 
         rows = await store.execute("SELECT * FROM live_chat")
         assert len(rows) == 0
@@ -435,14 +450,16 @@ async def test_ledger_streamer_speech_swallows_handler_exception(
             timestamp_ms=10,
         )
         # 不应抛
-        await event_bus.emit(CoreEvents.STREAMER_SPEECH, bad, source="t", wait=True)
+        await event_bus.emit(CoreEvents.STREAMER_SPEECH, bad, source="t")
+        await asyncio.sleep(0.05)
 
         good = StreamerSpeechPayload(
             utterance_id="utt_good",
             text="第二次应落库",
             timestamp_ms=20,
         )
-        await event_bus.emit(CoreEvents.STREAMER_SPEECH, good, source="t", wait=True)
+        await event_bus.emit(CoreEvents.STREAMER_SPEECH, good, source="t")
+        await asyncio.sleep(0.05)
 
         rows = await store.execute("SELECT * FROM live_chat WHERE message_type='speak' ORDER BY id")
         # 异常被 handler 内 try/except 吸收：第一次未落库；第二次落库 ⇒ 1 行
@@ -470,7 +487,8 @@ async def test_room_message_danmaku_upserts_viewer(
         user=user,
         timestamp_ms=1_700_000_000_001,
     )
-    await event_bus.emit(CoreEvents.ROOM_MESSAGE_DANMAKU, payload, source="test", wait=True)
+    await event_bus.emit(CoreEvents.ROOM_MESSAGE_DANMAKU, payload, source="test")
+    await asyncio.sleep(0.05)
 
     rows = await store.execute("SELECT * FROM viewers WHERE user_id=?", ("v_danmaku_1",))
     assert len(rows) == 1, "danmaku 事件应创建/更新一行 viewers"
@@ -496,7 +514,8 @@ async def test_room_message_gift_upserts_viewer(
         user=user,
         timestamp_ms=1_700_000_000_002,
     )
-    await event_bus.emit(CoreEvents.ROOM_MESSAGE_GIFT, payload, source="test", wait=True)
+    await event_bus.emit(CoreEvents.ROOM_MESSAGE_GIFT, payload, source="test")
+    await asyncio.sleep(0.05)
 
     rows = await store.execute("SELECT * FROM viewers WHERE user_id=?", ("v_gift_1",))
     assert len(rows) == 1, "gift 事件应创建/更新一行 viewers"
@@ -522,7 +541,8 @@ async def test_room_message_super_chat_does_not_upsert_viewer(
         user=user,
         timestamp_ms=1_700_000_000_003,
     )
-    await event_bus.emit(CoreEvents.ROOM_MESSAGE_SUPER_CHAT, payload, source="test", wait=True)
+    await event_bus.emit(CoreEvents.ROOM_MESSAGE_SUPER_CHAT, payload, source="test")
+    await asyncio.sleep(0.05)
 
     rows = await store.execute("SELECT * FROM viewers")
     assert len(rows) == 0, f"super_chat 不应 upsert viewers，但实际有 {len(rows)} 行"
@@ -554,7 +574,8 @@ async def test_danmaku_upsert_failure_does_not_break_flow(
             message_type="danmaku",
             content="upsert 会炸",
         )
-        await event_bus.emit(CoreEvents.ROOM_MESSAGE_DANMAKU, payload, source="t", wait=True)
+        await event_bus.emit(CoreEvents.ROOM_MESSAGE_DANMAKU, payload, source="t")
+        await asyncio.sleep(0.05)
 
         chat_rows = await store.execute("SELECT * FROM live_chat WHERE content=?", ("upsert 会炸",))
         assert len(chat_rows) == 1, "主表 insert 成功在前，viewers upsert 失败不影响 live_chat"
@@ -567,7 +588,8 @@ async def test_danmaku_upsert_failure_does_not_break_flow(
             message_type="danmaku",
             content="恢复正常",
         )
-        await event_bus.emit(CoreEvents.ROOM_MESSAGE_DANMAKU, payload2, source="t", wait=True)
+        await event_bus.emit(CoreEvents.ROOM_MESSAGE_DANMAKU, payload2, source="t")
+        await asyncio.sleep(0.05)
 
         chat_rows2 = await store.execute("SELECT * FROM live_chat WHERE content=?", ("恢复正常",))
         assert len(chat_rows2) == 1
@@ -613,7 +635,8 @@ async def test_streamer_speech_with_target_upserts_replied(
             target_user_id="u123",
             timestamp_ms=1_700_000_000_010,
         )
-        await event_bus.emit(CoreEvents.STREAMER_SPEECH, payload, source="t", wait=True)
+        await event_bus.emit(CoreEvents.STREAMER_SPEECH, payload, source="t")
+        await asyncio.sleep(0.05)
 
         assert len(calls) == 1, f"应恰好调用 upsert_viewer_replied 一次，实际 {len(calls)} 次"
         assert calls[0]["kwargs"]["user_id"] == "u123"
@@ -659,7 +682,8 @@ async def test_streamer_speech_without_target_skips_replied(
             text="主动发言，无对象",
             timestamp_ms=1_700_000_000_011,
         )
-        await event_bus.emit(CoreEvents.STREAMER_SPEECH, payload, source="t", wait=True)
+        await event_bus.emit(CoreEvents.STREAMER_SPEECH, payload, source="t")
+        await asyncio.sleep(0.05)
 
         assert call_count["n"] == 0, (
             f"target_user_id=None 时不应触发 upsert_viewer_replied，实际调用 {call_count['n']} 次"
@@ -698,7 +722,8 @@ async def test_streamer_speech_upsert_failure_isolated(
             timestamp_ms=1_700_000_000_012,
         )
         # 不应抛
-        await event_bus.emit(CoreEvents.STREAMER_SPEECH, payload, source="t", wait=True)
+        await event_bus.emit(CoreEvents.STREAMER_SPEECH, payload, source="t")
+        await asyncio.sleep(0.05)
 
         chat_rows = await store.execute("SELECT * FROM live_chat WHERE content=?", ("upsert 会炸",))
         assert len(chat_rows) == 1, "主表 insert 成功在前，replied upsert 失败不影响 live_chat"
@@ -726,7 +751,8 @@ async def test_ledger_dispatches_game_milestone_to_game_events(
         scene="y=-12, biome=deepslate",
         timestamp_ms=1_700_000_000_020,
     )
-    await event_bus.emit("game.milestone", payload, source="t", wait=True)
+    await event_bus.emit("game.milestone", payload, source="t")
+    await asyncio.sleep(0.05)
 
     rows = await store.execute("SELECT * FROM game_events")
     assert len(rows) == 1
@@ -753,7 +779,8 @@ async def test_ledger_dispatches_attention_required_and_error(
             event_type=event_type,  # type: ignore[arg-type]
             message=f"类型 {event_type} 的描述",
         )
-        await event_bus.emit(event_name, payload, source="t", wait=True)
+        await event_bus.emit(event_name, payload, source="t")
+        await asyncio.sleep(0.05)
 
     rows = await store.execute("SELECT event_type, game FROM game_events ORDER BY id")
     assert [r["event_type"] for r in rows] == ["attention_required", "error"]
@@ -771,7 +798,8 @@ async def test_ledger_game_event_scene_empty_becomes_null(
         event_type="milestone",
         message="通关第一年",
     )
-    await event_bus.emit("game.milestone", payload, source="t", wait=True)
+    await event_bus.emit("game.milestone", payload, source="t")
+    await asyncio.sleep(0.05)
 
     rows = await store.execute("SELECT scene FROM game_events")
     assert rows[0]["scene"] is None
@@ -802,7 +830,8 @@ async def test_ledger_game_write_failure_does_not_break_flow(
             message="写入会炸",
         )
         # 不应抛
-        await event_bus.emit("game.error", payload, source="t", wait=True)
+        await event_bus.emit("game.error", payload, source="t")
+        await asyncio.sleep(0.05)
 
         monkeypatch.undo()
         rows = await store.execute("SELECT COUNT(*) AS n FROM game_events")
@@ -829,7 +858,8 @@ async def test_ledger_stop_unsubscribes_game_events(event_bus: EventBus, store: 
         event_type="milestone",
         message="停止后不应落库",
     )
-    await event_bus.emit("game.milestone", payload, source="t", wait=True)
+    await event_bus.emit("game.milestone", payload, source="t")
+    await asyncio.sleep(0.05)
     rows = await store.execute("SELECT COUNT(*) AS n FROM game_events")
     assert rows[0]["n"] == 0
 
@@ -845,7 +875,8 @@ async def test_partner_speech_persists_without_viewer_stats(
 ) -> None:
     """partner_speech 落 live_chat（sender_role="partner"），且无观众统计副作用。"""
     payload = make_room_message(message_type="partner_speech", content="我来了！", live_session_id=_FAKE_PK)
-    await event_bus.emit(CoreEvents.ROOM_MESSAGE_PARTNER_SPEECH, payload, source="stt", wait=True)
+    await event_bus.emit(CoreEvents.ROOM_MESSAGE_PARTNER_SPEECH, payload, source="stt")
+    await asyncio.sleep(0.05)
 
     rows = await store.execute("SELECT * FROM live_chat")
     assert len(rows) == 1
@@ -865,7 +896,8 @@ async def test_perception_screen_not_persisted(
     from src.modules.events.payloads.perception import ScreenDescriptionPayload
 
     payload = ScreenDescriptionPayload(content="主播正在玩《双人成行》")
-    await event_bus.emit(CoreEvents.PERCEPTION_SCREEN, payload, source="screen", wait=True)
+    await event_bus.emit(CoreEvents.PERCEPTION_SCREEN, payload, source="screen")
+    await asyncio.sleep(0.05)
 
     assert await store.execute("SELECT * FROM live_chat") == []
     assert await store.execute("SELECT * FROM viewers") == []
@@ -893,7 +925,8 @@ async def test_ledger_streamer_speech_persists_reply_to_message_id(event_bus: Ev
             content="主播玩什么游戏？",
             message_id="msg_viewer_1",
         )
-        await event_bus.emit(CoreEvents.ROOM_MESSAGE_DANMAKU, danmaku, source="t", wait=True)
+        await event_bus.emit(CoreEvents.ROOM_MESSAGE_DANMAKU, danmaku, source="t")
+        await asyncio.sleep(0.05)
 
         speech = StreamerSpeechPayload(
             utterance_id="utt_reply_1",
@@ -902,7 +935,8 @@ async def test_ledger_streamer_speech_persists_reply_to_message_id(event_bus: Ev
             reply_to_message_id="msg_viewer_1",
             timestamp_ms=1_700_000_000_000,
         )
-        await event_bus.emit(CoreEvents.STREAMER_SPEECH, speech, source="t", wait=True)
+        await event_bus.emit(CoreEvents.STREAMER_SPEECH, speech, source="t")
+        await asyncio.sleep(0.05)
 
         viewer_rows = await store.execute("SELECT * FROM live_chat WHERE message_id=?", ("msg_viewer_1",))
         assistant_rows = await store.execute("SELECT * FROM live_chat WHERE message_type='speak'")
@@ -964,7 +998,8 @@ async def test_ledger_danmaku_skipped_when_no_active_session(event_bus: EventBus
     await ledger.start()
     try:
         payload = make_room_message(message_type="danmaku", content="无场次弹幕")
-        await event_bus.emit(CoreEvents.ROOM_MESSAGE_DANMAKU, payload, source="t", wait=True)
+        await event_bus.emit(CoreEvents.ROOM_MESSAGE_DANMAKU, payload, source="t")
+        await asyncio.sleep(0.05)
 
         rows = await store.execute("SELECT * FROM live_chat")
         assert rows == [], "无显式场次时 live_chat 应保持空"
@@ -990,7 +1025,8 @@ async def test_ledger_gift_skipped_when_no_active_session(event_bus: EventBus, t
     await ledger.start()
     try:
         payload = make_room_message(message_type="gift", gift_name="小星星", gift_count=1)
-        await event_bus.emit(CoreEvents.ROOM_MESSAGE_GIFT, payload, source="t", wait=True)
+        await event_bus.emit(CoreEvents.ROOM_MESSAGE_GIFT, payload, source="t")
+        await asyncio.sleep(0.05)
 
         rows = await store.execute("SELECT * FROM gifts")
         assert rows == []
@@ -1020,7 +1056,8 @@ async def test_ledger_streamer_speech_skipped_when_no_active_session(event_bus: 
             text="无场次发言",
             timestamp_ms=1,
         )
-        await event_bus.emit(CoreEvents.STREAMER_SPEECH, payload, source="t", wait=True)
+        await event_bus.emit(CoreEvents.STREAMER_SPEECH, payload, source="t")
+        await asyncio.sleep(0.05)
 
         rows = await store.execute("SELECT * FROM live_chat")
         assert rows == []
@@ -1051,7 +1088,8 @@ async def test_ledger_game_event_skipped_when_no_active_session(event_bus: Event
             event_type="milestone",
             message="无场次游戏事件",
         )
-        await event_bus.emit("game.milestone", payload, source="t", wait=True)
+        await event_bus.emit("game.milestone", payload, source="t")
+        await asyncio.sleep(0.05)
 
         rows = await store.execute("SELECT * FROM game_events")
         assert rows == []

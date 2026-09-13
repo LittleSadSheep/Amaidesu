@@ -9,6 +9,7 @@
 """
 
 from __future__ import annotations
+import asyncio
 
 from typing import Optional
 from unittest.mock import AsyncMock, MagicMock
@@ -86,8 +87,8 @@ async def test_paid_events_subscribed_and_routed() -> None:
                 event_name,
                 _make_message(message_type, content="付费点名"),
                 source="test",
-                wait=True,
             )
+            await asyncio.sleep(0.05)
             assert agent._buffer.size == 1, message_type
             assert agent._buffer.force is True, message_type
             agent._buffer.drain()

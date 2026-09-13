@@ -12,6 +12,7 @@ EventBus 事件拦截器测试
 运行: uv run pytest tests/modules/events/test_interceptors.py -v
 """
 
+import asyncio
 from typing import Any, Dict, List, Optional, Tuple
 
 import pytest
@@ -270,7 +271,8 @@ class TestEventBusInterceptorIntegration:
             received.append((event_name, payload.message, source))
 
         event_bus.on("test.event", handler, SimpleTestEvent)
-        await event_bus.emit("test.event", SimpleTestEvent(message="hello"), source="src", wait=True)
+        await event_bus.emit("test.event", SimpleTestEvent(message="hello"), source="src")
+        await asyncio.sleep(0.05)
 
         assert len(received) == 1
         assert received[0] == ("test.event", "hello", "src")
@@ -286,7 +288,8 @@ class TestEventBusInterceptorIntegration:
             received.append(payload.message)
 
         event_bus.on("test.event", handler, SimpleTestEvent)
-        await event_bus.emit("test.event", SimpleTestEvent(message="hi"), source="src", wait=True)
+        await event_bus.emit("test.event", SimpleTestEvent(message="hi"), source="src")
+        await asyncio.sleep(0.05)
 
         assert received == ["hi!"]
 
@@ -301,7 +304,8 @@ class TestEventBusInterceptorIntegration:
             received.append("called")
 
         event_bus.on("test.event", handler, SimpleTestEvent)
-        await event_bus.emit("test.event", SimpleTestEvent(message="x"), source="src", wait=True)
+        await event_bus.emit("test.event", SimpleTestEvent(message="x"), source="src")
+        await asyncio.sleep(0.05)
 
         assert received == []
 
@@ -318,7 +322,8 @@ class TestEventBusInterceptorIntegration:
             received.append(payload.message)
 
         event_bus.on("evt", handler, SimpleTestEvent)
-        await event_bus.emit("evt", SimpleTestEvent(message="x"), source="s", wait=True)
+        await event_bus.emit("evt", SimpleTestEvent(message="x"), source="s")
+        await asyncio.sleep(0.05)
 
         assert received == ["x[1][2][3]"]
 
@@ -335,7 +340,8 @@ class TestEventBusInterceptorIntegration:
             received.append(payload.message)
 
         event_bus.on("evt", handler, SimpleTestEvent)
-        await event_bus.emit("evt", SimpleTestEvent(message="x"), source="s", wait=True)
+        await event_bus.emit("evt", SimpleTestEvent(message="x"), source="s")
+        await asyncio.sleep(0.05)
 
         # [A] 应用 → message="x[A]"
         # Raise 抛异常 → 被捕获视为 pass-through → message 仍为 "x[A]"
@@ -366,7 +372,8 @@ class TestEventBusInterceptorIntegration:
             received.append(payload.message)
 
         event_bus.on("evt", handler, SimpleTestEvent)
-        await event_bus.emit("evt", SimpleTestEvent(message="x"), source="s", wait=True)
+        await event_bus.emit("evt", SimpleTestEvent(message="x"), source="s")
+        await asyncio.sleep(0.05)
 
         assert received == ["x[B]"]
 
@@ -382,7 +389,8 @@ class TestEventBusInterceptorIntegration:
             pass
 
         event_bus.on("evt", handler, SimpleTestEvent)
-        await event_bus.emit("evt", SimpleTestEvent(), source="s", wait=True)
+        await event_bus.emit("evt", SimpleTestEvent(), source="s")
+        await asyncio.sleep(0.05)
 
         assert record == ["track"]
 
@@ -398,7 +406,8 @@ class TestEventBusInterceptorIntegration:
             received.append("called")
 
         event_bus.on("evt", handler, SimpleTestEvent)
-        await event_bus.emit("evt", SimpleTestEvent(message="x"), source="s", wait=True)
+        await event_bus.emit("evt", SimpleTestEvent(message="x"), source="s")
+        await asyncio.sleep(0.05)
 
         assert received == []
 

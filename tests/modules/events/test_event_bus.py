@@ -3,14 +3,14 @@ EventBus 单元测试
 
 测试 EventBus 的所有核心功能：
 - 事件订阅和取消订阅
-- 事件发布（emit，支持 dict 和 Pydantic Model）
-- 优先级处理
-- 错误隔离
+- 事件发布（emit，Pydantic Model）
+- 并发执行互不影响（一个订阅者异常不影响其他，且错误被计数）
+- 只接受 async handler
+- 判别字段一致性校验（事件名末段 == 判别字段值）
 - 统计功能
-- 请求-响应模式
 - 生命周期管理
 
-运行: uv run pytest tests/core/test_event_bus.py -v
+运行: uv run pytest tests/modules/events/test_event_bus.py -v
 """
 
 import asyncio
@@ -20,7 +20,7 @@ from pydantic import BaseModel, Field
 
 from src.modules.events.event_bus import EventBus
 from src.modules.events.names import CoreEvents
-from src.modules.events.payloads import RoomMessagePayload, RoomMessageUser
+from src.modules.events.payloads import GiftInfo, RoomMessagePayload, RoomMessageUser
 from src.modules.events.registry import EVENT_REGISTRY
 
 # =============================================================================
@@ -163,8 +163,8 @@ async def test_off_removes_event_entry_when_empty(event_bus: EventBus):
 
 
 @pytest.mark.asyncio
-async def test_emit_dict_data(event_bus: EventBus):
-    """测试发布字典格式数据"""
+async def test_emit_model_data(event_bus: EventBus):
+    """测试发布 Pydantic Model 格式数据"""
     received_data = []
 
     async def handler(event_name, payload: SimpleTestEvent, source: str):
@@ -188,20 +188,17 @@ async def test_emit_no_listeners(event_bus: EventBus):
 
 
 @pytest.mark.asyncio
-async def test_emit_with_sync_handler(event_bus: EventBus):
-    """测试同步处理器在事件总线中的执行"""
+async def test_emit_with_sync_handler_rejected(event_bus: EventBus):
+    """同步 handler 在注册时被直接拒绝（避免阻塞事件循环）"""
     result = []
 
     def sync_handler(event_name, payload: SimpleTestEvent, source: str):
         result.append("sync")
 
-    event_bus.on("test.event", sync_handler, SimpleTestEvent)
-    await event_bus.emit("test.event", SimpleTestEvent(message="test"), source="test")
+    with pytest.raises(TypeError, match="async"):
+        event_bus.on("test.event", sync_handler, SimpleTestEvent)
 
-    await asyncio.sleep(0.1)
-
-    assert len(result) == 1
-    assert result[0] == "sync"
+    assert event_bus.get_listeners_count("test.event") == 0
 
 
 @pytest.mark.asyncio
@@ -270,8 +267,8 @@ async def test_event_validation_with_registered_event(event_bus: EventBus):
     async def handler(event_name, payload: RoomMessagePayload, source: str):
         received_data.append(payload)
 
-    EVENT_REGISTRY["core.test.validation.event"] = RoomMessagePayload
-    event_bus.on("core.test.validation.event", handler, RoomMessagePayload)
+    EVENT_REGISTRY["core.test.validation.danmaku"] = RoomMessagePayload
+    event_bus.on("core.test.validation.danmaku", handler, RoomMessagePayload)
 
     valid_data = RoomMessagePayload(
         message_type="danmaku",
@@ -279,100 +276,77 @@ async def test_event_validation_with_registered_event(event_bus: EventBus):
         content="test content",
         timestamp_ms=1706745600000,
     )
-    await event_bus.emit("core.test.validation.event", valid_data, source="test")
+    await event_bus.emit("core.test.validation.danmaku", valid_data, source="test")
     await asyncio.sleep(0.1)
 
     assert len(received_data) == 1
     assert received_data[0].content == "test content"
 
-    EVENT_REGISTRY.pop("core.test.validation.event", None)
+    EVENT_REGISTRY.pop("core.test.validation.danmaku", None)
 
 
 # =============================================================================
-# 优先级处理测试
+# 判别字段一致性校验测试
 # =============================================================================
 
 
 @pytest.mark.asyncio
-async def test_priority_execution_order(event_bus: EventBus):
-    """测试处理器按优先级顺序执行"""
-    execution_order = []
+async def test_discriminant_mismatch_raises(event_bus: EventBus):
+    """事件名末段与判别字段不符时 emit 报错（RoomMessagePayload.message_type）"""
+    payload = RoomMessagePayload(
+        message_type="gift",
+        user=RoomMessageUser(id="1", name="x"),
+    )
 
-    async def high_priority_handler(event_name, payload: SimpleTestEvent, source: str):
-        execution_order.append("high")
+    with pytest.raises(ValueError, match=r"danmaku.*gift|gift.*danmaku"):
+        await event_bus.emit("room.message.danmaku", payload, source="test")
 
-    async def medium_priority_handler(event_name, payload: SimpleTestEvent, source: str):
-        execution_order.append("medium")
 
-    async def low_priority_handler(event_name, payload: SimpleTestEvent, source: str):
-        execution_order.append("low")
+@pytest.mark.asyncio
+async def test_discriminant_match_passes(event_bus: EventBus):
+    """事件名末段与判别字段一致时正常分发"""
+    received = []
 
-    # 以不同顺序注册（priority 数值越小越优先）
-    event_bus.on("test.event", medium_priority_handler, SimpleTestEvent, priority=50)
-    event_bus.on("test.event", high_priority_handler, SimpleTestEvent, priority=10)
-    event_bus.on("test.event", low_priority_handler, SimpleTestEvent, priority=100)
+    async def handler(event_name, payload: RoomMessagePayload, source: str):
+        received.append(payload)
 
-    await event_bus.emit("test.event", SimpleTestEvent(message="test"), source="test")
+    event_bus.on("room.message.gift", handler, RoomMessagePayload)
+
+    payload = RoomMessagePayload(
+        message_type="gift",
+        user=RoomMessageUser(id="1", name="x"),
+        gift=GiftInfo(name="小星星"),
+    )
+    await event_bus.emit("room.message.gift", payload, source="test")
     await asyncio.sleep(0.1)
 
-    # 验证执行顺序
-    assert execution_order == ["high", "medium", "low"]
+    assert len(received) == 1
 
 
 @pytest.mark.asyncio
-async def test_same_priority_registration_order(event_bus: EventBus):
-    """测试同优先级按注册顺序执行"""
-    execution_order = []
+async def test_discriminant_check_skipped_for_plain_payload(event_bus: EventBus):
+    """无判别字段的 payload 不做末段校验（事件名与字段无对应关系）"""
+    received = []
 
-    async def handler1(event_name, payload: SimpleTestEvent, source: str):
-        execution_order.append("handler1")
+    async def handler(event_name, payload: SimpleTestEvent, source: str):
+        received.append(payload)
 
-    async def handler2(event_name, payload: SimpleTestEvent, source: str):
-        execution_order.append("handler2")
+    event_bus.on("anything.goes", handler, SimpleTestEvent)
 
-    async def handler3(event_name, payload: SimpleTestEvent, source: str):
-        execution_order.append("handler3")
-
-    # 同优先级，按注册顺序
-    event_bus.on("test.event", handler1, SimpleTestEvent, priority=50)
-    event_bus.on("test.event", handler2, SimpleTestEvent, priority=50)
-    event_bus.on("test.event", handler3, SimpleTestEvent, priority=50)
-
-    await event_bus.emit("test.event", SimpleTestEvent(message="test"), source="test")
+    await event_bus.emit("anything.goes", SimpleTestEvent(message="ok"), source="test")
     await asyncio.sleep(0.1)
 
-    assert execution_order == ["handler1", "handler2", "handler3"]
-
-
-@pytest.mark.asyncio
-async def test_default_priority(event_bus: EventBus):
-    """测试默认优先级为 100"""
-    execution_order = []
-
-    async def default_handler(event_name, payload: SimpleTestEvent, source: str):
-        execution_order.append("default")
-
-    async def high_priority_handler(event_name, payload: SimpleTestEvent, source: str):
-        execution_order.append("high")
-
-    event_bus.on("test.event", default_handler, SimpleTestEvent)  # 默认 priority=100
-    event_bus.on("test.event", high_priority_handler, SimpleTestEvent, priority=50)
-
-    await event_bus.emit("test.event", SimpleTestEvent(message="test"), source="test")
-    await asyncio.sleep(0.1)
-
-    # high_priority_handler (50) 应该先于 default_handler (100)
-    assert execution_order == ["high", "default"]
+    assert len(received) == 1
 
 
 # =============================================================================
-# 错误隔离测试
+# 并发互不影响与错误计数测试
 # =============================================================================
 
 
 @pytest.mark.asyncio
-async def test_error_isolation_one_handler_fails(event_bus: EventBus):
-    """测试单个处理器失败不影响其他处理器"""
+async def test_one_handler_failure_does_not_affect_others(event_bus: EventBus):
+    """单个订阅者抛异常不影响其他订阅者执行"""
     results = []
 
     async def failing_handler(event_name, payload: SimpleTestEvent, source: str):
@@ -382,10 +356,10 @@ async def test_error_isolation_one_handler_fails(event_bus: EventBus):
     async def normal_handler(event_name, payload: SimpleTestEvent, source: str):
         results.append("normal")
 
-    event_bus.on("test.event", failing_handler, SimpleTestEvent, priority=10)
-    event_bus.on("test.event", normal_handler, SimpleTestEvent, priority=20)
+    event_bus.on("test.event", failing_handler, SimpleTestEvent)
+    event_bus.on("test.event", normal_handler, SimpleTestEvent)
 
-    await event_bus.emit("test.event", SimpleTestEvent(message="test"), source="test", error_isolate=True)
+    await event_bus.emit("test.event", SimpleTestEvent(message="test"), source="test")
     await asyncio.sleep(0.1)
 
     # 两个处理器都应该被执行
@@ -394,66 +368,40 @@ async def test_error_isolation_one_handler_fails(event_bus: EventBus):
 
 
 @pytest.mark.asyncio
-async def test_error_isolation_false_propagates_error(event_bus: EventBus):
-    """测试 error_isolate=False 时错误应该传播"""
-    # 注意：EventBus 的实现中，即使 error_isolate=False，
-    # 错误也会被 asyncio.gather(return_exceptions=True) 捕获
-    # 所以这个测试验证的是在 gather 之后的错误处理行为
+async def test_handler_error_counted_in_stats(event_bus: EventBus):
+    """订阅者异常被计入事件统计（error_count / last_error_time）"""
 
     async def failing_handler(event_name, payload: SimpleTestEvent, source: str):
         raise ValueError("Test error")
 
     event_bus.on("test.event", failing_handler, SimpleTestEvent)
 
-    # 由于 asyncio.gather 使用 return_exceptions=True，
-    # 错误不会直接传播，但会被记录到 handler wrapper 中
-    await event_bus.emit("test.event", SimpleTestEvent(message="test"), source="test", error_isolate=False)
+    await event_bus.emit("test.event", SimpleTestEvent(message="test"), source="test")
     await asyncio.sleep(0.1)
 
-    # 验证错误被记录到 handler wrapper
-    handlers = event_bus._handlers.get("test.event", [])
-    assert len(handlers) > 0
-    assert handlers[0].error_count > 0
-    assert "Test error" in handlers[0].last_error
+    stats = event_bus.get_stats("test.event")
+    assert stats is not None
+    assert stats.error_count == 1
+    assert stats.last_error_time > 0
 
 
 @pytest.mark.asyncio
-async def test_error_count_incremented(event_bus: EventBus):
-    """测试处理器包装器的错误计数递增"""
-
-    async def failing_handler(event_name, payload: SimpleTestEvent, source: str):
-        raise ValueError("Test error")
-
-    event_bus.on("test.event", failing_handler, SimpleTestEvent, priority=10)
-
-    # 获取 handler wrapper
-    handlers = event_bus._handlers.get("test.event", [])
-    initial_error_count = handlers[0].error_count
-
-    await event_bus.emit("test.event", SimpleTestEvent(message="test"), source="test", error_isolate=True)
-    await asyncio.sleep(0.1)
-
-    # 错误计数应该增加
-    assert handlers[0].error_count == initial_error_count + 1
-    assert handlers[0].last_error is not None
-
-
-@pytest.mark.asyncio
-async def test_error_stats_updated(event_bus: EventBus):
-    """测试事件统计中的错误计数更新"""
+async def test_handler_error_recorded_on_wrapper(event_bus: EventBus):
+    """订阅者异常同时记录到 HandlerWrapper（error_count / last_error）"""
 
     async def failing_handler(event_name, payload: SimpleTestEvent, source: str):
         raise ValueError("Test error")
 
     event_bus.on("test.event", failing_handler, SimpleTestEvent)
 
-    await event_bus.emit("test.event", SimpleTestEvent(message="test"), source="test", error_isolate=True)
+    await event_bus.emit("test.event", SimpleTestEvent(message="test"), source="test")
     await asyncio.sleep(0.1)
 
     # 错误已被记录到 HandlerWrapper
     handlers = event_bus._handlers.get("test.event", [])
     assert len(handlers) > 0
     assert handlers[0].error_count > 0
+    assert "Test error" in (handlers[0].last_error or "")
 
 
 # =============================================================================
@@ -643,7 +591,8 @@ async def test_tool_health_wildcard_matches_concrete_emit(event_bus: EventBus):
         failure_count=3,
         last_error="连接失败",
     )
-    await event_bus.emit("tool.health.maicraft_speak", payload, source="ToolRegistry", wait=True)
+    await event_bus.emit("tool.health.maicraft_speak", payload, source="ToolRegistry")
+    await asyncio.sleep(0.1)
 
     assert len(seen) == 1
     event_name, received = seen[0]

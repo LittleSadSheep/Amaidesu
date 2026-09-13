@@ -1,16 +1,17 @@
 """
 EventBus 通配订阅测试
 
-测试 MQTT 风格通配订阅（``*``=单层 ``#``=多层）的行为：
+测试 AMQP topic 风格通配订阅（``*``=单层 ``#``=多层）的行为：
 - 精确订阅向后兼容（与旧 EventBus 行为完全一致）
 - ``room.*`` 匹配 ``room.connected`` 但**不**匹配 ``room.message.danmaku``（单层严格）
 - ``tool.result.#`` 匹配多层 + 父名 ``tool.result``
 - 独立 ``#`` 匹配一切
 - 混合精确 + 通配订阅同一事件时都触发
-- specificity 排序：更具体的 pattern 先于更通用的
 - ``off()`` 移除通配订阅
 - 类型化订阅（``model_class``）与通配 pattern 配合时，payload 验证到模型实例
 - 统计**始终按真实 emit 的 event_name** 入键（与通配 pattern 解耦）
+
+订阅者并发执行、无顺序语义，因此本文件不含顺序断言。
 
 运行: uv run pytest tests/modules/events/test_wildcard_subscription.py -v
 """
@@ -49,6 +50,15 @@ def _make_danmaku_payload(text: str = "hello") -> RoomMessagePayload:
     )
 
 
+def _make_gift_payload() -> RoomMessagePayload:
+    """构造一个合法的 RoomMessagePayload（gift 类型）"""
+    return RoomMessagePayload(
+        message_type="gift",
+        user=RoomMessageUser(id="u1", name="tester"),
+        timestamp_ms=1700000000000,
+    )
+
+
 def _make_tool_result_payload(tool_name: str = "speak") -> ToolResultPayload:
     """构造一个合法的 ToolResultPayload"""
     return ToolResultPayload(
@@ -74,7 +84,8 @@ async def test_exact_subscription_still_works():
         received.append((event_name, payload.message, source))
 
     bus.on("test.event", handler, SimpleTestEvent)
-    await bus.emit("test.event", SimpleTestEvent(message="hi"), source="src", wait=True)
+    await bus.emit("test.event", SimpleTestEvent(message="hi"), source="src")
+    await asyncio.sleep(0.05)
 
     assert len(received) == 1
     assert received[0] == ("test.event", "hi", "src")
@@ -98,7 +109,8 @@ async def test_exact_subscription_no_wildcard_match():
     bus.on("test.#", h2, SimpleTestEvent)
 
     # emit 无关事件不应触发
-    await bus.emit("other.event", SimpleTestEvent(message="x"), wait=True)
+    await bus.emit("other.event", SimpleTestEvent(message="x"))
+    await asyncio.sleep(0.05)
 
     handlers = bus._handlers.get("test.event", [])
     assert handlers  # 精确订阅仍在
@@ -127,14 +139,16 @@ async def test_single_level_wildcard_matches_exactly_one_segment():
     bus.on("room.connected", h_room_connected, SimpleTestEvent)
 
     # room.connected：应同时被通配 + 精确订阅触发
-    await bus.emit("room.connected", SimpleTestEvent(), source="test", wait=True)
+    await bus.emit("room.connected", SimpleTestEvent(), source="test")
+    await asyncio.sleep(0.05)
     assert "room.connected" in matched
     assert "room.connected" in unmatched
 
-    # room.message.danmaku：只被通配订阅触发？不！单层 * 不匹配 4 段
+    # room.message.danmaku：单层 * 不匹配 3 段名
     matched.clear()
     unmatched.clear()
-    await bus.emit("room.message.danmaku", SimpleTestEvent(), source="test", wait=True)
+    await bus.emit("room.message.danmaku", SimpleTestEvent(), source="test")
+    await asyncio.sleep(0.05)
     assert matched == []  # 单层 * 不匹配 room.message.danmaku
     assert unmatched == []
 
@@ -156,11 +170,12 @@ async def test_multi_level_wildcard_matches_multiple_segments():
     bus.on("tool.result.#", h_tool, ToolResultPayload)
 
     # 三层
-    await bus.emit("tool.result.speak", _make_tool_result_payload("speak"), source="test", wait=True)
+    await bus.emit("tool.result.speak", _make_tool_result_payload("speak"), source="test")
     # 多层
-    await bus.emit("tool.result.a.b.c", _make_tool_result_payload("a.b.c"), source="test", wait=True)
+    await bus.emit("tool.result.a.b.c", _make_tool_result_payload("a.b.c"), source="test")
     # 父名（# 匹配 ≥0 段，父名零段也命中）
-    await bus.emit("tool.result", _make_tool_result_payload("parent"), source="test", wait=True)
+    await bus.emit("tool.result", _make_tool_result_payload("parent"), source="test")
+    await asyncio.sleep(0.05)
 
     assert received == ["tool.result.speak", "tool.result.a.b.c", "tool.result"]
 
@@ -176,8 +191,9 @@ async def test_multi_level_wildcard_does_not_match_sibling_domain():
 
     bus.on("tool.result.#", h_tool, ToolResultPayload)
 
-    await bus.emit("tool.something", _make_danmaku_payload(), source="test", wait=True)
-    await bus.emit("tool", _make_danmaku_payload(), source="test", wait=True)
+    await bus.emit("tool.something", SimpleTestEvent(), source="test")
+    await bus.emit("tool", SimpleTestEvent(), source="test")
+    await asyncio.sleep(0.05)
 
     assert received == []
 
@@ -199,7 +215,8 @@ async def test_standalone_hash_matches_everything():
     bus.on("#", h_all, SimpleTestEvent)
 
     for name in ["a", "a.b", "x.y.z", "anything.you.want"]:
-        await bus.emit(name, SimpleTestEvent(), source="test", wait=True)
+        await bus.emit(name, SimpleTestEvent(), source="test")
+    await asyncio.sleep(0.05)
 
     assert received == ["a", "a.b", "x.y.z", "anything.you.want"]
 
@@ -225,7 +242,8 @@ async def test_mixed_exact_and_wildcard_both_fire():
     bus.on("room.message.danmaku", h_exact, RoomMessagePayload)
     bus.on("room.message.#", h_wild, RoomMessagePayload)
 
-    await bus.emit("room.message.danmaku", _make_danmaku_payload(), wait=True)
+    await bus.emit("room.message.danmaku", _make_danmaku_payload())
+    await asyncio.sleep(0.05)
 
     assert exact_called == ["room.message.danmaku"]
     assert wildcard_called == ["room.message.danmaku"]
@@ -242,63 +260,10 @@ async def test_wildcard_subscription_does_not_fire_for_unrelated_events():
 
     bus.on("room.message.#", h_room_msg, SimpleTestEvent)
 
-    await bus.emit("room.state.heat", SimpleTestEvent(), source="test", wait=True)
+    await bus.emit("room.state.heat", SimpleTestEvent(), source="test")
+    await asyncio.sleep(0.05)
 
     assert received == []
-
-
-# =============================================================================
-# specificity 排序
-# =============================================================================
-
-
-@pytest.mark.asyncio
-async def test_specificity_ordering_more_specific_pattern_first():
-    """更具体的通配 pattern 应在更通用的之前执行（前提：同优先级）"""
-    bus = EventBus(enable_stats=False)
-    order = []
-
-    async def h_room_msg(event_name, payload, source):
-        order.append("message")
-
-    async def h_room_all(event_name, payload, source):
-        order.append("all")
-
-    # 注意：精确订阅 room.message.danmaku 也注册，确保 specificity 三层都参与
-    async def h_exact(event_name, payload, source):
-        order.append("exact")
-
-    bus.on("room.message.danmaku", h_exact, RoomMessagePayload)
-    bus.on("room.message.#", h_room_msg, RoomMessagePayload)
-    bus.on("room.#", h_room_all, RoomMessagePayload)
-
-    await bus.emit("room.message.danmaku", _make_danmaku_payload(), wait=True)
-
-    # exact > message# > room#（specificity 降序）
-    assert order == ["exact", "message", "all"]
-
-
-@pytest.mark.asyncio
-async def test_priority_overrides_specificity():
-    """priority 仍是最强排序键（即使 specificity 较低的 pattern 在 priority 上更优）"""
-    bus = EventBus(enable_stats=False)
-    order = []
-
-    async def h_low_specific_high_priority(event_name, payload, source):
-        order.append("wild_high")
-
-    async def h_high_specific_low_priority(event_name, payload, source):
-        order.append("exact_low")
-
-    # 通配 room.#（低 specificity）但 priority=1（高优先级）
-    bus.on("room.#", h_low_specific_high_priority, SimpleTestEvent, priority=1)
-    # 精确 room.x（高 specificity）但 priority=100（低优先级）
-    bus.on("room.x", h_high_specific_low_priority, SimpleTestEvent, priority=100)
-
-    await bus.emit("room.x", SimpleTestEvent(), wait=True)
-
-    # priority 1 优先 → 通配先；priority 100 次之 → 精确后
-    assert order == ["wild_high", "exact_low"]
 
 
 # =============================================================================
@@ -321,7 +286,8 @@ async def test_off_removes_wildcard_subscription():
     bus.off("tool.result.#", h_tool)
     assert bus.get_listeners_count("tool.result.#") == 0
 
-    await bus.emit("tool.result.speak", _make_danmaku_payload(), wait=True)
+    await bus.emit("tool.result.speak", _make_tool_result_payload())
+    await asyncio.sleep(0.05)
     assert received == []
 
 
@@ -346,8 +312,9 @@ async def test_off_wildcard_does_not_affect_exact_subscription():
     assert bus.get_listeners_count("exact.event") == 1
     assert bus.get_listeners_count("wild.#") == 0
 
-    await bus.emit("exact.event", SimpleTestEvent(), wait=True)
-    await bus.emit("wild.something", SimpleTestEvent(), wait=True)
+    await bus.emit("exact.event", SimpleTestEvent())
+    await bus.emit("wild.something", SimpleTestEvent())
+    await asyncio.sleep(0.05)
 
     assert exact_called == ["exact.event"]
     assert wildcard_called == []
@@ -371,8 +338,9 @@ async def test_typed_subscription_over_wildcard_validates_payload():
 
     bus.on("room.message.#", h_typed, RoomMessagePayload)
 
-    await bus.emit("room.message.danmaku", _make_danmaku_payload("hello"), wait=True)
-    await bus.emit("room.message.gift", _make_danmaku_payload(""), wait=True)
+    await bus.emit("room.message.danmaku", _make_danmaku_payload("hello"))
+    await bus.emit("room.message.gift", _make_gift_payload())
+    await asyncio.sleep(0.05)
 
     assert len(received) == 2
     assert received[0].message_type == "danmaku"
@@ -390,12 +358,30 @@ async def test_typed_subscription_wildcard_logs_validation_error():
 
     bus.on("tool.result.#", h_strict, ToolResultPayload)
 
-    # 构造一个 RoomMessagePayload —— emit 时不验证，但类型化订阅会 model_validate 失败
-    # （ToolResultPayload 缺少 message_type 等字段）
-    bad_payload = _make_danmaku_payload("oops")
-    await bus.emit("tool.result.bad", bad_payload, wait=True)
+    # 构造一个与 model_class 形状不符的 payload（SimpleTestEvent 无 ToolResultPayload
+    # 的必填字段）——emit 不拒绝，但类型化订阅 model_validate 失败
+    await bus.emit("tool.result.bad", SimpleTestEvent(message="oops"))
+    await asyncio.sleep(0.05)
 
     assert received == []  # 验证失败，handler 不被调用
+
+
+@pytest.mark.asyncio
+async def test_discriminant_mismatch_rejected_at_emit():
+    """同族 payload 挂错事件名（末段 != 判别字段值）在 emit 期直接报错"""
+    bus = EventBus(enable_stats=False)
+    received = []
+
+    async def h(event_name, payload, source):
+        received.append(event_name)
+
+    bus.on("tool.result.#", h, RoomMessagePayload)
+
+    # danmaku 形状发到 tool.result.bad：末段 "bad" != message_type "danmaku"
+    with pytest.raises(ValueError, match="danmaku"):
+        await bus.emit("tool.result.bad", _make_danmaku_payload("oops"))
+
+    assert received == []
 
 
 # =============================================================================
@@ -413,8 +399,9 @@ async def test_stats_keyed_by_actual_event_name_not_pattern():
 
     bus.on("tool.result.#", h, SimpleTestEvent)
 
-    await bus.emit("tool.result.speak", SimpleTestEvent(), wait=True)
-    await bus.emit("tool.result.summarize_timeline", SimpleTestEvent(), wait=True)
+    await bus.emit("tool.result.speak", SimpleTestEvent())
+    await bus.emit("tool.result.summarize_timeline", SimpleTestEvent())
+    await asyncio.sleep(0.05)
 
     # 真实事件名有统计
     stats_speak = bus.get_stats("tool.result.speak")
@@ -492,32 +479,6 @@ class TestIsWildcardPattern:
     def test_hash_is_wildcard(self):
         assert self._is_wildcard("tool.result.#") is True
         assert self._is_wildcard("#") is True
-
-
-class TestSpecificityOrdering:
-    """``EventBus._pattern_specificity`` 排序辅助"""
-
-    @staticmethod
-    def _spec(pattern: str) -> int:
-        return EventBus._pattern_specificity(pattern)
-
-    def test_specificity_ranking(self):
-        """长字面量前缀 > 短字面量前缀 > 独立 #"""
-        assert self._spec("#") < self._spec("room.#")
-        assert self._spec("room.#") < self._spec("room.message.#")
-        assert self._spec("room.message.#") < self._spec("room.message.*")
-
-    def test_literal_segments_have_higher_score_than_wildcards(self):
-        """字面量 token 比 * 权重大（+4 vs +2）"""
-        assert self._spec("a.b") > self._spec("a.*")
-        assert self._spec("a.b.c") > self._spec("a.*.c")
-
-    def test_exact_subscriptions_have_higher_specificity(self):
-        """精确订阅的 specificity（由 _collect_handlers 注入）远大于通配"""
-        # 模拟 _collect_handlers 的精确 specificity 值
-        _EXACT_SPECIFICITY = 10_000
-        assert _EXACT_SPECIFICITY > self._spec("room.message.danmaku")
-        assert _EXACT_SPECIFICITY > self._spec("room.#")
 
 
 # =============================================================================

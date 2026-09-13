@@ -11,7 +11,7 @@
 - ``report_kind`` 仅 report 事件使用：delivery=交付总结 / escalation=升级决策
 """
 
-from typing import Literal, Optional
+from typing import ClassVar, Literal, Optional
 
 from pydantic import ConfigDict, Field
 
@@ -47,6 +47,10 @@ class GamePayload(BasePayload):
         report_kind: 上报种类（仅 event_type="report" 时有值）
         timestamp_ms: 事件时间戳（Unix 毫秒）
     """
+
+    # 判别字段：EventBus 在 emit 期校验"事件名末段 == 该字段值"，
+    # 四重注册共享一类，挂错事件名直接报错
+    _DISCRIMINANT_FIELD: ClassVar[str] = "event_type"
 
     live_session_id: int = Field(
         default=0,

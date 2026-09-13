@@ -17,6 +17,7 @@ AgentManager（只验证收到委派/入台账，不跑真实游戏）。
 """
 
 from __future__ import annotations
+import asyncio
 
 from typing import List, Optional
 from unittest.mock import AsyncMock, MagicMock
@@ -108,7 +109,8 @@ class _Harness:
             content=text,
             timestamp_ms=now_ms(),
         )
-        await self.bus.emit(CoreEvents.ROOM_MESSAGE_DANMAKU, payload, source="E2ETest", wait=True)
+        await self.bus.emit(CoreEvents.ROOM_MESSAGE_DANMAKU, payload, source="E2ETest")
+        await asyncio.sleep(0.05)
 
     async def teardown(self) -> None:
         await self.manager.stop_all()

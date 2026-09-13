@@ -390,7 +390,8 @@ class TestDecisionObservability:
         await agent.start()
         try:
             payload = _make_payload("主播好可爱！")
-            await bus.emit(CoreEvents.ROOM_MESSAGE_DANMAKU, payload, source="bilibili", wait=True)
+            await bus.emit(CoreEvents.ROOM_MESSAGE_DANMAKU, payload, source="bilibili")
+            await asyncio.sleep(0.05)
             await asyncio.sleep(0.3)
 
             assert len(decisions) == 1, f"每轮决策应恰好一条 planner.decision，实际 {len(decisions)}"
@@ -427,7 +428,8 @@ class TestDecisionObservability:
 
         await agent.start()
         try:
-            await bus.emit(CoreEvents.ROOM_MESSAGE_DANMAKU, _make_payload("hi"), source="t", wait=True)
+            await bus.emit(CoreEvents.ROOM_MESSAGE_DANMAKU, _make_payload("hi"), source="t")
+            await asyncio.sleep(0.05)
             await asyncio.sleep(0.3)
 
             assert len(decisions) == 1
@@ -470,7 +472,8 @@ class TestDecisionObservability:
 
         await agent.start()
         try:
-            await bus.emit(CoreEvents.ROOM_MESSAGE_DANMAKU, _make_payload("主播好可爱"), source="t", wait=True)
+            await bus.emit(CoreEvents.ROOM_MESSAGE_DANMAKU, _make_payload("主播好可爱"), source="t")
+            await asyncio.sleep(0.05)
             await asyncio.sleep(0.3)
 
             assert len(decisions) == 1

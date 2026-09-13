@@ -575,7 +575,6 @@ class StreamerAgent(BaseAgent):
                 event_name,
                 self._on_room_message_received,
                 model_class=RoomMessagePayload,
-                priority=50,
             )
         # 主播视觉感知（屏幕采集器 emit）：画面描述进 RoomState，
         # 经环境参考进决策上下文——不进弹幕缓冲、不落 live_chat
@@ -583,7 +582,6 @@ class StreamerAgent(BaseAgent):
             CoreEvents.PERCEPTION_SCREEN,
             self._on_screen_description,
             model_class=ScreenDescriptionPayload,
-            priority=45,
         )
         # 游戏叙事（三通道·事件）：游戏 Agent（如 MinecraftAgent）emit game.*
         # → 主播侧收集最近叙事，进 Planner 上下文（按 payload.game 过滤可扩展到多游戏）
@@ -591,40 +589,34 @@ class StreamerAgent(BaseAgent):
             CoreEvents.GAME_MILESTONE,
             self._on_game_event,
             model_class=GamePayload,
-            priority=40,
         )
         self._event_bus.on(
             CoreEvents.GAME_ATTENTION_REQUIRED,
             self._on_game_event,
             model_class=GamePayload,
-            priority=40,
         )
         # 游戏异常也进叙事（如"无法执行目标：LLM 未注入"）——否则主播不知命令失败
         self._event_bus.on(
             CoreEvents.GAME_ERROR,
             self._on_game_event,
             model_class=GamePayload,
-            priority=40,
         )
         # 游戏主动上报（交付总结/升级决策）——主播叙事与"是否回提示词"的决策数据源
         self._event_bus.on(
             CoreEvents.GAME_REPORT,
             self._on_game_event,
             model_class=GamePayload,
-            priority=40,
         )
         # 场次边界事件：开播放行主动发言，下播收闸（开场白属于场次，不属于进程）
         self._event_bus.on(
             CoreEvents.LIVE_STARTED,
             self._on_live_started,
             model_class=LiveStartedPayload,
-            priority=60,
         )
         self._event_bus.on(
             CoreEvents.LIVE_ENDED,
             self._on_live_ended,
             model_class=LiveEndedPayload,
-            priority=60,
         )
         self._logger.info(
             "StreamerAgent 已订阅 room.message.danmaku|gift|super_chat|guard / game.* / live.started|ended"

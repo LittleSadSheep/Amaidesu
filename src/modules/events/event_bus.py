@@ -1,30 +1,26 @@
 """
-增强的事件总线实现
+事件总线（EventBus）——订阅广播通道
 
-增加了以下功能:
-- 错误隔离机制(单个handler异常不影响其他)
-- 优先级控制(handler可设置priority,数字越小越优先)
-- 统计功能(emit/on调用计数、错误率、执行时间)
-- 生命周期管理(cleanup方法)
-- 类型化订阅支持(通过 model_class 参数自动反序列化)
-- 通配订阅支持（MQTT 风格，``*``=单层 ``#``=多层；详见 ``_is_wildcard_pattern``
-  与 ``_match_wildcard``）。默认行为与原有"精确匹配"完全一致；仅当订阅名包含
-  ``*`` 或 ``#`` 时才启用通配路径
-- 事件拦截器（``EventInterceptor`` / ``InterceptorChain``，详见
-  ``src/modules/events/interceptors``）。默认空链 ⇒ byte-identical 行为
+两条通道模型中的"广播"侧：把一条事件并发扇出给所有匹配的订阅者。
+- 并发执行：同一事件的所有订阅者以独立任务并发运行，完成顺序不定
+- 互不影响：一个订阅者抛异常会被计数并写 ERROR 日志，不影响其他订阅者
+- 订阅者无顺序：不提供优先级或排序（有序处理属于拦截器管道，见 interceptors/）
+- 只接受 async handler：同步函数在注册时被拒绝，避免阻塞事件循环
+
+匹配规则：精确名订阅 + AMQP topic 风格通配（``*`` 恰好一层、``#`` 末尾多层），
+详见 ``_is_wildcard_pattern`` 与 ``_match_wildcard``。
+
+payload 契约：emit 只接受 Pydantic Model 实例。payload 类声明
+``_DISCRIMINANT_FIELD`` 时（如 ``RoomMessagePayload.message_type``），emit 会
+校验"事件名末段 == 判别字段值"，同族多注册的 payload 挂错事件名会直接报错。
 
 类型化订阅使用示例:
-    from src.modules.events.payloads import CommandRouterData
+    from src.modules.events.payloads import RoomMessagePayload, ToolResultPayload
 
-    # 类型化订阅（接收 Pydantic Model 对象）
-    async def handle_command_typed(event_name: str, data: CommandRouterData, source: str):
-        command = data.command  # IDE 可以自动提示
-        logger.debug(f"Received: {command}")
+    async def handle_danmaku(event_name: str, data: RoomMessagePayload, source: str):
+        ...
 
-    event_bus.on("command_router.received", handle_command_typed, model_class=CommandRouterData)
-
-    # 通配订阅（MQTT 风格：``*``=单层 ``#``=多层）
-    event_bus.on("room.message.#", handle_all_room_msgs, model_class=RoomMessagePayload)
+    event_bus.on("room.message.danmaku", handle_danmaku, model_class=RoomMessagePayload)
     event_bus.on("tool.result.#", handle_any_tool_result, model_class=ToolResultPayload)
 """
 
@@ -73,14 +69,12 @@ class HandlerWrapper:
 
     包含处理器函数和元数据:
     - handler: 处理器函数
-    - priority: 优先级(数字越小越优先)
     - error_count: 错误次数
     - last_error: 最后错误信息
     - original_handler: 原始处理器函数（用于取消订阅）
     """
 
     handler: Callable
-    priority: int = 100
     error_count: int = 0
     last_error: Optional[str] = None
     original_handler: Optional[Callable] = None  # 存储用户提供的原始处理器
@@ -88,12 +82,11 @@ class HandlerWrapper:
 
 class EventBus:
     """
-    增强的事件总线
+    事件总线
 
-    核心功能:
-    - 发布/订阅模式
-    - 错误隔离(单个handler异常不影响其他)
-    - 优先级控制(按priority排序执行)
+    核心契约:
+    - 发布/订阅模式，精确名 + AMQP topic 风格通配匹配
+    - 订阅者并发执行、互不影响（异常计数 + 日志，不传播、不排序）
     - 统计功能(跟踪emit、错误、执行时间)
     - 生命周期管理(cleanup方法)
     """
@@ -146,7 +139,7 @@ class EventBus:
     @staticmethod
     def _match_wildcard(pattern: str, event_name: str) -> bool:
         """
-        MQTT 风格通配匹配
+        AMQP topic 风格通配匹配
 
         - ``*`` 消耗**恰好一个** dot-separated token（单层）
         - ``#`` 仅在 pattern 末尾有效，消耗**≥0 个**剩余 token（多层，可匹配空）
@@ -199,63 +192,25 @@ class EventBus:
                 return False
         return True
 
-    @staticmethod
-    def _pattern_specificity(pattern: str) -> int:
+    async def emit(self, event_name: str, data: BaseModel, source: str = "unknown") -> None:
         """
-        计算 pattern 的具体度（值越大越具体）
-
-        排序规则（MQTT 直觉保持）：
-        - 字面量 token：+4（精确段贡献最大）
-        - ``*`` token：+2（单层通配——消耗恰好 1 段，比 ``#`` 更具体）
-        - ``#`` token：+1（多层通配——消耗 ≥0 段，最宽泛）
-        - 独立 ``#`` → 1（仅占位，无字面量前缀）
-
-        目的：精确订阅 ``room.message.danmaku`` > ``a.b``（字面量段）>
-        ``room.message.*`` > ``room.message.#`` > ``#``。
-        ``a.*.b`` vs ``a.b``：字面量段 ``b`` 远高于 ``*``，所以 ``a.b`` 更具体。
-
-        注意：精确订阅 specificity 在 ``_collect_handlers`` 中固定为
-        ``_EXACT_SPECIFICITY``（远大于任何通配，确保排序最前）。
-        """
-        if pattern == "#":
-            return 1
-        parts = pattern.split(".")
-        score = 0
-        for part in parts:
-            if part == "#":
-                score += 1
-            elif part == "*":
-                score += 2
-            else:
-                score += 4  # 字面量 token 权重大于 *
-        return score
-
-    async def emit(
-        self, event_name: str, data: BaseModel, source: str = "unknown", error_isolate: bool = True, wait: bool = False
-    ) -> None:
-        """
-        发布类型安全的事件
+        发布事件（并发扇出，立即返回不等订阅者完成）
 
         Args:
             event_name: 事件名称
             data: Pydantic Model 实例（自动序列化为 dict）
             source: 事件源（通常是发布者的类名）
-            error_isolate: 错误隔离策略
-                - True: 错误被隔离并记录，单个 handler 异常不会影响其他 handler 的执行
-                - False: 第一个异常会传播到调用者，中断所有 handler 的执行
-            wait: 是否等待所有监听器执行完成
-                - False: 在后台任务中执行，不等待完成（默认）
-                - True: 等待所有监听器执行完成后再返回
 
         Raises:
             TypeError: 如果 data 不是 BaseModel 实例
-            Exception: 当 error_isolate=False 且处理器执行出错时抛出
+            ValueError: payload 类声明了 ``_DISCRIMINANT_FIELD`` 且事件名末段
+                与判别字段值不一致
 
-        分发流程：类型检查 → ``model_dump()`` → 数据验证 → **拦截器链** → handler 分发。
-        拦截器链任一环节显式返回 ``None`` 即丢弃事件：不更新统计、不调用任何 handler。
-        handler 查找取精确键与所有通配 pattern 键的并集（去重 HandlerWrapper）；
-        排序先按 ``priority``，再按 pattern 具体度（精确名 > 具体通配 > 通用通配）；
-        统计始终按真实 emit 的 event_name 入键（与通配 pattern 解耦）。
+        分发流程：类型检查 → 判别校验 → ``model_dump()`` → 数据验证 →
+        **拦截器链** → handler 并发分发。拦截器链任一环节显式返回 ``None``
+        即丢弃事件：不更新统计、不调用任何 handler。handler 查找取精确键与
+        所有通配 pattern 键的并集（按 HandlerWrapper 身份去重）；统计始终按
+        真实 emit 的 event_name 入键（与通配 pattern 解耦）。
         """
         if self._is_cleanup:
             self.logger.warning(f"EventBus正在清理中，忽略事件: {event_name}")
@@ -266,8 +221,20 @@ class EventBus:
             raise TypeError(
                 f"EventBus.emit() 要求 data 参数必须是 Pydantic BaseModel 实例，"
                 f"收到类型: {type(data).__name__}。"
-                f"请使用对应的事件 Payload 类（如 src.core.events.payloads 中定义的类）"
+                f"请使用对应的事件 Payload 类（如 src.modules.events.payloads 中定义的类）"
             )
+
+        # 判别一致性校验：同族多注册 payload 的事件名末段必须等于判别字段值
+        discriminant_field = getattr(data.__class__, "_DISCRIMINANT_FIELD", None)
+        if discriminant_field is not None:
+            tail = event_name.split(".")[-1]
+            actual = getattr(data, discriminant_field, None)
+            if actual != tail:
+                raise ValueError(
+                    f"事件名与判别字段不一致: 事件 '{event_name}' 末段为 '{tail}'，"
+                    f"但 {data.__class__.__name__}.{discriminant_field}='{actual}'。"
+                    f"同族 payload 的事件名末段必须等于判别字段值"
+                )
 
         # 将 Pydantic Model 序列化为 dict
         dict_data = data.model_dump()
@@ -286,20 +253,11 @@ class EventBus:
                 return
             dict_data = processed
 
-        # 收集 handler：精确键 + 所有通配 pattern 键的并集（去重 HandlerWrapper）
+        # 收集 handler：精确键 + 所有通配 pattern 键的并集（按身份去重）
         handlers = self._collect_handlers(event_name)
         if not handlers:
             self.logger.debug(f"事件 {event_name} 没有监听器")
             return
-
-        # 按 (priority 升序, specificity 降序) 排序：
-        # - priority 越小越优先（沿用旧契约）
-        # - specificity 越大越优先（精确名 > 长字面量前缀通配 > 短通配 > 独立 #）
-        #   specificity 只对通配订阅有意义；精确订阅全得 ∞（取最大 specificity）
-        handlers = sorted(
-            handlers,
-            key=lambda item: (item[0].priority, -item[1]),
-        )
 
         # 打印事件信息（DEBUG 级别）
         log_message = self._format_event_log(event_name, data, source)
@@ -322,27 +280,14 @@ class EventBus:
         # 定义带跟踪的 emit 逻辑
         async def emit_with_tracking():
             try:
-                # 并发执行所有处理器（handlers 此时是 ``(wrapper, specificity)`` 元组列表）
-                tasks = []
-                for wrapper, _spec in handlers:
-                    task = asyncio.create_task(
-                        self._call_handler(wrapper, event_name, dict_data, source, error_isolate)
-                    )
-                    tasks.append(task)
-
+                # 并发执行所有处理器；_call_handler 内部已捕获异常，
+                # gather 仅作汇合点（return_exceptions 防御取消之外的漏网异常）
+                tasks = [
+                    asyncio.create_task(self._call_handler(wrapper, event_name, dict_data, source))
+                    for wrapper in handlers
+                ]
                 if tasks:
-                    if error_isolate:
-                        # 错误隔离模式：捕获所有异常，但不重新抛出
-                        results = await asyncio.gather(*tasks, return_exceptions=True)
-                        # 检查是否有异常（仅用于统计）
-                        for result in results:
-                            if isinstance(result, Exception):
-                                # 异常已在 _call_handler 中处理，这里不需要额外操作
-                                pass
-                    else:
-                        # 非隔离模式：让第一个异常传播到调用者
-                        results = await asyncio.gather(*tasks, return_exceptions=False)
-                        # 如果有异常，gather 会自动抛出，不需要额外处理
+                    await asyncio.gather(*tasks, return_exceptions=True)
 
                 # 更新统计（使用锁保护）
                 if self.enable_stats:
@@ -354,38 +299,23 @@ class EventBus:
                 complete_event.set()
                 self._active_emits.pop(emit_id, None)
 
-        # 根据 wait 参数决定执行方式
-        if wait:
-            # 等待完成
-            await emit_with_tracking()
-        else:
-            # 在后台任务中执行并跟踪
-            task = asyncio.create_task(emit_with_tracking())
-            self._background_tasks.add(task)
-            task.add_done_callback(lambda t: self._background_tasks.discard(t))
+        # 在后台任务中执行并跟踪
+        task = asyncio.create_task(emit_with_tracking())
+        self._background_tasks.add(task)
+        task.add_done_callback(lambda t: self._background_tasks.discard(t))
 
-    def _collect_handlers(self, event_name: str) -> List[tuple]:
+    def _collect_handlers(self, event_name: str) -> List[HandlerWrapper]:
         """
         收集事件的所有匹配 handler（精确键 + 通配 pattern 键并集）
 
-        返回 ``[(HandlerWrapper, specificity), ...]`` 元组列表。HandlerWrapper
-        按对象身份去重——同一 wrapper 被多个 pattern 引用时只取一次（保留
-        最高的 specificity 值）。
-
-        精确订阅的 specificity 固定为 ``_EXACT_SPECIFICITY``（远大于任何通配），
-        确保排序时**永远排在通配订阅之前**——与"精确订阅 = 字面意义最具体"的
-        直觉一致。
+        HandlerWrapper 按对象身份去重——同一 wrapper 被多个 pattern 引用时只取
+        一次。返回顺序即注册顺序，无排序语义：订阅者并发执行，顺序无意义。
         """
-        # 精确订阅 specificity 大于任何 _pattern_specificity 的合理上界
-        # （pattern 长度受命名约束 ≤4 段 + 字面量 token +2/段 + 通配 +1 ⇒ 上界 ≈ 8）
-        _EXACT_SPECIFICITY = 10_000
-
-        seen: Dict[int, tuple] = {}
+        seen: Dict[int, HandlerWrapper] = {}
 
         # 精确键
-        exact_handlers = self._handlers.get(event_name, [])
-        for wrapper in exact_handlers:
-            seen[id(wrapper)] = (wrapper, _EXACT_SPECIFICITY)
+        for wrapper in self._handlers.get(event_name, []):
+            seen[id(wrapper)] = wrapper
 
         # 通配 pattern 键
         for pattern, handlers in self._handlers.items():
@@ -395,62 +325,49 @@ class EventBus:
                 continue  # 非通配且非精确键（防御）
             if not self._match_wildcard(pattern, event_name):
                 continue
-            spec = self._pattern_specificity(pattern)
             for wrapper in handlers:
-                key = id(wrapper)
-                # 取更高的 specificity（同一 wrapper 被多个 pattern 引用时）
-                if key not in seen or seen[key][1] < spec:
-                    seen[key] = (wrapper, spec)
+                seen[id(wrapper)] = wrapper
 
         return list(seen.values())
 
-    async def _call_handler(
-        self, wrapper: HandlerWrapper, event_name: str, data: Any, source: str, error_isolate: bool
-    ):
+    async def _call_handler(self, wrapper: HandlerWrapper, event_name: str, data: Any, source: str) -> None:
         """
-        调用事件处理器
+        调用事件处理器；异常在此处闭环：计数 + ERROR 日志，不向外传播
 
         Args:
             wrapper: 处理器包装器
             event_name: 事件名称
             data: 事件数据
             source: 事件源
-            error_isolate: 是否隔离错误
         """
         try:
-            if asyncio.iscoroutinefunction(wrapper.handler):
-                await wrapper.handler(event_name, data, source)
-            else:
-                # 同步处理器在线程池中执行
-                loop = asyncio.get_event_loop()
-                await loop.run_in_executor(None, wrapper.handler, event_name, data, source)
+            await wrapper.handler(event_name, data, source)
         except Exception as e:
-            # 更新处理器级别的错误统计（不需要锁，因为每个 handler 独立）
+            # 处理器级别的错误记录（每个 handler 独立，无需锁）
             wrapper.error_count += 1
             wrapper.last_error = str(e)
+            self.logger.error(f"事件处理器执行错误 (事件: {event_name}, 来源: {source}): {e}", exc_info=True)
+            # 事件级统计（使用锁保护）
+            if self.enable_stats:
+                async with self._stats_lock:
+                    self._stats[event_name].error_count += 1
+                    self._stats[event_name].last_error_time = time.time()
 
-            if error_isolate:
-                self.logger.error(f"事件处理器执行错误 (事件: {event_name}, 来源: {source}): {e}", exc_info=True)
-                # 更新统计（使用锁保护）
-                if self.enable_stats:
-                    async with self._stats_lock:
-                        self._stats[event_name].error_count += 1
-                        self._stats[event_name].last_error_time = time.time()
-            else:
-                raise
-
-    def on(self, event_name: str, handler: Callable, model_class: Type[T], priority: int = 100) -> None:
+    def on(self, event_name: str, handler: Callable, model_class: Type[T]) -> None:
         """
         订阅类型化事件
 
-        EventBus 强制要求类型化订阅，所有订阅必须指定 model_class。
+        EventBus 强制要求类型化订阅，所有订阅必须指定 model_class；
+        handler 必须是协程函数（同步函数会阻塞事件循环，注册时直接拒绝）。
 
         Args:
             event_name: 要监听的事件名称
-            handler: 事件处理器函数
+            handler: 事件处理器函数（必须为 async def）
             model_class: 期望的数据模型类型（必须是 BaseModel 子类）
                          EventBus 会自动将字典数据反序列化为该类型
-            priority: 优先级(数字越小越优先,默认100)
+
+        Raises:
+            TypeError: handler 不是协程函数
 
         Example:
             ```python
@@ -458,38 +375,29 @@ class EventBus:
             event_bus.on("room.message.danmaku", handler, model_class=RoomMessagePayload)
             ```
         """
+        if not asyncio.iscoroutinefunction(handler):
+            raise TypeError(
+                f"EventBus.on() 只接受 async handler，收到同步函数: {handler.__name__}。"
+                f"同步处理会阻塞事件循环，请改为 async def"
+            )
 
-        # 创建包装器，自动反序列化
+        # 创建包装器，自动反序列化。payload 验证失败在此处闭环（数据问题，
+        # 记日志后放弃本条）；处理器执行异常原样冒泡，由 _call_handler 统一
+        # 计数并写日志
         async def typed_wrapper(event_name: str, dict_data: Dict[str, Any], source: str):
             try:
                 typed_data = model_class.model_validate(dict_data)
-                if asyncio.iscoroutinefunction(handler):
-                    await handler(event_name, typed_data, source)
-                else:
-                    handler(event_name, typed_data, source)
             except ValidationError as e:
-                # 验证错误：数据格式不匹配
                 self.logger.error(
                     f"类型化事件数据验证失败 ({event_name}, 期望类型: {model_class.__name__}): {e}",
                     exc_info=False,  # 不需要完整堆栈，ValidationError 已包含详细信息
                 )
-            except Exception as e:
-                # 处理器执行错误：记录但不传播（保持与其他处理器一致）
-                self.logger.error(
-                    f"类型化事件处理器执行错误 ({event_name}, 处理器: {handler.__name__}): {e}", exc_info=True
-                )
-                # 更新错误计数
-                wrapper.error_count += 1
-                wrapper.last_error = str(e)
-                # 注意：这里不重新抛出异常，保持与 error_isolate=True 一致的行为
-                # 如果需要传播异常，应该通过 error_isolate 参数控制
+                return
+            await handler(event_name, typed_data, source)
 
-        wrapper = HandlerWrapper(handler=typed_wrapper, priority=priority, original_handler=handler)
+        wrapper = HandlerWrapper(handler=typed_wrapper, original_handler=handler)
         self._handlers[event_name].append(wrapper)
-        self.logger.debug(
-            f"注册类型化事件监听器: {event_name} -> {handler.__name__} "
-            f"(类型: {model_class.__name__}, 优先级: {priority})"
-        )
+        self.logger.debug(f"注册类型化事件监听器: {event_name} -> {handler.__name__} (类型: {model_class.__name__})")
 
     def off(self, event_name: str, handler: Callable) -> None:
         """
@@ -521,9 +429,8 @@ class EventBus:
         """
         注册一个事件拦截器
 
-        拦截器按注册顺序串接；对每次 ``emit`` 的事件，在数据验证后、handler
-        分发前被顺序调用。可修改 payload（原地修改 / 返回新 dict）或显式
-        返回 ``None`` 丢弃事件。
+        拦截器对每次 ``emit`` 的事件，在数据验证后、handler 分发前被调用。
+        可修改 payload（原地修改 / 返回新 dict）或显式返回 ``None`` 丢弃事件。
 
         默认空链 ⇒ ``emit`` 行为与未启用拦截器时字节级一致（``apply`` 短路）。
 
@@ -550,7 +457,7 @@ class EventBus:
 
     def get_interceptor_names(self) -> List[str]:
         """
-        返回当前已挂载拦截器名称列表（按注册顺序）
+        返回当前已挂载拦截器名称列表（按执行顺序）
 
         主要用于测试与可观测性。
         """
@@ -675,31 +582,11 @@ class EventBus:
 
     def _validate_event_data(self, event_name: str, data: Any) -> None:
         """
-        验证事件数据
+        提示未注册事件
 
-        策略：
-        - 已注册事件：验证数据格式
-        - 未注册事件：仅警告，不阻断
+        emit 的入参本身就是 Pydantic Model 实例（形状由类保证），此处不再对
+        序列化结果做整类重复验证；仅对未注册事件写一条 debug 提示。
         """
-        model = EventRegistry.get(event_name)
-
-        if model is None:
-            # 未注册事件
+        if EventRegistry.get(event_name) is None:
             if not event_name.startswith("plugin.") and not event_name.startswith("internal."):
                 self.logger.debug(f"未注册的非插件事件: {event_name}")
-            return
-
-        # 已注册事件：验证数据
-        try:
-            if isinstance(data, BaseModel):
-                # 已经是 Pydantic Model，跳过验证
-                return
-            elif isinstance(data, dict):
-                # 字典数据，尝试验证
-                model.model_validate(data)
-            else:
-                self.logger.warning(f"事件 {event_name} 数据类型不支持验证: {type(data).__name__}")
-        except ValidationError as e:
-            self.logger.warning(f"事件数据验证失败 ({event_name}): {e.error_count()} 个错误")
-            for error in e.errors():
-                self.logger.debug(f"  - {error['loc']}: {error['msg']}")
