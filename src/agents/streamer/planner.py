@@ -26,7 +26,7 @@
         ──▶ render('amaidesu_planner_react')（系统提示词）
         ──▶ 消息序列 = [system] + 历史消息（user=观众 / assistant=主播，
             canonical 映射）+ 本批消息（user）+ 参考段（user，固定序列尾）
-        ──▶ llm_service.chat_messages(messages, tools=工具列表, client_type=planner_profile)
+        ──▶ llm_service.generate(messages, tools=工具列表, profile=PLANNER_PROFILE)
         ──▶ 循环：assistant/tool 消息 append-only 追加在参考段之后
         ──▶ outcome dict（replied / speech / silent_reason / steps / tool_trace）
 """
@@ -39,7 +39,6 @@ from typing import Any, Callable, Dict, List, Optional
 from src.modules.config.schemas.base import BaseConfig
 from src.agents.streamer import canonical
 from src.agents.streamer.planner_context import AssemblerInputs, EnvironmentBlock, PlannerAssembler
-from src.modules.llm.manager import normalize_tool_calls_for_protocol
 from src.modules.logging import get_logger
 from src.modules.memory.models import MemoryHit
 from src.modules.time_utils import now_ms
@@ -51,6 +50,9 @@ from .tools.rundown_tool import build_rundown_control_function_def
 
 __all__ = ["Planner"]
 
+
+#: Planner 绑定的 LLM profile（代码显式声明，配置不承载绑定，无静默兜底）。
+PLANNER_PROFILE: str = "planner"
 
 #: 默认记忆召回条数（Planner 每轮决策注入的 hit 上限）。
 #: 配置面不允许暴露——记忆质量先稳定再调参，避免污染用户配置文件。
@@ -104,15 +106,9 @@ def _as_id_str(value: Any) -> str:
 
 
 def _tool_call_parts(call: Dict[str, Any]) -> tuple[str, Dict[str, Any]]:
-    """解析 tool_call 的 (name, arguments)，兼容扁平与完整 OpenAI 形态。"""
-    fn = call.get("function") if isinstance(call.get("function"), dict) else call
-    name = str(fn.get("name", "") or "")
-    args = fn.get("arguments")
-    if isinstance(args, str):
-        try:
-            args = json.loads(args)
-        except json.JSONDecodeError:
-            args = {}
+    """解析中立扁平 tool_call（id/name/arguments）的 (name, arguments)。"""
+    name = str(call.get("name", "") or "")
+    args = call.get("arguments")
     if not isinstance(args, dict):
         args = {}
     return name, args
@@ -146,9 +142,9 @@ class Planner:
         """初始化 Planner。
 
         Args:
-            config: 配置字典或已解析对象（profile / planner_max_steps）。
+            config: 配置字典或已解析对象（planner_max_steps）。
             llm_service: LLM 管理器，需提供
-                ``async chat_messages(messages, tools=..., client_type=...) -> LLMResponse``。
+                ``async generate(messages, *, tools=..., profile=...) -> payload.Response``。
             prompt_service: 提示词管理器，需提供 ``render(name, **vars) -> str``。
             room_state: 直播间态势规则层实例。
             tool_registry: 全局 ToolRegistry——ReAct 工具列表来源（信息收集/动作类工具）。
@@ -172,9 +168,9 @@ class Planner:
         else:
             self.typed_config = _PlannerConfig.from_dict(dict(config))
 
-        # LLM profile 用途名由 StreamerAgent 装配期硬编码传入（_PROFILE_PLANNER）；
-        # 本字段保留以兼容 Planner 内部工具列表与日志输出（profile 名仅展示用）。
-        self.profile: str = getattr(config, "profile", "llm") if config is not None else "llm"
+        # LLM profile 绑定为代码显式常量（PLANNER_PROFILE），不读配置、无兜底；
+        # 本字段保留供内部工具列表与日志输出使用。
+        self.profile: str = PLANNER_PROFILE
         self.max_steps: int = self.typed_config.planner_max_steps
 
         self._llm_service = llm_service
@@ -305,10 +301,10 @@ class Planner:
             outcome["steps"] = steps
 
             try:
-                response = await self._llm_service.chat_messages(
-                    messages=messages,
+                response = await self._llm_service.generate(
+                    messages,
                     tools=tool_list,
-                    client_type=self.profile,
+                    profile=PLANNER_PROFILE,
                     on_delta=thinking.callback_for("planner", steps) if thinking else None,
                 )
             except Exception as e:
@@ -328,14 +324,28 @@ class Planner:
             self.last_raw_content = (getattr(response, "content", None) or "")[:2000]
             self.last_request_id = getattr(response, "request_id", None) or None
 
-            tool_calls = list(getattr(response, "tool_calls", None) or [])
+            # engine 返回的中立 ToolCall（扁平对象）收敛为内部扁平 dict，供本模块消费与协议喂回
+            tool_calls = [
+                {"id": tc.id, "name": tc.name, "arguments": dict(tc.arguments)} for tc in (response.tool_calls or [])
+            ]
             assistant_content = getattr(response, "content", None)
             if assistant_content is not None and not isinstance(assistant_content, str):
                 # OpenAI 协议要求 content 为 string/null，部分 client 返回结构化内容
                 assistant_content = json.dumps(assistant_content, ensure_ascii=False, default=str)
             assistant_msg: Dict[str, Any] = {"role": "assistant", "content": assistant_content}
             if tool_calls:
-                assistant_msg["tool_calls"] = normalize_tool_calls_for_protocol(tool_calls)
+                # 喂回协议要求 arguments 为 JSON 字符串（中立 ToolCall 已解析为对象）
+                assistant_msg["tool_calls"] = [
+                    {
+                        "id": tc["id"],
+                        "type": "function",
+                        "function": {
+                            "name": tc["name"],
+                            "arguments": json.dumps(tc["arguments"], ensure_ascii=False),
+                        },
+                    }
+                    for tc in tool_calls
+                ]
             messages.append(assistant_msg)
 
             # 自然终止：LLM 不再调用任何工具 = 本轮不说话

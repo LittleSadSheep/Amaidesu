@@ -18,7 +18,7 @@ import pytest
 from src.agents.streamer import canonical
 from src.agents.streamer.planner import Planner
 from src.agents.streamer.room_state import RoomState
-from src.modules.llm.manager import LLMResponse
+from src.modules.llm.payload import Response, ToolCall
 from src.modules.tools.models import ToolExecutionResult
 from src.modules.events.payloads.room import RoomMessagePayload, RoomMessageUser
 
@@ -38,7 +38,8 @@ def _batch_msg(text: str, mid: str, *, nickname: str = "小明", message_type: s
     return RoomMessagePayload(
         message_type=message_type,
         user=RoomMessageUser(id="u1", name=nickname),
-        content=text, message_id=mid,
+        content=text,
+        message_id=mid,
     )
 
 
@@ -48,11 +49,13 @@ def _make_planner() -> tuple[Planner, MagicMock, List[List[dict]]]:
     captured: List[List[dict]] = []
     llm = MagicMock()
 
-    async def _chat(*, messages: List[dict], tools: Any = None, client_type: str = "", on_delta: Any = None) -> LLMResponse:
+    async def _generate(
+        messages: List[dict], *, tools: Any = None, profile: str = "", on_delta: Any = None
+    ) -> Response:
         captured.append([dict(m) for m in messages])
-        return LLMResponse(success=True, content="不说")
+        return Response(success=True, content="不说")
 
-    llm.chat_messages = AsyncMock(side_effect=_chat)
+    llm.generate = AsyncMock(side_effect=_generate)
     prompt = MagicMock()
     prompt.render = MagicMock(return_value="SYSTEM")
     registry = MagicMock()
@@ -79,7 +82,9 @@ def _make_planner() -> tuple[Planner, MagicMock, List[List[dict]]]:
 def test_canonical_batch_and_history_same_shape() -> None:
     """同一弹幕经批通道与历史通道序列化结果逐字一致（批与历史同形）。"""
     batch_msg = canonical.batch_item_to_message(_batch_msg("来个落地水", "m9", nickname="小明"))
-    history_msg = canonical.turn_to_message(FakeTurn(role="user", content="来个落地水", sender_name="小明", message_id="m9"))
+    history_msg = canonical.turn_to_message(
+        FakeTurn(role="user", content="来个落地水", sender_name="小明", message_id="m9")
+    )
     assert batch_msg == history_msg == {"role": "user", "content": "小明: 来个落地水 [id:m9]"}
 
 
@@ -87,7 +92,9 @@ def test_canonical_type_prefix_and_role_mapping() -> None:
     """类型前缀按登记表渲染；assistant 行原样内容、不加 id。"""
     gift = canonical.batch_item_to_message(_batch_msg("送出 小花花 x1", "m2", nickname="小红", message_type="gift"))
     assert gift == {"role": "user", "content": "[礼物] 小红: 送出 小花花 x1 [id:m2]"}
-    speak = canonical.turn_to_message(FakeTurn(role="assistant", content="晚上好", message_type="speak", message_id="m3"))
+    speak = canonical.turn_to_message(
+        FakeTurn(role="assistant", content="晚上好", message_type="speak", message_id="m3")
+    )
     assert speak == {"role": "assistant", "content": "晚上好"}
 
 
@@ -133,16 +140,16 @@ async def test_react_messages_appended_after_reference() -> None:
     # 快照捕获：planner 原地追加消息，必须复制每次调用时的列表
     captured: List[List[dict]] = []
     responses = [
-        LLMResponse(success=True, content="", tool_calls=[{"id": "c1", "function": {"name": "tool_x", "arguments": {}}}]),
-        LLMResponse(success=True, content=""),
+        Response(success=True, content="", tool_calls=[ToolCall(id="c1", name="tool_x", arguments={})]),
+        Response(success=True, content=""),
     ]
 
-    async def _chat(*, messages, tools=None, client_type="", on_delta=None):  # type: ignore[no-untyped-def]
+    async def _generate(messages, tools=None, profile="", on_delta=None):  # type: ignore[no-untyped-def]
         captured.append([dict(m) for m in messages])
         return responses.pop(0)
 
     llm = MagicMock()
-    llm.chat_messages = AsyncMock(side_effect=_chat)
+    llm.generate = AsyncMock(side_effect=_generate)
     prompt = MagicMock()
     prompt.render = MagicMock(return_value="SYSTEM")
     registry = MagicMock()
@@ -161,7 +168,9 @@ async def test_react_messages_appended_after_reference() -> None:
         reply_provider=MagicMock(),
     )
 
-    await planner.plan([_batch_msg("hi", "m1")], history=[FakeTurn(role="user", content="大家好", sender_name="小明", message_id="m0")])
+    await planner.plan(
+        [_batch_msg("hi", "m1")], history=[FakeTurn(role="user", content="大家好", sender_name="小明", message_id="m0")]
+    )
 
     first, second = captured[0], captured[1]
     ref_content = first[-1]["content"]

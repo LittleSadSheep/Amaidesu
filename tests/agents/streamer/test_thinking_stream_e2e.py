@@ -14,7 +14,7 @@ import pytest
 
 from src.agents.streamer.config import StreamerConfig
 from src.agents.streamer.streamer_agent import StreamerAgent
-from src.modules.llm.manager import LLMResponse
+from src.modules.llm.payload import Response
 
 
 class _RecordingSink:
@@ -28,13 +28,13 @@ class _RecordingSink:
 def _build_agent(thinking_sink: Optional[Any], enabled: bool = True) -> StreamerAgent:
     llm = MagicMock()
 
-    async def _chat_messages(**kwargs):
+    async def _generate(*args: Any, **kwargs: Any):
         on_delta = kwargs.get("on_delta")
         if on_delta is not None:
             on_delta("reasoning", "端到端思考")
-        return LLMResponse(success=True, content="ok", model="m")
+        return Response(success=True, content="ok", model="m")
 
-    llm.chat_messages = AsyncMock(side_effect=_chat_messages)
+    llm.generate = AsyncMock(side_effect=_generate)
     prompt = MagicMock()
     prompt.render = MagicMock(return_value="PROMPT")
 

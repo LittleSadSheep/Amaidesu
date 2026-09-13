@@ -2,7 +2,7 @@
 
 覆盖：
 - ThinkingStreamContext：reasoning 转发 + seq 递增 + content 丢弃 + 多阶段
-- Planner：thinking 透传到 chat_messages 的 on_delta（每步/每阶段形态正确）
+- Planner：thinking 透传到 generate 的 on_delta（每步/每阶段形态正确）
 - ReplyToolProvider：思考回调一次性槽位（设置 → invoke 消费 → 清理）
 """
 
@@ -17,7 +17,7 @@ from src.agents.streamer.planner import Planner
 from src.agents.streamer.replyer import Replyer
 from src.agents.streamer.thinking_stream import ThinkingStreamContext
 from src.agents.streamer.tools.reply_tool import ReplyToolProvider
-from src.modules.llm.manager import LLMResponse
+from src.modules.llm.payload import Response
 from src.modules.tools.models import ToolInvocation
 
 
@@ -31,9 +31,7 @@ class _RecordingSink:
         self.calls: List[Dict[str, Any]] = []
 
     def on_thinking_delta(self, *, round_id: str, phase: str, step: int, seq: int, text_delta: str) -> None:
-        self.calls.append(
-            {"round_id": round_id, "phase": phase, "step": step, "seq": seq, "text_delta": text_delta}
-        )
+        self.calls.append({"round_id": round_id, "phase": phase, "step": step, "seq": seq, "text_delta": text_delta})
 
 
 def test_context_forwards_reasoning_with_increasing_seq():
@@ -76,7 +74,7 @@ def test_context_replyer_phase_gets_step_1():
 
 
 # ---------------------------------------------------------------------------
-# Planner：thinking 透传到 chat_messages
+# Planner：thinking 透传到 generate
 # ---------------------------------------------------------------------------
 
 
@@ -84,19 +82,19 @@ def _make_planner() -> tuple[Planner, Dict[str, Any]]:
     llm = MagicMock()
     captured: Dict[str, Any] = {}
 
-    async def _chat_messages(**kwargs):
+    async def _generate(*args: Any, **kwargs: Any):
         captured.update(kwargs)
         on_delta = kwargs.get("on_delta")
         if on_delta is not None:
             on_delta("reasoning", "决策中思考")
         # 无 tool_calls → ReAct 自然终止（silent）
-        return LLMResponse(success=True, content="ok", model="m")
+        return Response(success=True, content="ok", model="m")
 
-    llm.chat_messages = AsyncMock(side_effect=_chat_messages)
+    llm.generate = AsyncMock(side_effect=_generate)
     prompt = MagicMock()
     prompt.render = MagicMock(return_value="PROMPT")
     planner = Planner(
-        config={"planner_llm": "llm_fast", "planner_max_steps": 3},
+        config={"planner_max_steps": 3},
         llm_service=llm,
         prompt_service=prompt,
         room_state=MagicMock(),
