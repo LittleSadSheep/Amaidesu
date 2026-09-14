@@ -402,6 +402,7 @@ class TestRealRepoTemplates:
                 "summary_system",
                 "screen_vlm_system",
                 "screen_vlm_prompt",
+                "text_adv_vlm_question",
             }
         finally:
             reset_prompt_manager()
