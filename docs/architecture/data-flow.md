@@ -34,7 +34,7 @@ flowchart TB
         C1["BiliDanmakuOfficial"]
         C2["BiliDanmakuLegacy"]
         C3["ConsoleInput"]
-        C5["STT"]
+        C4["STT"]
     end
 
     subgraph Interceptors["[事件拦截器] EventBus 分发层 · 全局单点"]
@@ -55,7 +55,7 @@ subgraph StreamerAgent["StreamerAgent src/agents/streamer/"]
 
     subgraph Tools["工具族 src/modules/tools/"]
         RT["streamer_reply 工具<br/>ReplyToolProvider"]
-        Other["vision / memory / agent_control<br/>+ VTS / 字幕 / OBS 等渲染工具"]
+        Other["vision / memory / framework<br/>+ VTS / OBS 等渲染工具"]
     end
 
     subgraph InFra["基础模块 src/modules/tts/"]
@@ -92,7 +92,7 @@ subgraph StreamerAgent["StreamerAgent src/agents/streamer/"]
 运行时消息和工具结果严格单向流动。具体规则：
 
 - **采集器只发布不订阅下游结果事件**。采集器订阅任何下游 Agent/工具结果事件 = 禁止。采集器在 `collect()` 内自行构造 `RoomMessagePayload` 等事件载荷并 emit 到 EventBus（自产自发，基类零转换零兜底），然后退出。
-- **工具异步结果走 `tool.result.<tool_name>`，不得回流到任何采集器**。`tool.result.synthesize` 之类的结果事件由需要它的 Agent（如 Planner）订阅以驱动后续动作；任何采集器订阅 `tool.result.#` = 禁止。
+- **工具异步结果走 `tool.result.<tool_name>`，不得回流到任何采集器**。`tool.result.choose_option` 之类的结果事件由需要它的 Agent（如 Planner）订阅以驱动后续动作；任何采集器订阅 `tool.result.#` = 禁止。
 - **同步工具调用的返回值天然单向**。`await ToolRegistry.invoke(name, args)` 的返回值由调用方持有，工具实现不感知调用方后续动作，也不得反过来通过事件重新写入。
 - **Agent 内部子组件不跨子组件发"决策完成""输出完成"之类胶水事件**。`decision.intent.generated` / `output.intent.*` 一类事件在 v2 已删除——Planner→Replyer 是同 Agent 内部直接 await，不经事件中转。
 
@@ -105,7 +105,7 @@ subgraph StreamerAgent["StreamerAgent src/agents/streamer/"]
 - **业务包 `src/agents/` 与框架模块 `src/modules/` 不形成运行期反向依赖**。`src/agents/` 可向下 import `src/modules/`，反向运行时不允许——`src/modules/` 不得在 import 时或运行时持有 `src/agents/` 任何实现的实例。两个显式例外：
   - **组合根装配**：装配函数（如 `src/modules/agents/factory.py:instantiate_agent`）在函数体内延迟 import 具体 Agent 实现，仅在构造期执行一次调用，不进入持续运行时依赖。
   - **配置 Schema 聚合**：Schema 聚合层（如 `src/modules/config/agents_schemas.py`）需在模块级 import 各 Agent 的 `Config` 类，以满足 Pydantic `model_rebuild()` 前向引用解析；Schema 仅作为类型引用持有，不实例化 Agent。
-- **事件载荷是唯一的跨组件消息模型**：直播间消息统一用 `RoomMessagePayload`（`src/modules/events/payloads/`），采集器产出与 Agent 缓冲/决策消费同一形状，无中间转换。其余共享契约（`CapabilitiesProvider` Protocol / `Emotion` 枚举 / `ToolProvider` 协议等）仍在 `src/modules/types/`。
+- **事件载荷是唯一的跨组件消息模型**：直播间消息统一用 `RoomMessagePayload`（`src/modules/events/payloads/`），采集器产出与 Agent 缓冲/决策消费同一形状，无中间转换。其余共享契约分散在各自域：`Emotion` 枚举在 `src/modules/types/`，`ToolProvider` 协议在 `src/modules/tools/provider.py`。
 - **框架层不得含直播/游戏内容特有逻辑**。"MC 怎么挖矿""主播怎么读弹幕"这类内容逻辑必须内聚到 `src/agents/<name>/` 包内（目录名 = Agent 注册名）。框架层只定义协议与基础设施，加新内容=加新 Agent 包+改配置，框架零改动。
 
 这条守护的是**可替换 / 可测试 / 无编译期环**。Agent 不该认识具体工具实现类，只该认识 `ToolRegistry` 抽象和共享层的 Protocol。
@@ -116,7 +116,7 @@ subgraph StreamerAgent["StreamerAgent src/agents/streamer/"]
 
 - **只读**：Agent 只查询，不写、不触发工具行为。
 - **拉取式（pull）**：由 Agent 主动查询，不是工具推送/广播事件给 Agent。推送会落回 ① 的禁区。
-- **经反转抽象**：通过 `src/modules/types/` 层的只读 Protocol（如 `CapabilitiesProvider`）或 `ToolRegistry.list_tools()` / `to_llm_definitions()`，Agent 不 import 工具实现。
+- **经只读抽象**：通过只读 Protocol 或 `ToolRegistry.list_tools()` / `to_llm_definitions()`，Agent 不 import 工具实现。
 - **组合根接线**：具体实现只在 `main.py` 注入，组合根允许认识所有层。
 
 **① 和 ③ 的一句话区分**：
@@ -146,27 +146,27 @@ v2 不再有"插件系统"。所有新功能通过 Agent 包内聚实现，框�
 | 把 Agent 内部件注册为工具（如 Planner/Replyer） | 插件换皮 | 内部件留在 Agent 包内；LLM 可调的自有工具经 `BaseAgent.list_tools()` 声明并注册进 ToolRegistry（如 StreamerAgent 的 `streamer_reply` 与 `rundown_control`）；`parse_command` 等代码直连原语不是工具、不注册 |
 | 内容逻辑写进框架层（`src/modules/`） | 破坏"加包不加框架"红线 | `src/agents/<name>/` 自包含包；框架只保留协议、抽象、跨组件基础设施 |
 | 采集器订阅 Agent/工具结果事件（如 `tool.result.#` / `planner.decision`） | 防环；采集器角色定位为"数据生产者" | 采集器只 emit `room.message.*`，订阅交给 Agent 与 Observer |
-| Agent import 具体工具实现类 | 耦合到具体实现 | 经 `ToolRegistry.invoke(name, args)` 调用；能力发现走 `ToolRegistry.list_tools()` 或 `CapabilitiesProvider` Protocol |
+| Agent import 具体工具实现类 | 耦合到具体实现 | 经 `ToolRegistry.invoke(name, args)` 调用；能力发现走 `ToolRegistry.list_tools()` 或只读 Protocol |
 | 快照感知做成采集器（持续 emit "屏幕当前画面"） | 违反主体性判据（无自主循环、无持续事件流价值） | 实现 `ToolProvider` 接口，`invoke()` 时按需截图并返回；不主动推事件 |
 
 ---
 
 ## 5. 端到端链路示例
 
-下面以"控制台输入 → 主播回复"为完整链路，逐函数核验数据如何流过各组件。该示例对应 `StreamerAgent` 启用 + `ConsoleInputCollector` 启用 + `reply` 工具在 ToolRegistry 中的默认配置。
+下面以"控制台输入 → 主播回复"为完整链路，逐函数核验数据如何流过各组件。该示例对应 `StreamerAgent` 启用 + `ConsoleInputCollector` 启用 + `streamer_reply` 工具在 ToolRegistry 中的默认配置。
 
 ```
 1. 控制台原始输入
-   └─ ConsoleInputCollector._run_input_loop         (console_input_collector.py L131)
-      └─ await self._emit_semantic_event(message)   (L175)
-         └─ 构造 RoomMessagePayload(message_type="danmaku", content, user, timestamp_ms)
+   └─ ConsoleInputCollector._run_input_loop         (console_input_collector.py)
+      └─ 构造 RoomMessagePayload(message_type="danmaku", content, user, timestamp_ms)
+      └─ await self._emit_semantic_event(payload)
          └─ await event_bus.emit(CoreEvents.ROOM_MESSAGE_DANMAKU, payload, source="ConsoleInput")
 
 2. EventBus 分发（拦截器链 + 精确订阅）
    └─ 拦截器链：RateLimitInterceptor → SimilarFilterInterceptor
       └─ 任一返回 None 即丢弃（不更新统计、不调用任何 handler）
       └─ 放行 → 收集匹配 handlers（精确键 + 通配键并集），并发分发
-         └─ StreamerAgent._on_danmaku_received      (streamer_agent.py L462-467 订阅，L470 处理)
+         └─ StreamerAgent._on_room_message_received  (streamer_agent.py 订阅 room.message 四事件，转 handle_message 统一入口)
 
 3. StreamerAgent 入口（弹幕 → 房间状态 + 缓冲）
    └─ 载荷直通（事件载荷即消息模型，零映射）
@@ -187,11 +187,11 @@ v2 不再有"插件系统"。所有新功能通过 Agent 包内聚实现，框�
    └─ 循环：LLM 调注册表工具 → 经 registry.invoke 执行 → 观察以 tool 消息写回 → 再生成
       （有界：planner_max_steps 防失控；自然终止 = LLM 无工具调用 = 本轮不说话）
    └─ 调 streamer_reply → registry.invoke 收尾（ReplyToolProvider 执行）
-      └─ Replyer.generate(persona, history, rundown_text)   (replyer.py)
+      └─ Replyer.generate(plan, batch, history, rundown_text)   (replyer.py)
          └─ llm_service.generate(tools=[reply 函数定义], profile="replyer")——LLM 只见 reply
          └─ 解析 {speech, emotion, actions} 三元组
          └─ 敏感词净化（替换/丢弃/放行三策略）
-   └─ 无 DecisionPlan / 无置信度门槛：说与不说由 ReAct 循环内的工具调用行为直接表达
+   └─ 无置信度门槛：说与不说由 ReAct 循环内的工具调用行为直接表达（reply_tool 与 Replyer 之间经 `DecisionPlan` 契约传递表达意图）
 
 6. 结果落库 + 发言管线分发
    └─ ToolExecutionResult.success=True，structured_content 为 dict（`{speech, emotion, actions, metadata}`）
@@ -199,7 +199,7 @@ v2 不再有"插件系统"。所有新功能通过 Agent 包内聚实现，框�
    └─ 空转检测信号由 ProactiveTrigger 承载（BackgroundMaintainer 轻循环供周期 tick；流程单超时提醒走 rundown_overdue 触发源）
    └─ **发言管线消费 reply 结构化结果触发下游扇出**（`speech_dispatcher.py` SpeechDispatcher.dispatch，由 `decision_executor.py` 在决策收口处调用）：
       ├─ speech 非空 → 生成 `utt_{epoch_ms}_{seq}` → UtteranceQueue.enqueue（fire-and-forget）→ 后台 worker 串行 `await speak(text, utterance_id)`（`speak` 是构造期注入的适配器，绑定 `tts_engine.handle_speech`）
-      │  └─ `tts_engine` 是装配期由 `build_tts_infrastructure(core [tts], event_bus)` 按 `[tts].provider` 选中的唯一引擎实例（edge_tts / gptsovits / voicebox / omni_tts），构造期直接注入 StreamerAgent
+      │  └─ `tts_engine` 是装配期由 `build_tts_infrastructure(infra.toml [tts], event_bus)` 按 `[tts].provider` 选中的唯一引擎实例（edge_tts / gptsovits / voicebox / omni_tts），构造期直接注入 StreamerAgent
       │     └─ 引擎播放时按 `tts.utterance.*` 三事件发布生命周期（started / finished / failed）；事件是终点广播，消费者不得触发新决策
       └─ emotion 非空 → **直接 invoke** `vts_set_expression`（不经事件，不入 UtteranceQueue；VTS 仍是 ToolRegistry 中的工具，TTS 不再是）
       └─ actions 列表：逐条经 registry.invoke fire-and-forget 执行（Replyer 输出的动作类工具调用，失败仅记日志不影响决策循环）
@@ -209,7 +209,7 @@ v2 不再有"插件系统"。所有新功能通过 Agent 包内聚实现，框�
 
 - **每一步都是单向流动**。控制台输入 → EventBus → StreamerAgent → 工具调用 → 返回值，全程无环。Planner→Replyer 是同 Agent 内 await（经 registry 调用而非事件中转）。
 - **拦截器层是全局单点**。RateLimit/SimilarFilter 作用于 `room.message.*`，所有订阅者共享净化后的结果。`core.*` / `live.*` / `planner.*` / `tts.utterance.*` 等不经过拦截器。
-- **TTS 是基础模块而非工具**。每句 reply 落库即发声——reply 结构化结果的 `speech` 字段由 StreamerAgent 主动入 UtteranceQueue，不依赖 LLM 决策调用 TTS 工具（TTS 已提升为基础设施、移出 ToolRegistry）；装配期 `build_tts_infrastructure(core [tts], event_bus)` 按 `[tts].provider` 单选构造引擎实例并直接注入 StreamerAgent，运行时由 UtteranceQueue 通过注入的 `speak` 适配器调 `engine.handle_speech`——零 Facade 路由层、零 ToolRegistry 条目。`infra.toml [tts]` 自包含（行为参数 + 四引擎子段），`tools.toml` 无任何 TTS 段，详见 ADR-007。
+- **TTS 是基础模块而非工具**。每句 reply 落库即发声——reply 结构化结果的 `speech` 字段由 StreamerAgent 主动入 UtteranceQueue，不依赖 LLM 决策调用 TTS 工具（TTS 已提升为基础设施、移出 ToolRegistry）；装配期 `build_tts_infrastructure(infra.toml [tts], event_bus)` 按 `[tts].provider` 单选构造引擎实例并直接注入 StreamerAgent，运行时由 UtteranceQueue 通过注入的 `speak` 适配器调 `engine.handle_speech`——零 Facade 路由层、零 ToolRegistry 条目。`infra.toml [tts]` 自包含（行为参数 + 四引擎子段），`tools.toml` 无任何 TTS 段，详见 ADR-007。
 - **空转提醒不经事件**。独立调度循环与旧检查点事件已随流程单重设计删除；空闲提醒职责归 ProactiveTrigger 自身（流程单超时提醒是其触发源之一）。
 
 ---
@@ -220,8 +220,8 @@ v2 中不同数据走不同通道，不要混用：
 
 | 通道 | 用途 | 数据特征 | 典型事件/调用 |
 |------|------|---------|--------------|
-| **EventBus** | 元数据事件（房间消息、状态变更、工具结果、流程单变更、TTS 生命周期） | 小型 JSON/Pydantic 对象 | `room.message.danmaku` / `tool.result.synthesize` / `rundown.changed` / `tts.utterance.started` |
-| **ToolRegistry.invoke** | 同步/异步工具调用 | 调用方持有 `ToolExecutionResult` | `await registry.invoke("reply", args)` / `await registry.invoke("vts_set_expression", args)` |
+| **EventBus** | 元数据事件（房间消息、状态变更、工具结果、流程单变更、TTS 生命周期） | 小型 JSON/Pydantic 对象 | `room.message.danmaku` / `tool.result.choose_option` / `rundown.changed` / `tts.utterance.started` |
+| **ToolRegistry.invoke** | 同步/异步工具调用 | 调用方持有 `ToolExecutionResult` | `await registry.invoke("streamer_reply", args)` / `await registry.invoke("vts_set_expression", args)` |
 | **基础模块直调** | TTS 引擎由装配期注入，运行时绕过 ToolRegistry | 调用方持有引擎实例 | `await tts_engine.handle_speech(text, utterance_id)`（StreamerAgent 内部 speak 适配器；TTS 已不在工具池） |
 
 **已拆除的 AudioStreamChannel（v2.0.6）**：TTS 音频块流的 pub-sub（`publish(AudioChunk)` + `subscribe(name, callbacks)` + 背压策略）已删除。原因：v2 是 pull-style 工具编排——音频数据走 ToolRegistry 调用的返回值（`ToolExecutionResult`），不再走扇出通道。皮套口型同步短期由皮套软件自取本地音频流（系统声音 / WASAPI loopback），中期由"工具 invoke 驱动 VTS 写入"的能力重建，均不依赖 push 通道。

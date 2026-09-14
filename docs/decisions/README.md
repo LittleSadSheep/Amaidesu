@@ -30,14 +30,14 @@ ADR 编号按创建时间递增，不因条目删除而重排——001~004 因�
 
 - [ADR-005：v2.0.0 采用 Agent + 工具 + 存储 + 编排架构](005-v2-agent-tool-architecture.md)
 - [ADR-006：LLM 模拟器是官方开发基础设施，mock 采集器仅承担确定性回放](006-simulator-is-dev-infrastructure.md)
-- [ADR-007：TTS 作为配置驱动基础设施（reply → utterance 事件 → 引擎）；§8 概念修正后 TTS 提升为基础设施（基础模块），退出工具池](007-tts-infrastructure-pipeline.md)
+- [ADR-007：TTS 作为配置驱动基础设施（reply → utterance 事件 → 引擎）](007-tts-infrastructure-pipeline.md)
 - [ADR-008：主播思考流旁路通道（观察面流式 / 播出面整段）](008-streamer-thinking-stream-bypass.md)
 - [ADR-009：Agent 私有 MCP 与工具归属限定（位置即归属，装配即声明）](009-agent-owned-mcp.md)（2026-09-11 修订：归属 + 名单双轴）
 - [ADR-010：工具可用性手动操作（手动重连）](010-tool-availability-reconnect.md)
 - [ADR-011：Rundown 流程单取代 Agenda 编排子系统](011-rundown-replaces-agenda.md)
 - [ADR-012：工具可见名单机制（注册处生产侧声明）](012-tool-visibility-list.md)
 - [ADR-013：异步任务基建与 Agent 委派原语](013-async-task-infrastructure-and-delegation.md)
-- [ADR-014：配置体系六文件重构（每文件版本 / 包内权威 / 单一管线 / 值迁移不做）](014-config-six-file-refactor.md)
+- [ADR-014：配置体系六文件重构](014-config-six-file-refactor.md)
 - [ADR-015：live_chat 单一事实源，删除 ContextService](015-live-chat-single-source.md)
 - [ADR-016：版本号与发布模型（pyproject 单一声明 + tag 事实源 + main 发布线）](016-versioning-and-release-model.md)
 - [ADR-017：主播 Agent 分包按接缝抽厚簇（执行抽、调度不抽）](017-streamer-agent-seam-split.md)

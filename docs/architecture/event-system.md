@@ -311,7 +311,7 @@ event_bus.get_interceptor_names()            # 已挂载拦截器（按执行顺
 
 - `tts.utterance.*` 是**终点广播**：消费者不得基于这些事件触发新一轮决策（否则形成 "TTS→决策→TTS" 无限循环）
 - `streamer.speech` 是业务信号：订阅者（节奏唤醒 / 落库 / 字幕）不得反向触发表演类副作用
-- 工具不订阅 Input 事件（仅 fire-and-forget 后回传 `tool.result.*`）
+- 工具不订阅数据事件（仅 fire-and-forget 后回传 `tool.result.*`）
 
 **通道选择**
 

@@ -67,7 +67,7 @@ Amaidesu 的业务层组织方式经历过四代。git 历史考实了这条演�
 | | 谁驱动 | 形态 | 暴露 | 例子 |
 |---|---|---|---|---|
 | **主播 Agent** | 自我驱动（唯一），直播期间持续运行 | 继承 `BaseAgent`，拥有决策循环 + 后台维护 | 整个生命周期 + `list_tools()` 聚合到 ToolRegistry | `StreamerAgent`（Planner 决策循环 + 后台 BackgroundMaintainer） |
-| **游戏 Agent** | 命令驱动（类 Code Agent）：命令唤醒，任务内有界循环，完成即停、空闲零消耗 | 同上 | 同上 | `TextAdvGameAgent`、`MinecraftAgent`（minecraft_send_prompt 唤醒） |
+| **游戏 Agent** | 命令驱动（类 Code Agent）：命令唤醒，任务内有界循环，完成即停、空闲零消耗 | 同上 | 同上 | `TextAdvGameAgent`、`MinecraftAgent`（framework_delegate 委派唤醒） |
 | **工具** | 被调才干活（纯被动，调用即返回 `ToolExecutionResult`） | 继承 `ToolProvider`，`list_tools()` + `invoke(ToolInvocation)` | 仅经 `ToolRegistry.invoke(name, args)` 暴露给 LLM | `vision_look_at_screen`、`memory_query_memory`、`vts_set_expression`（TTS 自 v2.0.12 §8 修正起已是基础模块，不再是工具） |
 
 **判别口诀**：能自我维持状态/轮询/心跳的就是 Agent，只在被调用时执行的就是 Tool。落到工程上只需回答一句——"这个功能有没有自己的状态/轮询/心跳？"有就做成 Agent，没就做成 Tool。
@@ -86,7 +86,7 @@ Amaidesu 的业务层组织方式经历过四代。git 历史考实了这条演�
 |---|---|
 | 核心功能也做成插件，必需与可选混杂 | 工具/存储/记忆/事件/LLM 全部是框架基础设施（`src/modules/`）；只有"主体"住在 Agent 包里 |
 | 服务注册机制，依赖运行时才暴露问题 | 无服务注册；构造器注入 + 事件/工具契约 |
-| 24 个插件互相依赖成石山 | 游戏 Agent 之间零依赖，经事件（`game.*`）/状态（工具，如 text_adv_get_story）/指令（minecraft_send_prompt 类工具）三通道松耦合 |
+| 24 个插件互相依赖成石山 | 游戏 Agent 之间零依赖，经事件（`game.*`）/状态（工具，如 text_adv_get_story）/指令（framework_delegate 委派原语）三通道松耦合 |
 | 消息流经中心中转，链路不清 | Agent → 工具/事件/存储直达，单向清晰 |
 | 全局/插件级配置混乱 | 六文件按领域拆分 + Pydantic Schema 校验 |
 
@@ -115,11 +115,11 @@ Amaidesu 的业务层组织方式经历过四代。git 历史考实了这条演�
 flowchart TB
     subgraph Agents["Agent 层（主播自我驱动 / 游戏命令驱动）"]
         SA["主播 StreamerAgent<br/>MessageBuffer → Planner 决策循环 → reply 工具 → Replyer 表达引擎<br/>+ Rundown 流程单 + 后台双任务"]
-        GA["游戏代理（命令驱动）<br/>MinecraftAgent：minecraft_send_prompt 唤醒任务内有界循环（AI 玩家范式）"]
+        GA["游戏代理（命令驱动）<br/>MinecraftAgent：framework_delegate 委派唤醒任务内有界循环（AI 玩家范式）"]
     end
     subgraph Tools["工具层（被动能力，ToolRegistry 注册）"]
         T1["output：字幕 / VTS / Warudo / OBS…<br/>（TTS 自 v2.0.12 §8 起迁至基础模块层）"]
-        T2["perception：vision_look_at_screen"]
+        T2["vision：vision_look_at_screen"]
         T3["memory：query_memory"]
         T4["agent 控制 / streamer 自带 reply / minecraft 自有工具等"]
     end
@@ -130,14 +130,14 @@ flowchart TB
     end
     EXT["外部输入"] --> COL -->|"room.message.*"| BUS
     BUS --> SA
-    GA -.->|"game.* / minecraft_send_prompt"| SA
+    GA -.->|"game.* / framework_delegate"| SA
     SA -->|"invoke tools"| Tools
     SA & GA --> STO
 ```
 
 各层要点：
 
-- **主播 Agent**：`src/agents/streamer/`——弹幕窗 MessageBuffer 聚合，Planner 以 ReAct 循环决策（工具列表 = 全局 ToolRegistry + reply 局部工具，`planner_llm` 默认 llm 高质量模型，`planner_max_steps=8` 防失控）：查信息（游戏状态/记忆）→ 调 `reply` 工具 → Replyer 表达引擎生成 speech/emotion/action（含敏感词净化）。**Planner 与 Replyer 都是内部件，两者都不注册为工具**（reply_tool 是 LLM 调用入口）。Rundown 流程单子系统以"备忘录 + 闹钟"给环节方向，推进权归 Agent 自身。
+- **主播 Agent**：`src/agents/streamer/`——弹幕窗 MessageBuffer 聚合，Planner 以 ReAct 循环决策（工具列表 = 全局 ToolRegistry + reply 局部工具，Planner LLM profile 代码硬编码 `planner`（高质量模型档），`planner_max_steps=8` 防失控）：查信息（游戏状态/记忆）→ 调 `reply` 工具 → Replyer 表达引擎生成 speech/emotion/action（含敏感词净化）。**Planner 与 Replyer 都是内部件，两者都不注册为工具**（reply_tool 是 LLM 调用入口）。Rundown 流程单子系统以"备忘录 + 闹钟"给环节方向，推进权归 Agent 自身。
 - **游戏代理**（`src/agents/<name>/`，如 minecraft / text_adv）：AI 玩家范式——感知（公用 `vision_look_at_screen` 快照）、推进（专属工具如 text_adv_choose_option）、循环内聚于一个自包含包。加游戏 = 加包 + 配置，框架零改动。
 - **工具层**：全部工具统一 ToolSpec 契约，三个来源——内置（进程内渲染/感知）、内容引擎（玩家引擎控制面）、MCP（外部扩展）。同步调用结果直返，异步工具经 `tool.result.<name>` 事件回传。
 - **存储层**：SQLite 存储（具体表与字段以 schema_migrations 为唯一事实源）+ schema_migrations 版本化迁移；模拟数据带 `simulated` 列，统计查询一律排除——模拟观众不是观众。
@@ -209,11 +209,11 @@ v2 的依赖传递有且只有两条路径：
 
 如下欠账不影响架构成立，但属于"叙事已更新、细节待抹平"的部分，将在后续迭代中逐项消化：
 
-- **TTS 族装配已闭环 + §8 概念修正后最终态**（v2.0.12）：TTS 整体提升为基础设施，迁至 `src/modules/tts/` 基础模块；装配期由 `build_tts_infrastructure(core [tts], event_bus)` 按 `[tts].provider` 单选构造引擎实例并直接注入 StreamerAgent；ToolRegistry 中零 TTS 条目；`[tts].enabled=false` 不构造引擎。其余非 TTS 工具族（subtitle / vts / warudo / obs / vrchat）由 `bind_core_tools` 按 `[tools.output.config] enabled` 列表驱动自注册（v2.0.10 起）。详见 [ADR-007](../decisions/007-tts-infrastructure-pipeline.md)。
+- **TTS 族装配已闭环 + §8 概念修正后最终态**（v2.0.12）：TTS 整体提升为基础设施，迁至 `src/modules/tts/` 基础模块；装配期由 `build_tts_infrastructure(infra.toml [tts], event_bus)` 按 `[tts].provider` 单选构造引擎实例并直接注入 StreamerAgent；ToolRegistry 中零 TTS 条目；`[tts].enabled=false` 不构造引擎。其余非 TTS 工具族（vts / vrchat / warudo / obs）由 `bind_core_tools` 按 `[tools.avatar.*]` / `[tools.studio.*]` 段 `enabled` 开关驱动装配（v2.0.10 起）。详见 [ADR-007](../decisions/007-tts-infrastructure-pipeline.md)。
 - **AudioStreamChannel 已拆除**（v2 pull 编排下无扇出场景，lip-sync 责任归皮套软件 + 工具 invoke 能力的重建）。
 - **`tts.utterance.*` 订阅端尚未接线**：v2.0.10 三事件已发布，但当前生产代码暂无订阅者；字幕精准对齐是首要目标消费者，待字幕子系统接入事件总线后即可启用。详见 [ADR-007 §后果](../decisions/007-tts-infrastructure-pipeline.md#后果consequences) 遗留项。
-- **`game_events` 有写链但暂无数据源**：`StorageLedger` 已订阅 `game.*`（milestone / attention_required / error）落库 `game_events` 表，通路已就绪；但游戏代理（AI 玩家）尚未上线，全项目无发布方，表暂时为空。游戏代理落地后事件出现即自动落库，无需再改存储层。
-- **迁移期遗留待清理**：`src/modules/config/schemas/input_schemas.py`、`output_schemas.py`（不再被加载的旧 Schema）、main.py 顶部过期 docstring。
+- **`game_events` 通路已闭环**：`StorageLedger` 已订阅 `game.*`（milestone / attention_required / error / report）落库 `game_events` 表，通路就绪；游戏代理（minecraft / text_adv）已上线并发布 `game.*` 事件，事件出现即自动落库，无需再改存储层。
+- **迁移期遗留待清理**：`main.py` 顶部 docstring 仍带三阶段时代措辞（"Input Domain / Output Domain 组件"）。
 - 工具接入走 ToolSpec + BaseToolProvider（重场景）或 as_tool_impl + make_provider_from_specs（轻场景）两条正典路径，统一经 ToolRegistry 注册；不再使用装饰器形式的接入。
 
 ### 非缺口（设计如此，勿重复上报）

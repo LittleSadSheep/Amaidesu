@@ -14,13 +14,13 @@
 
 ## 模块归属
 
-子系统全部位于 `src/agents/streamer/rundown/` 子包（主播 Agent 内部契约，不跨 Agent 共享）：
+核心位于 `src/agents/streamer/rundown/` 子包（主播 Agent 内部契约，不跨 Agent 共享），工具注册在 `src/agents/streamer/tools/`：
 
 | 文件 | 职责 |
 |------|------|
 | `rundown.py` | 数据契约 `Rundown` / `RundownSegment` + 内置默认流程单 `DEFAULT_RUNDOWN` |
 | `rundown_state.py` | 运行时状态：游标 + 计时 + 唯一变更边界 |
-| `rundown_tool.py` | `RundownControlTool`：Agent 切换/暂停/恢复环节的工具 |
+| `../tools/rundown_tool.py` | `RundownControlProvider`（注册名 `rundown_control`）：Agent 切换/暂停/恢复环节的工具 |
 | 闹钟 | 不在本包——并入 `proactive_trigger.py`，作为一个触发源（`rundown_overdue`） |
 
 存储 CRUD 位于 `src/modules/storage/`（Dashboard 编排页与 Agent 共用的关注点）。
@@ -30,7 +30,7 @@ flowchart LR
     subgraph StreamerAgent
         Planner[Planner 决策循环]
         Replyer[Replyer 表达]
-        Tool[RundownControlTool]
+        Tool[RundownControlProvider]
     end
     DB[(SQLite rundowns)] -->|load| State[RundownState<br/>游标+计时·唯一变更边界]
     Default[DEFAULT_RUNDOWN<br/>内置默认] -->|回退| State
@@ -120,7 +120,7 @@ CREATE TABLE IF NOT EXISTS rundowns (
 
 ## Agent 工具（`rundown_tool.py`）
 
-`RundownControlTool`，actions：
+`RundownControlProvider`（注册名 `rundown_control`），actions：
 
 - `next`：顺序切到下一环节
 - `goto(segment_id)`：跳到指定环节（不限方向；情境中列出后续环节供选择）
@@ -130,7 +130,7 @@ CREATE TABLE IF NOT EXISTS rundowns (
 
 ## 超时闹钟（并入 `proactive_trigger.py`）
 
-环节 `expected_ms` 到期后，闹钟按冷却间隔（默认 1 分钟）以 `reason="rundown_overdue"` 唤醒一轮 proactive 决策。Agent 醒来看到的情境是"当前环节已超时 X 分钟"，由它自行决定继续、切换或收尾——**只提醒，不执法**。若未来证明需要硬切换，在闹钟处加 `hard_cutoff` 策略直接调 `goto` 即可（预留，不实现）。
+环节 `expected_ms` 到期后，闹钟按冷却间隔（`rundown_overdue_interval_ms`，默认 1 分钟）置 `rundown_overdue` 信号唤醒一轮 proactive 决策。Agent 醒来看到的情境是"当前环节已超时 X 分钟"，由它自行决定继续、切换或收尾——**只提醒，不执法**。若未来证明需要硬切换，在闹钟处加 `hard_cutoff` 策略直接调 `goto` 即可（预留，不实现）。
 
 v2 的独立调度循环与旧检查点事件不保留；空闲提醒职责归 ProactiveTrigger 自身，与流程单无关。
 
@@ -152,7 +152,7 @@ v2 的独立调度循环与旧检查点事件不保留；空闲提醒职责归 P
 |------|------|
 | `StreamerAgent` | 装配者：setup 时 `rundown_id` → repo 加载（空/缺失回退 `DEFAULT_RUNDOWN`，fail-soft）→ `state.load`；cleanup 无需停任何循环 |
 | `Planner` / `Replyer` | 每轮获得情境注入：当前环节 n/N、目标、要点、notes、剩余时间、整场进度、后续环节列表 |
-| `ProactiveTrigger` | 承载超时闹钟触发源；`rundown_pending` 信号（原 agenda_pending）由工具/仪表盘/闹钟三个来源置位 |
+| `ProactiveTrigger` | 承载超时闹钟触发源；`rundown_pending` 信号（原 agenda_pending）由 rundown.changed 回调置位（工具/仪表盘等变更来源），闹钟另置 `rundown_overdue` 超时信号 |
 | `Dashboard` | 编排页：流程单库（列表/复制/删除）+ 编辑器（环节卡片排序+表单）+ 直播控制台（当前环节/进度/手动切换/插入环节）；直播中编辑写穿 DB |
 | 存储 | `rundowns` 表 CRUD（`src/modules/storage/`） |
 
@@ -169,9 +169,9 @@ v2 的 agenda_* / v1 的 outline_* 字段在配置迁移中剥离，不做内容
 
 ## 架构约束
 
-- 子系统全部内聚 `src/agents/streamer/rundown/`，不跨 Agent 共享；闹钟复用 ProactiveTrigger，不新建循环组件
+- 子系统全部内聚 `src/agents/streamer/` 包内（核心在 `rundown/` 子包，工具在 `tools/`），不跨 Agent 共享；闹钟复用 ProactiveTrigger，不新建循环组件
 - 不新增事件：仅 `rundown.changed` 一个语义域事件（事件表见[事件系统](./event-system.md)）
 - 状态变更只经 `RundownState` 变更边界；工具、Dashboard、闹钟兜底皆不绕过
 - 闹钟只提醒不执法；硬切换策略留位不实现（YAGNI）
-- 情境注入只读 `RundownState`，不订阅 Output 事件（数据流红线）
+- 情境注入只读 `RundownState`，不订阅主播输出事件（数据流红线）
 - 存储失败隔离：DB 不可用时 Agent 以默认流程单或无流程单继续运行，日志记录原因

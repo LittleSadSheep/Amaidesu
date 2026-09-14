@@ -224,7 +224,7 @@ config = config_service.get_config_with_defaults(
 )
 ```
 
-> Schema 权威定义在 `src/modules/config/{core,model,agents,tools,memory,storage,background}_schemas.py`（Pydantic），组件嵌套配置类随所属域定义，由 `multi_file_loader` 的漂移写回闭环自动补齐用户文件缺失字段。
+> Schema 权威定义在 `src/modules/config/{core,model,agents,collectors,tools,memory,storage,infra}_schemas.py`（Pydantic），组件嵌套配置类随所属域定义，由 `multi_file_loader` 的漂移写回闭环自动补齐用户文件缺失字段。
 
 ### 配置 API
 

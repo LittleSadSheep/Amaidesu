@@ -20,7 +20,7 @@ Minecraft 游戏 Agent（AI 玩家）的架构设计。定位：事件驱动的 
 
 ```
 空闲（事件挂起，零消耗，无 LLM/无 MCP 调用）
-  │ 主播调 minecraft_send_prompt("建一座房子")
+  │ 主播经 framework_delegate 委派("建一座房子")
   ▼
 消息入队 → 唤醒
   ▼
@@ -86,7 +86,7 @@ execute 受理 ≠ 完成：等待期 LLM 自由行动（推进其他 todo / 记
 
 ## 对话管理与压缩
 
-- 消息累积：任务内多轮，经已有 `chat_messages(messages, tools=...)`（OpenAI 格式）；工具结果以 `tool` role + `tool_call_id` 关联作为观察返回
+- 消息累积：任务内多轮，经 `LLMManager.generate(messages, profile=..., tools=...)`（OpenAI 格式消息）；工具结果以 `tool` role + `tool_call_id` 关联作为观察返回
 - 压缩分级：① 旧观察规整（发送前把超出保留条数的 tool 消息替换为占位符）② notebook 承载关键信息（提示词引导"历史可能压缩笔记不会"）③ 摘要兜底（后置，真实长任务数据出现前不做）
 - 流式不做：决策 Agent 非聊天 Agent，文本断续；对外叙事经事件→主播侧已有流式表达；WebUI 观察走事件快照
 

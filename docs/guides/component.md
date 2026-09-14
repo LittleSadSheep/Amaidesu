@@ -299,7 +299,6 @@ async def asyncio_sleep_ms(ms: int) -> None:
 | 范例 | 文件 | 范式 |
 |------|------|------|
 | ConsoleInputCollector（控制台输入） | `src/modules/collectors/console/console_input_collector.py` | A（子类自开 `_run_input_loop`） |
-| MockCollector（JSONL/Simulator） | `src/modules/collectors/mock/mock_collector.py` | B（走基类 `_start_collect_task`） |
 | STTCollector（语音转文字） | `src/modules/collectors/stt/stt_collector.py` | A |
 | BiliDanmakuCollector（官方/legacy） | `src/modules/collectors/bilibili/{official,legacy}/` | A |
 
@@ -313,7 +312,7 @@ async def asyncio_sleep_ms(ms: int) -> None:
 
 工具的典型形态：
 
-- **公用感知**（如 `look_at_screen`）——任何 Agent 都可能需要，放 `src/modules/vision/`
+- **公用感知**（如 `vision_look_at_screen`）——任何 Agent 都可能需要，放 `src/modules/vision/`
 - **Agent 专属推进**（如 `text_adv_choose_option`）——只服务于某个游戏 Agent，放该 Agent 自家包内 `src/agents/<name>/tools.py`
 
 ### 数据契约与协议速览
@@ -417,7 +416,7 @@ registry.register_provider(
 **谁调用注册？**
 
 - **Agent 专属工具**：Agent 子类 `_register_tools()` 方法（参考 `StreamerAgent._register_tools`、`TextAdvGameAgent._register_tools`）。在 Agent `_on_start` 阶段调用。
-- **公用域工具**：装配根按域装配——avatar/studio 分类经 `bind_core_tools(registry, tools_cfg)` 按开关注册，memory 经 `bind_memory_tools`，vision（`look_at_screen`）由组合根注入 mss 抓屏 + VLM 文本读取后端后注册。
+- **公用域工具**：装配根按域装配——avatar/studio 分类经 `bind_core_tools(registry, tools_cfg)` 按开关注册，memory 经 `bind_memory_tools`，vision（`vision_look_at_screen`）由组合根注入 mss 抓屏 + VLM 文本读取后端后注册。
 - **工具注册聚合**：生产路径下不存在任何 manager 级聚合函数——Agent 子类在 `_register_tools()` 中自己 `registry.register_provider(provider, visible_to=...)`；avatar/studio 分类工具由 `main.py` 的 `bind_core_tools(registry, tools_cfg)` 按域开关装配；启动结束后 `audit_tools(registry)` 只做只读审计（声明与注册按派生全名对账），不参与注入。
 
 ### 测试要点
@@ -575,7 +574,7 @@ reply 走注册表后三事件都发——观测冗余是**有意接受**的（�
 
 ### 协议六项（最小契约）
 
-继承自 [`BaseAgent`](../../src/modules/agents/base.py)（位于 `src/modules/modules/agents/base.py`）。
+继承自 [`BaseAgent`](../../src/modules/agents/base.py)（位于 `src/modules/agents/base.py`）。
 
 | # | 面 | 必填 | 内容 |
 |---|------|------|------|
@@ -792,7 +791,7 @@ class MyToolProvider(ToolProvider):
 
 - 启动装配：`main.py._register_agents_from_config` 遍历 `[agents].enabled` 列表逐个 `instantiate_agent` → `AgentManager.register` → `AgentManager.start_all`
 - 动态启停：Dashboard / API 通过 `AgentManager.enable_agent(name, config, ...)` / `disable_agent(name)`（内部走 `instantiate_agent`）
-- 工具接线：装配根 `main.py` 在 `start_all` 之前显式 `bind_core_tools(registry, slice)` 与 `bind_pending_tools(registry)`；`start_all` 触发各 Agent 子类 `_register_tools()` 自注册；结束后 `audit_tools(registry)` 仅做只读审计
+- 工具接线：装配根 `main.py` 在 `start_all` 之前显式 `bind_core_tools(registry, slice)`；`start_all` 触发各 Agent 子类 `_register_tools()` 自注册；结束后 `audit_tools(registry)` 仅做只读审计
 
 ### 测试要点
 
@@ -811,7 +810,6 @@ class MyToolProvider(ToolProvider):
 | StreamerAgent 工具 | `src/agents/streamer/tools/{reply_tool,rundown_tool}.py` | reply 为 `provider="streamer"`、rundown_control 为 `provider="rundown"`；StreamerAgent 内部用 |
 | TextAdvGameAgent（游戏 Agent） | `src/agents/text_adv/agent.py` | 自包含包；`provider="text_adv"`（分类 game）；感知-推进闭环 |
 | TextAdvGameAgent 工具 | `src/agents/text_adv/tools.py` | `provider="text_adv"`（分类 game）；Agent 专属推进工具 |
-| StreamerAgent 便捷工厂 | `src/agents/streamer/streamer_agent.py::build_streamer_agent` | 构造 + register 一站式 |
 
 ---
 
@@ -856,7 +854,7 @@ class MyToolProvider(ToolProvider):
 
 | 环节 | 实现位置 | 备注 |
 |------|----------|------|
-| 采集器 emit `room.message.danmaku` | `src/modules/collectors/console/console_input_collector.py::_emit_semantic_event` | 数据源换 = 替换采集器（`mock_danmaku` / `bili_danmaku_official` 等） |
+| 采集器 emit `room.message.danmaku` | `src/modules/collectors/console/console_input_collector.py::_emit_semantic_event` | 数据源换 = 替换采集器（`console_input` / `bili_danmaku_official` 等） |
 | 拦截器配置 | `config/infra.toml` 的 `[interceptors.rate_limit]` / `[interceptors.similar_filter]` | 启停由 `enabled` 标志控制 |
 | Agent 订阅 | `src/agents/streamer/streamer_agent.py::_subscribe_events` | 在 `_on_start` 中挂；priority=50 |
 | 弹幕聚合 | `src/agents/streamer/message_buffer.py` + `timing_gate.py` | 批窗口 / 强制响应规则 |
@@ -868,7 +866,7 @@ class MyToolProvider(ToolProvider):
 
 ### 已知缺口
 
-- **TTS 已基础模块化（原缺口已闭环 + v2.0.12 §8 修正）**：`infra.toml [tts].enabled = true` 后，`build_tts_infrastructure` 装配期按 `[tts].provider` 单选构造引擎实例，StreamerAgent 构造期接收并把 `engine.handle_speech` 注入 UtteranceQueue；reply 产出的 speech 经 UtteranceQueue → 引擎 `handle_speech` 播出（不走 ToolRegistry，零 TTS 工具条目）。设计决策见 [ADR-007](../decisions/007-tts-infrastructure-pipeline.md)。
+- **TTS 已基础模块化（原缺口已闭环）**：`infra.toml [tts].enabled = true` 后，`build_tts_infrastructure` 装配期按 `[tts].provider` 单选构造引擎实例，StreamerAgent 构造期接收并把 `engine.handle_speech` 注入 UtteranceQueue；reply 产出的 speech 经 UtteranceQueue → 引擎 `handle_speech` 播出（不走 ToolRegistry，零 TTS 工具条目）。设计决策见 [ADR-007](../decisions/007-tts-infrastructure-pipeline.md)。
 - **工具注册路径唯一**：`AgentManager` 不聚合工具注册——真实注册只走两条：① Agent 子类 `_register_tools()` 中自己 `registry.register_provider(provider, visible_to=...)`；② 分类工具在 `main.py` 由 `bind_core_tools(registry, tools_cfg)` 按域开关装配。装配结束后 `AgentManager.audit_tools(registry)` 按派生全名对账（缺失即 warning），不写任何工具实现。
 
 ---

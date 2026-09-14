@@ -63,7 +63,7 @@ config/
 !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 ```
 
-> 这是 v2.0.0 引入的 `exit_if_config_created` 行为，避免用占位 API Key 直接跑 LLM、产生无意义的 token 消耗。补完配置后再次 `uv run python main.py` 即可。
+> 这是 `exit_if_config_created` 行为，避免用占位 API Key 直接跑 LLM、产生无意义的 token 消耗。补完配置后再次 `uv run python main.py` 即可。
 >
 > 加载管线对结构漂移自动写回（缺键补默认、冗余键清理，写回前生成批次备份到 `config/old/`）；校验失败（类型违约 / 未注册采集器段 / 缺 `[meta].version`）启动期硬错退出。
 
@@ -190,7 +190,7 @@ uv run python main.py --dry
 | **业务 Agent（Agent）** | 拥有内部状态与工具的主循环体；订阅事件、决策、调用工具 | `src/agents/` | `[agents]` + `[agents.<name>]` |
 | **工具（Tool）** | 单一能力契约（ToolSpec + BaseToolProvider / as_tool_impl），由 Agent 在决策时按需调用 | `src/modules/tools/` | `tools.toml` 提供者开关与子配置 |
 
-> 渲染工具（字幕 / VTS / OBS 等）在 v2 中以 **Tool Provider** 的形式注册：开启对应提供者开关后，工具包内的组件会注册到 `ToolRegistry` 中。**TTS 是例外**——语音已成为基础模块（v2.0.12 §8 修正：整体提升为基础设施，移出工具池），位于 `src/modules/tts/`，由 `config/infra.toml` 的 `[tts]` 段驱动装配（`build_tts_infrastructure` 按 `[tts].provider` 单选构造引擎实例注入 StreamerAgent，ToolRegistry 中零 TTS 条目；开启后主播每句话自动播出），详见 [组件开发指南](guides/component.md) 与 [ADR-007](decisions/007-tts-infrastructure-pipeline.md)。
+> 渲染工具（字幕 / VTS / OBS 等）在 v2 中以 **Tool Provider** 的形式注册：开启对应提供者开关后，工具包内的组件会注册到 `ToolRegistry` 中。**TTS 是例外**——语音已成为基础模块（整体提升为基础设施，移出工具池），位于 `src/modules/tts/`，由 `config/infra.toml` 的 `[tts]` 段驱动装配（`build_tts_infrastructure` 按 `[tts].provider` 单选构造引擎实例注入 StreamerAgent，ToolRegistry 中零 TTS 条目；开启后主播每句话自动播出），详见 [组件开发指南](guides/component.md) 与 [ADR-007](decisions/007-tts-infrastructure-pipeline.md)。
 
 ### 3.3 可用组件清单
 
@@ -221,17 +221,17 @@ uv run python main.py --dry
 
 #### 工具（按族列举，代表工具名）
 
-工具注册走 `src/modules/tools/registry.py` 的 `ToolRegistry`。StreamerAgent 自带 `streamer_reply`（发言出口）与 `rundown_control`（流程单推进，随 rundown 注册项），均只对 `streamer` Agent 可见；`query_memory`（记忆检索）由 `[tools.memory]` 开关注册（默认配置启用）。主动发言判定与观众 `/命令` 解析是代码直连的内部件，不是工具。其他族系需要启用对应 `[tools.<pack>]` 包才会注入。
+工具注册走 `src/modules/tools/registry.py` 的 `ToolRegistry`。StreamerAgent 自带 `streamer_reply`（发言出口）与 `rundown_control`（流程单推进，随 rundown 注册项），均只对 `streamer` Agent 可见；`memory_query_memory`（记忆检索）由 `[tools.memory]` 开关注册（默认配置启用）。主动发言判定与观众 `/命令` 解析是代码直连的内部件，不是工具。其他族系需要启用对应 `[tools.<pack>]` 包才会注入。
 
 | 工具包（`[tools.<pack>]`） | 代表工具 | 说明 |
 |----------------------------|---------|------|
-| `vision` | `look_at_screen` | 屏幕感知（mss 多显示器抓屏 + 可选区域 + VLM 转文本） |
+| `vision` | `vision_look_at_screen` | 屏幕感知（mss 多显示器抓屏 + 可选区域 + VLM 转文本） |
 | `avatar.*`（vts / vrchat / warudo） | `vts_trigger_hotkey` / VRChat OSC 工具 / Warudo 工具 | 皮套控制族（由 `[tools.avatar.<key>].enabled` 分类开关装配） |
 | `studio.obs` | `obs_switch_scene` | 演播控制族（由 `[tools.studio.obs].enabled` 分类开关装配） |
 | Streamer 自带 | `streamer_reply` / `rundown_control` | 主播自有工具（开 `streamer` 即生效；`rundown_control` 随 rundown 注册项声明） |
-| `framework`（AgentControl） | `delegate` / `task_status` | 框架级委派与任务状态查询（随任一 Agent 启用生效） |
-| `memory` | `query_memory` | 记忆检索（`[tools.memory]` 开关，默认开启） |
-| `game` | （由具体游戏 Agent 注入） | 游戏专属推进工具（如 text_adv 的截图+点击） |
+| `framework`（AgentControl） | `framework_delegate` / `framework_task_status` | 框架级委派与任务状态查询（随任一 Agent 启用生效） |
+| `memory` | `memory_query_memory` | 记忆检索（`[tools.memory]` 开关，默认开启） |
+| `game` | （由具体游戏 Agent 注入） | 游戏专属推进工具（如 text_adv 的选单推进） |
 | `external` | （预留） | 外部工具源（MCP 桥接经 `[tools.mcp]` 启用） |
 
 ### 3.4 事件拦截器
@@ -268,7 +268,7 @@ uv run python main.py
 uv run python main.py --debug
 
 # 过滤日志（只显示指定模块/类名）
-uv run python main.py --filter EdgeTTSHandler SubtitleHandler
+uv run python main.py --filter EdgeTTSProvider SubtitleService
 
 # 仅验证装配（构造组件但不进入主循环，适合冒烟测试）
 uv run python main.py --dry
@@ -366,7 +366,7 @@ vite_dev_port = 60315                               # Vite 开发服务器端口
 启动后，你应该能在日志里依次看到这些关键行（措辞与代码完全一致；实际 N 因注册的事件数变化）：
 
 ```
-[Info] 配置验证通过（v2 7-file tree 存在性 + 类型检查）
+[Info] 配置验证通过（v2 6-file tree 存在性 + 类型检查）
 [Info] 所有必要的配置文件已存在。继续正常启动...
 [Info] 初始化 LLM 服务...
 [Info] 已创建 LLM 服务实例
@@ -384,7 +384,6 @@ vite_dev_port = 60315                               # Vite 开发服务器端口
 [Info] bind_core_tools: 'vts' 已绑定，新增 N 个工具（VTubeStudio 控制）
 [Info] bind_core_tools: 'obs' 已绑定，新增 N 个工具（OBS Studio 控制）
 [Info] bind_core_tools: 'warudo' 未启用，跳过（Warudo 控制）
-[Info] bind_pending_tools 完成（flush L1 @tool pending N 个）
 [Info] AgentManager.audit_tools 完成；未实现声明：T（0 即通过）
 [Info] 核心事件注册完成，共 N 个事件
 [Info] 应用程序正在运行。按 Ctrl+C 退出。
@@ -409,6 +408,6 @@ vite_dev_port = 60315                               # Vite 开发服务器端口
 
 ### 已知限制
 
-- **TTS 已基础模块化**（v2.0.12 §8 修正：TTS 提升为基础设施）：在 `config/infra.toml` 的 `[tts]` 段设 `enabled = true` 后，主播每句回复自动合成播出（引擎由 `provider` 选择，默认 `gptsovits` 需本地服务在跑；无本地服务可用 `edge_tts`，仅需网络）。字幕 / 皮套 / OBS 等渲染工具走新分类开关：`[tools.avatar.<key>]` / `[tools.studio.<key>]` 控制皮套与演播装配，`[subtitle]`（infra 段）驱动字幕基础设施。
+- **TTS 已基础模块化**（TTS 提升为基础设施）：在 `config/infra.toml` 的 `[tts]` 段设 `enabled = true` 后，主播每句回复自动合成播出（引擎由 `provider` 选择，默认 `gptsovits` 需本地服务在跑；无本地服务可用 `edge_tts`，仅需网络）。字幕 / 皮套 / OBS 等渲染工具走新分类开关：`[tools.avatar.<key>]` / `[tools.studio.<key>]` 控制皮套与演播装配，`[subtitle]`（infra 段）驱动字幕基础设施。
 - **控制台交互**已可用；弹幕采集、屏幕识别、语音转写需对应第三方凭据（id_code / appid / VLM API Key 等）。
 - 完整字段定义在 `src/modules/config/*_schemas.py`；本指南只覆盖"首次跑通"的最小集。

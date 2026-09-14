@@ -64,7 +64,7 @@ class MyCollector(BaseCollector):
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from src.modules.llm.manager import LLMManager
+    from src.modules.llm.engine import LLMManager
 
 
 class MyCollector(BaseCollector):
@@ -140,7 +140,3 @@ class PluginContext:
 | 框架无法预知用户会塞什么？ | → 框架扩展点 → Context（弱类型可接受） | 继续 |
 | 参数数量 ≤ 2 且只在一层用？ | → 直接当参数 | 继续 |
 | 参数数量 ≥ 3 或跨多层？ | → Context Object | 结束 |
-
-## 相关 ADR
-
-- ADR-001：Pipeline 曾用 DI 替代 Context（ADR 已随管道系统移除而废弃，DI 原则沿用）

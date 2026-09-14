@@ -44,7 +44,7 @@ INFO | SimulatorService - 模拟器服务已启动（mode=generate）
 | 模式 | 行为 | 适用场景 |
 |------|------|---------|
 | `generate` | 四态节奏驱动：选人设 → 读世界窗口 → LLM 生成弹幕/概率礼物/SC | 开放性行为锻炼，暴露 Agent 真实表现 |
-| `replay` | 读 SQLite `event_history` 表录制，按原节奏重放（可调速度） | 确定性回归测试、bug 复现 |
+| `replay` | 读 SQLite `live_chat` 表录制，按原节奏重放（可调速度） | 确定性回归测试、bug 复现 |
 | `off` | 装配但不运行世界 | 只用人设/礼物 CRUD 与观测，不产生消息 |
 
 replay 模式的录制日期可在启动时通过配置 `replay_date` 指定，或在 Dashboard「世界模拟器」页运行期选择；`replay_speed` 倍率加速，`replay_gap_cap_s` 截断超长冷场。
@@ -55,7 +55,7 @@ replay 模式的录制日期可在启动时通过配置 `replay_date` 指定，�
 |------|------|------|
 | `enabled` | `false` | 总开关；生产保持 `false` |
 | `mode` | `"generate"` | 世界模式：`generate` / `replay` / `off` |
-| `replay_date` | `null` | replay 默认回放的录制日期（`YYYY-MM-DD`） |
+| `replay_date` | `""` | replay 默认回放的录制日期（`YYYY-MM-DD`；空串 = 不指定） |
 | `replay_speed` | `1.0` | 回放速度倍率（`ge=0.1, le=100`） |
 | `replay_gap_cap_s` | `60.0` | 回放相邻消息间隔上限（秒），截断超长冷场 |
 | `replay_simulated_only` | `false` | 回放时是否仅回放录制中已标记 simulated 的消息 |
@@ -76,8 +76,6 @@ replay 模式的录制日期可在启动时通过配置 `replay_date` 指定，�
 | `max_concurrent_llm` | `8` | 最大并发 LLM 请求数 |
 | `enable_hater` | `false` | 是否启用黑粉人设（仅 dev） |
 | `language` | `"zh"` | 生成消息语言 |
-| `session_strategy` | `"smart"` | session 选择策略 |
-| `fallback_session_id` | `"simulated_viewers"` | 兜底场次 ID |
 | `cadence_mode` | `"uniform"` | 节奏模式：uniform / fixed / auto |
 | `fixed_interval_s` | `10.0` | fixed 模式固定间隔（秒） |
 
@@ -96,7 +94,7 @@ replay 模式的录制日期可在启动时通过配置 `replay_date` 指定，�
 
 常驻人设与礼物目录是**存储层运行时数据**，不使用配置文件：
 
-- 表：`sim_personas`（`user_id` 唯一）/ `sim_gifts`（`gift_id` 唯一），`SCHEMA_VERSION=2`；
+- 表：`sim_personas`（`user_id` 唯一）/ `sim_gifts`（`gift_id` 唯一），随存储 `SCHEMA_VERSION` 演进（见 `src/modules/storage/schema.py`）；
 - **内置种子**：启动期 `seed_simulator_data` 检测空表时导入内置默认值（`src/modules/simulator/seed_data.py`），非空表一律不动（幂等）；全新安装无需任何手工配置；
 - **写穿**：`PersonaPool` / `GiftGenerator` 持内存缓存，Dashboard CRUD 即时落库并刷新缓存；
 - **临时路人**（`temp_passerby_ratio` 控制比例，池上限 50）是瞬时对象，仅存内存、不持久化——身份生命周期分层：常驻=持久实体，路人=瞬时对象。
@@ -118,12 +116,12 @@ replay 模式的录制日期可在启动时通过配置 `replay_date` 指定，�
 
 - **存储层**：`StorageLedger` 订阅 `room.message.#` 落库时写 `live_chat` / `gifts` / `super_chats` 的 `simulated` 贯穿列；统计查询 `WHERE simulated = 0` 排除模拟数据；
 - **语义**：`simulated=True` = "非真实观众数据"，消费方无需区分生成或回放来源；
-- **回放的特殊点**：回放消息落库时间戳刷新为当前时刻（进入"最近窗口"查询语义），原始时刻保留在录制文件与日志中；`live_session_id` 替换为当前场次（回放内容作为"现在的输入流"注入）。
+- **回放的特殊点**：回放消息落库时间戳刷新为当前时刻（进入"最近窗口"查询语义），原始时刻保留在 `live_chat` 录制行与日志中；`live_session_id` 替换为当前场次（回放内容作为"现在的输入流"注入）。
 
 ## 6. 录制与回放
 
-- **录制源**：EventHistoryService 落库的 SQLite `event_history` 表（全量事件、payload 完整 model_dump JSON）——录制即世界快照，无需第二种录制格式；
-- **读回 API**：`EventRepo.list_event_dates()` / `get_day_events(date, event_name=...)`（按本地日期过滤，时间正序）；
+- **录制源**：SQLite `live_chat` 业务表（消息流单一事实源，真实直播与模拟数据同表、以 `simulated` 列区分）——录制即落库，无需第二种录制格式；
+- **读回 API**：`ChatRepo.list_chat_dates()` / `list_danmaku_by_date(date, simulated_only=...)`（按本地日期过滤，时间正序）；
 - **回放队列**：`ReplayEngine` 过滤 `room.message.danmaku` 事件、还原 payload、按相邻毫秒时间戳差值调度；
 - **典型用法**：真实直播一晚 → 次日用 replay 模式重放给主播 Agent 锻炼（`replay_simulated_only=false` 回放全部真实弹幕）。
 
