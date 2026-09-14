@@ -255,9 +255,7 @@ async def test_list_recent_live_chat_returns_chronological(store: SQLiteDatabase
     assert len(rows) == 3, f"期望 3 条，实得 {len(rows)}"
 
     timestamps = [int(r["timestamp_ms"]) for r in rows]
-    assert timestamps == [3000, 4000, 5000], (
-        f"回灌语义错误：期望时间正序 [3000, 4000, 5000]，实得 {timestamps}"
-    )
+    assert timestamps == [3000, 4000, 5000], f"回灌语义错误：期望时间正序 [3000, 4000, 5000]，实得 {timestamps}"
 
     contents = [str(r["content"]) for r in rows]
     assert contents == ["第 3 条", "第 4 条", "第 5 条"]
@@ -281,9 +279,7 @@ async def test_list_recent_live_chat_before_window(store: SQLiteDatabase) -> Non
     assert timestamps == [1000, 2000, 3000], f"窗口截断错误，实得 {timestamps}"
 
     # 窗口 + 限制：before=5000, limit=2 → 取 [3000, 4000]（4000 已被截断）
-    rows2 = await store.chat.list_recent_live_chat(
-        live_session_id=1, limit=2, before_timestamp_ms=5000
-    )
+    rows2 = await store.chat.list_recent_live_chat(live_session_id=1, limit=2, before_timestamp_ms=5000)
     timestamps2 = [int(r["timestamp_ms"]) for r in rows2]
     assert timestamps2 == [3000, 4000], f"窗口+limit 错误，实得 {timestamps2}"
 
@@ -430,21 +426,11 @@ async def test_get_viewer_stats_hit_and_miss(store: SQLiteDatabase) -> None:
 async def test_list_viewer_stats_order_by_whitelist(store: SQLiteDatabase) -> None:
     """list_viewer_stats：合法 order_by 排序、limit 生效；非法值抛 ValueError。"""
     # 准备 3 个不同指标的观众
-    await store.viewers.upsert_viewer_message(
-        user_id="u_msg", user_name="msg 用户", timestamp_ms=1_700_000_000_000
-    )
-    await store.viewers.upsert_viewer_message(
-        user_id="u_msg", user_name="msg 用户", timestamp_ms=1_700_000_001_000
-    )
-    await store.viewers.upsert_viewer_gift(
-        user_id="u_gift", user_name="gift 用户", timestamp_ms=1_700_000_002_000
-    )
-    await store.viewers.upsert_viewer_gift(
-        user_id="u_gift", user_name="gift 用户", timestamp_ms=1_700_000_003_000
-    )
-    await store.viewers.upsert_viewer_gift(
-        user_id="u_gift", user_name="gift 用户", timestamp_ms=1_700_000_004_000
-    )
+    await store.viewers.upsert_viewer_message(user_id="u_msg", user_name="msg 用户", timestamp_ms=1_700_000_000_000)
+    await store.viewers.upsert_viewer_message(user_id="u_msg", user_name="msg 用户", timestamp_ms=1_700_000_001_000)
+    await store.viewers.upsert_viewer_gift(user_id="u_gift", user_name="gift 用户", timestamp_ms=1_700_000_002_000)
+    await store.viewers.upsert_viewer_gift(user_id="u_gift", user_name="gift 用户", timestamp_ms=1_700_000_003_000)
+    await store.viewers.upsert_viewer_gift(user_id="u_gift", user_name="gift 用户", timestamp_ms=1_700_000_004_000)
     await store.viewers.upsert_viewer_replied(user_id="u_repl", timestamp_ms=1_700_000_005_000)
     await store.viewers.upsert_viewer_replied(user_id="u_repl", timestamp_ms=1_700_000_006_000)
 

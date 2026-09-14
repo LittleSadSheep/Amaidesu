@@ -231,16 +231,11 @@ class TestDependencyDirection:
         violations = []
         for target in ["agent", "tool"]:
             for dep in dependencies.get(target, []):
-                violations.append(
-                    {"target": target, "file": dep["file"], "module": dep["module"], "line": dep["line"]}
-                )
+                violations.append({"target": target, "file": dep["file"], "module": dep["module"], "line": dep["line"]})
 
         if violations:
             violation_details = "\n".join(
-                [
-                    f"  - {v['file']}:{v['line']} imports from {v['target']} (module: {v['module']})"
-                    for v in violations
-                ]
+                [f"  - {v['file']}:{v['line']} imports from {v['target']} (module: {v['module']})" for v in violations]
             )
             raise AssertionError(
                 f"Input Domain (collectors) MUST NOT directly import Agent or Tool modules.\n"
@@ -256,16 +251,11 @@ class TestDependencyDirection:
         violations = []
         for dep in dependencies.get("tool", []):
             # 允许 type-checking 内的 import（duck-typed Protocol）；已在 extract_imports 跳过 TYPE_CHECKING
-            violations.append(
-                {"file": dep["file"], "module": dep["module"], "line": dep["line"]}
-            )
+            violations.append({"file": dep["file"], "module": dep["module"], "line": dep["line"]})
 
         if violations:
             violation_details = "\n".join(
-                [
-                    f"  - {v['file']}:{v['line']} imports from tool (module: {v['module']})"
-                    for v in violations
-                ]
+                [f"  - {v['file']}:{v['line']} imports from tool (module: {v['module']})" for v in violations]
             )
             raise AssertionError(
                 f"Agent SHOULD NOT directly import Tool modules.\n"
@@ -280,16 +270,11 @@ class TestDependencyDirection:
 
         violations = []
         for dep in dependencies.get("agent", []):
-            violations.append(
-                {"file": dep["file"], "module": dep["module"], "line": dep["line"]}
-            )
+            violations.append({"file": dep["file"], "module": dep["module"], "line": dep["line"]})
 
         if violations:
             violation_details = "\n".join(
-                [
-                    f"  - {v['file']}:{v['line']} imports from agent (module: {v['module']})"
-                    for v in violations
-                ]
+                [f"  - {v['file']}:{v['line']} imports from agent (module: {v['module']})" for v in violations]
             )
             raise AssertionError(
                 f"Tool layer MUST NOT depend on Agent modules.\n"
@@ -340,11 +325,7 @@ class TestDependencyDirection:
         graph: Dict[str, Set[str]] = {}
         for layer in ["input", "agent", "tool"]:
             dependencies = analyze_layer_dependencies(layer)
-            domain_deps = {
-                target
-                for target in dependencies.keys()
-                if target in ["input", "agent", "tool"]
-            }
+            domain_deps = {target for target in dependencies.keys() if target in ["input", "agent", "tool"]}
             graph[layer] = domain_deps
 
         def has_cycle(

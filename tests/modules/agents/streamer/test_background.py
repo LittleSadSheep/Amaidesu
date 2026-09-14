@@ -327,12 +327,8 @@ class TestBackgroundSubscribeGuard:
             gift_handlers = self._wrapped_handlers(bus, "room.message.gift")  # type: ignore[has-type]
             sc_handlers = self._wrapped_handlers(bus, "room.message.super_chat")  # type: ignore[has-type]
             for entries in (gift_handlers, sc_handlers):
-                original = [
-                    getattr(e, "original_handler", None) for e in entries
-                ]
-                wrapped = [
-                    getattr(e, "handler", None) for e in entries
-                ]
+                original = [getattr(e, "original_handler", None) for e in entries]
+                wrapped = [getattr(e, "handler", None) for e in entries]
                 assert maintainer._handle_memory_event in original
                 # typed_wrapper 必须有，验证 EventBus 已接管路由
                 assert any(wrapped)
@@ -364,9 +360,7 @@ class TestBackgroundSubscribeGuard:
             gift_handlers = self._wrapped_handlers(bus, "room.message.gift")  # type: ignore[has-type]
             sc_handlers = self._wrapped_handlers(bus, "room.message.super_chat")  # type: ignore[has-type]
             for entries in (gift_handlers, sc_handlers):
-                original = [
-                    getattr(e, "original_handler", None) for e in entries
-                ]
+                original = [getattr(e, "original_handler", None) for e in entries]
                 assert original.count(maintainer._handle_memory_event) == 1
         finally:
             await maintainer.stop()

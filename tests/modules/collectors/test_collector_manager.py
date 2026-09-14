@@ -10,8 +10,6 @@ CollectorManager / BaseCollector 单元测试（Wave 3 / §1.52）
 
 from __future__ import annotations
 
-from typing import Iterable
-
 import pytest
 
 from src.modules.collectors import BaseCollector, CollectorManager

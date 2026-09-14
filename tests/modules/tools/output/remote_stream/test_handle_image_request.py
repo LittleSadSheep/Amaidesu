@@ -11,6 +11,7 @@
 - ``build_*`` 工厂方法生成正确 payload
 - ``dispatch_message`` 按 type 分发到对应回调
 """
+
 import base64
 import json
 import time
@@ -42,9 +43,7 @@ class TestStreamMessageRoundtrip:
 
 class TestRemoteStreamTypesBuilders:
     def test_build_config_message(self):
-        msg = RemoteStreamTypes.build_config_message(
-            AudioConfig(sample_rate=16000), ImageConfig(width=640)
-        )
+        msg = RemoteStreamTypes.build_config_message(AudioConfig(sample_rate=16000), ImageConfig(width=640))
         assert msg.type == MessageType.CONFIG
         assert msg.data["audio"]["sample_rate"] == 16000
         assert msg.data["image"]["width"] == 640
@@ -102,9 +101,7 @@ class TestDispatchMessage:
     def test_dispatch_unknown_message_ignored(self):
         """未匹配 type 的消息被静默忽略，不抛异常"""
         # 没有注册任何回调
-        RemoteStreamTypes.dispatch_message(
-            StreamMessage(type="unknown_type", data={})
-        )
+        RemoteStreamTypes.dispatch_message(StreamMessage(type="unknown_type", data={}))
         # 不抛异常即通过
 
     def test_dispatch_to_audio_data_decodes_base64(self):

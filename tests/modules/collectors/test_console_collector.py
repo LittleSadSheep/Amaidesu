@@ -61,6 +61,7 @@ def test_console_start_emits_danmaku_on_input() -> None:
     sys.stdin.readline = lambda: next(input_lines)  # type: ignore[assignment]
 
     try:
+
         async def run():
             await collector.start()
             for _ in range(20):

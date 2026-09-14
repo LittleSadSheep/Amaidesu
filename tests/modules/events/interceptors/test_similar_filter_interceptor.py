@@ -12,8 +12,6 @@ verbatim 行为：
 
 from __future__ import annotations
 
-import asyncio
-
 from src.modules.events.interceptors.similar_filter import SimilarFilterInterceptor
 
 

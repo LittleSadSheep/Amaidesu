@@ -63,7 +63,15 @@ class TestGeneration:
     def test_generated_infra_has_sections(self, temp_config_dir):
         generate_default_configs(temp_config_dir)
         infra_content = (temp_config_dir / "infra.toml").read_text(encoding="utf-8-sig")
-        for section in ("[tts]", "[subtitle]", "[events]", "[interceptors.rate_limit]", "[dashboard]", "[logging]", "[simulator]"):
+        for section in (
+            "[tts]",
+            "[subtitle]",
+            "[events]",
+            "[interceptors.rate_limit]",
+            "[dashboard]",
+            "[logging]",
+            "[simulator]",
+        ):
             assert section in infra_content
 
     def test_generated_tools_has_tools_section(self, temp_config_dir):
@@ -112,9 +120,7 @@ class TestLoading:
         generate_default_configs(temp_config_dir)
         agents_path = temp_config_dir / "agents.toml"
         content = agents_path.read_text(encoding="utf-8-sig")
-        content = content.replace(
-            f'version = "{CONFIG_BASELINE_VERSION}"', 'version = "2.0.32"', 1
-        )
+        content = content.replace(f'version = "{CONFIG_BASELINE_VERSION}"', 'version = "2.0.32"', 1)
         agents_path.write_text(content, encoding="utf-8-sig")
 
         assert get_config_version(temp_config_dir, "agents.toml") == "2.0.32"

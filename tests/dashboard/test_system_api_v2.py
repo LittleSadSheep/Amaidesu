@@ -16,10 +16,6 @@ import pytest
 from fastapi.testclient import TestClient
 
 
-
-
-
-
 class _FakeEventStats:
     def __init__(self, emit_count: int) -> None:
         self.emit_count = emit_count

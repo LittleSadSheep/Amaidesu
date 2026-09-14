@@ -9,6 +9,7 @@
 因此旧 handler 的 ``_handle_obs_command_event`` 三参数签名测试不再适用。
 本文件保留针对三个工具的单元测试。
 """
+
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -43,9 +44,7 @@ async def test_obs_send_text_tool_calls_send_text_to_obs(monkeypatch):
     provider = _make_obs_provider(monkeypatch)
     provider._send_text_to_obs = AsyncMock()
 
-    result = await provider.invoke(
-        ToolInvocation(tool_name="obs_send_text", arguments={"text": "hello"})
-    )
+    result = await provider.invoke(ToolInvocation(tool_name="obs_send_text", arguments={"text": "hello"}))
 
     assert result.success is True
     provider._send_text_to_obs.assert_awaited_once_with("hello", None)
@@ -57,9 +56,7 @@ async def test_obs_switch_scene_tool_calls_switch_scene(monkeypatch):
     provider = _make_obs_provider(monkeypatch)
     provider.switch_scene = AsyncMock()
 
-    result = await provider.invoke(
-        ToolInvocation(tool_name="obs_switch_scene", arguments={"scene_name": "main"})
-    )
+    result = await provider.invoke(ToolInvocation(tool_name="obs_switch_scene", arguments={"scene_name": "main"}))
 
     assert result.success is True
     provider.switch_scene.assert_awaited_once_with("main")
@@ -87,9 +84,7 @@ async def test_obs_unknown_tool_returns_failure(monkeypatch):
     """未知工具名返回失败 ToolExecutionResult，不抛异常"""
     provider = _make_obs_provider(monkeypatch)
 
-    result = await provider.invoke(
-        ToolInvocation(tool_name="obs_unknown", arguments={})
-    )
+    result = await provider.invoke(ToolInvocation(tool_name="obs_unknown", arguments={}))
 
     assert result.success is False
     assert "未知" in result.error_message or "不属于" in result.error_message
