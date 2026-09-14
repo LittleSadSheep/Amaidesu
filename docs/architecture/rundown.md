@@ -4,8 +4,6 @@
 > 流程单是主播 Agent 的"战略层"轻量形态：导演预写的环节清单（备忘录）叠加超时提醒（闹钟），让一场直播按预定义环节自动获得方向——零观众也能按计划直播，弹幕可打断但始终对齐当前环节。
 > 事件表、数据流规则等单一事实源不在此重复，见[事件系统](./event-system.md)与[数据流规则](./data-flow.md)。
 
-> **历史沿革**：v1 称"直播大纲 Outline"，v2 重命名为 Agenda 并实现为独立调度子系统，v3 推翻重设计为流程单并采纳行业术语（英文制作圈 Run of Show / rundown、日语圈 進行表、中文圈分钟级脚本）。行业对"逐字稿"与"环节时间轴"的切分是本次重设计的粒度依据：流程单只做环节时间轴，话术由 Agent 现场即兴。决策缘由见 [ADR-011](../decisions/011-rundown-replaces-agenda.md)。
-
 ## 设计公理
 
 1. **备忘录 + 闹钟**：流程单不是执行器，是给自驱动 Agent 的参考材料与定时提醒。它不驱动任何循环。
@@ -89,7 +87,6 @@ CREATE TABLE IF NOT EXISTS rundowns (
 
 - 环节列表整体读写（每单 3-10 环节），不建子表。
 - **运行进度不持久化**：重启即重读流程单从头开始；崩溃续播是伪需求。
-- v2 遗留的 `agenda_plan` / `agenda_runtime` 两表在 schema 迁移中 DROP（该存储链路从未接线，表保证为空）。
 - TOML 无关：流程单没有文件格式，一律经 WebUI 建立。
 
 ## 运行时状态（`rundown_state.py`）
@@ -132,8 +129,6 @@ CREATE TABLE IF NOT EXISTS rundowns (
 
 环节 `expected_ms` 到期后，闹钟按冷却间隔（`rundown_overdue_interval_ms`，默认 1 分钟）置 `rundown_overdue` 信号唤醒一轮 proactive 决策。Agent 醒来看到的情境是"当前环节已超时 X 分钟"，由它自行决定继续、切换或收尾——**只提醒，不执法**。若未来证明需要硬切换，在闹钟处加 `hard_cutoff` 策略直接调 `goto` 即可（预留，不实现）。
 
-v2 的独立调度循环与旧检查点事件不保留；空闲提醒职责归 ProactiveTrigger 自身，与流程单无关。
-
 ## 事件（唯一）
 
 `rundown.changed` / `RundownChangedPayload`：
@@ -164,8 +159,6 @@ v2 的独立调度循环与旧检查点事件不保留；空闲提醒职责归 P
 [agents.streamer]
 rundown_id = ""   # 空 = 使用内置默认流程单；指向 rundowns 表中的 id
 ```
-
-v2 的 agenda_* / v1 的 outline_* 字段在配置迁移中剥离，不做内容迁移（Agenda 默认关闭且从未实测，无存量数据）。
 
 ## 架构约束
 

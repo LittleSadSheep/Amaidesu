@@ -1,4 +1,4 @@
-# 数据流规则（v2.0.0）
+# 数据流规则
 
 > **本文档是 Amaidesu v2 数据流与边界规则的权威定义。** 完整事件表见 [事件系统](event-system.md)；组件清单以代码为唯一事实源（`src/`、`ToolRegistry`）。本文不复制事件表与组件清单，只约束数据怎么走、边界在哪里。
 
@@ -63,7 +63,7 @@ subgraph StreamerAgent["StreamerAgent src/agents/streamer/"]
     end
 
     subgraph Storage["存储 SQLite"]
-        DB[("live_sessions / live_chat<br/>gifts / super_chats / rundowns")]
+        DB[("13 张业务表：live_sessions / live_chat / gifts<br/>super_chats / topics / viewers / rundowns<br/>game_events / timeline_summary / llm_usage<br/>sim_personas / sim_gifts / llm_requests")]
     end
 
     Ext --> Collectors
@@ -81,7 +81,7 @@ subgraph StreamerAgent["StreamerAgent src/agents/streamer/"]
     StreamerAgent -.->|emotion 直接 invoke| Other
 ```
 
-> 图例说明：实线箭头是当前主链路；虚线箭头是辅助通道（reply 产出的发言入队、TTS 生命周期事件广播、emotion 直调）。Planner 的全部工具调用（含收尾的 streamer_reply）都经 `registry.invoke`——ReAct 循环内同步持有返回值；`tool.result.<name>` 事件是终点广播，供 Dashboard 溯源，Planner 不订阅。reply 结果的 speech 字段由 StreamerAgent 解析后经 UtteranceQueue 串行送入装配期注入的 `tts_engine` 实例（`build_tts_infrastructure` 按 `infra.toml [tts].provider` 单选构造后直接注入 StreamerAgent），由其 `handle_speech(text, utterance_id)` 完成合成 + 播放——不再经 ToolRegistry；emotion 字段由 StreamerAgent 解析后**直接 invoke** `vts_set_expression` 工具，不经事件；TTS 引擎自身（基础模块）播放生命周期发布 `tts.utterance.*` 三事件。皮套口型同步链路已拆除（见文末"通信机制选型"末段）。
+> 图例说明：实线箭头是当前主链路；虚线箭头是辅助通道（reply 产出的发言入队、TTS 生命周期事件广播、emotion 直调）。Planner 的全部工具调用（含收尾的 streamer_reply）都经 `registry.invoke`——ReAct 循环内同步持有返回值；`tool.result.<name>` 事件是终点广播，供 Dashboard 溯源，Planner 不订阅。reply 结果的 speech 字段由 StreamerAgent 解析后经 UtteranceQueue 串行送入装配期注入的 `tts_engine` 实例（`build_tts_infrastructure` 按 `infra.toml [tts].provider` 单选构造后直接注入 StreamerAgent），由其 `handle_speech(text, utterance_id)` 完成合成 + 播放——不再经 ToolRegistry；emotion 字段由 StreamerAgent 解析后**直接 invoke** `vts_set_expression` 工具，不经事件；TTS 引擎自身（基础模块）播放生命周期发布 `tts.utterance.*` 三事件。皮套口型同步不走数据流通道（见文末"通信机制选型"末段）。
 
 ---
 
@@ -94,7 +94,7 @@ subgraph StreamerAgent["StreamerAgent src/agents/streamer/"]
 - **采集器只发布不订阅下游结果事件**。采集器订阅任何下游 Agent/工具结果事件 = 禁止。采集器在 `collect()` 内自行构造 `RoomMessagePayload` 等事件载荷并 emit 到 EventBus（自产自发，基类零转换零兜底），然后退出。
 - **工具异步结果走 `tool.result.<tool_name>`，不得回流到任何采集器**。`tool.result.choose_option` 之类的结果事件由需要它的 Agent（如 Planner）订阅以驱动后续动作；任何采集器订阅 `tool.result.#` = 禁止。
 - **同步工具调用的返回值天然单向**。`await ToolRegistry.invoke(name, args)` 的返回值由调用方持有，工具实现不感知调用方后续动作，也不得反过来通过事件重新写入。
-- **Agent 内部子组件不跨子组件发"决策完成""输出完成"之类胶水事件**。`decision.intent.generated` / `output.intent.*` 一类事件在 v2 已删除——Planner→Replyer 是同 Agent 内部直接 await，不经事件中转。
+- **Agent 内部子组件不跨子组件发"决策完成""输出完成"之类胶水事件**。Planner→Replyer 是同 Agent 内部直接 await，不经事件中转。
 
 这条守护的是**防环**：一旦工具结果或 Agent 内部产物能重新写入触发新决策，就会形成"输出→决策→输出"的无限循环。
 
@@ -209,8 +209,8 @@ v2 不再有"插件系统"。所有新功能通过 Agent 包内聚实现，框�
 
 - **每一步都是单向流动**。控制台输入 → EventBus → StreamerAgent → 工具调用 → 返回值，全程无环。Planner→Replyer 是同 Agent 内 await（经 registry 调用而非事件中转）。
 - **拦截器层是全局单点**。RateLimit/SimilarFilter 作用于 `room.message.*`，所有订阅者共享净化后的结果。`core.*` / `live.*` / `planner.*` / `tts.utterance.*` 等不经过拦截器。
-- **TTS 是基础模块而非工具**。每句 reply 落库即发声——reply 结构化结果的 `speech` 字段由 StreamerAgent 主动入 UtteranceQueue，不依赖 LLM 决策调用 TTS 工具（TTS 已提升为基础设施、移出 ToolRegistry）；装配期 `build_tts_infrastructure(infra.toml [tts], event_bus)` 按 `[tts].provider` 单选构造引擎实例并直接注入 StreamerAgent，运行时由 UtteranceQueue 通过注入的 `speak` 适配器调 `engine.handle_speech`——零 Facade 路由层、零 ToolRegistry 条目。`infra.toml [tts]` 自包含（行为参数 + 四引擎子段），`tools.toml` 无任何 TTS 段，详见 ADR-007。
-- **空转提醒不经事件**。独立调度循环与旧检查点事件已随流程单重设计删除；空闲提醒职责归 ProactiveTrigger 自身（流程单超时提醒是其触发源之一）。
+- **TTS 是基础模块而非工具**。每句 reply 落库即发声——reply 结构化结果的 `speech` 字段由 StreamerAgent 主动入 UtteranceQueue，不依赖 LLM 决策调用 TTS 工具；装配期 `build_tts_infrastructure(infra.toml [tts], event_bus)` 按 `[tts].provider` 单选构造引擎实例并直接注入 StreamerAgent，运行时由 UtteranceQueue 通过注入的 `speak` 适配器调 `engine.handle_speech`——零 Facade 路由层、零 ToolRegistry 条目。`infra.toml [tts]` 自包含（行为参数 + 四引擎子段），`tools.toml` 无任何 TTS 段，详见 ADR-007。
+- **空转提醒不经事件**。空闲提醒职责归 ProactiveTrigger 自身（流程单超时提醒是其触发源之一）。
 
 ---
 
@@ -222,17 +222,15 @@ v2 中不同数据走不同通道，不要混用：
 |------|------|---------|--------------|
 | **EventBus** | 元数据事件（房间消息、状态变更、工具结果、流程单变更、TTS 生命周期） | 小型 JSON/Pydantic 对象 | `room.message.danmaku` / `tool.result.choose_option` / `rundown.changed` / `tts.utterance.started` |
 | **ToolRegistry.invoke** | 同步/异步工具调用 | 调用方持有 `ToolExecutionResult` | `await registry.invoke("streamer_reply", args)` / `await registry.invoke("vts_set_expression", args)` |
-| **基础模块直调** | TTS 引擎由装配期注入，运行时绕过 ToolRegistry | 调用方持有引擎实例 | `await tts_engine.handle_speech(text, utterance_id)`（StreamerAgent 内部 speak 适配器；TTS 已不在工具池） |
+| **基础模块直调** | TTS 引擎由装配期注入，运行时绕过 ToolRegistry | 调用方持有引擎实例 | `await tts_engine.handle_speech(text, utterance_id)`（StreamerAgent 内部 speak 适配器；TTS 不在工具池中） |
 
-**已拆除的 AudioStreamChannel（v2.0.6）**：TTS 音频块流的 pub-sub（`publish(AudioChunk)` + `subscribe(name, callbacks)` + 背压策略）已删除。原因：v2 是 pull-style 工具编排——音频数据走 ToolRegistry 调用的返回值（`ToolExecutionResult`），不再走扇出通道。皮套口型同步短期由皮套软件自取本地音频流（系统声音 / WASAPI loopback），中期由"工具 invoke 驱动 VTS 写入"的能力重建，均不依赖 push 通道。
+**EventBus 与 ToolRegistry 的边界**：事件总线是"发生了什么事"的广播；ToolRegistry 是"我要做什么事"的直接调用。同一工具调用既可以同步等结果，也可以 fire-and-forget 后让工具异步 emit `tool.result.<name>` 由订阅者回收——这两种语义都允许，工具实现侧在 `invoke()` 内自行决定。
 
-**EventBus 与 ToolRegistry 的边界**：事件总线是"发生了什么事"的广播；ToolRegistry 是"我要做什么事"的直接调用。同一工具调用既可以同步等结果，也可以 fire-and-forget 后让工具异步 emit `tool.result.<name>` 由订阅者回收——这两种语义在 v2 都允许，工具实现侧在 `invoke()` 内自行决定。
-
-**TTS 消费者的通道三分法（v2.0.10）**：不同消费方与语音的时间耦合度不同，通道选择按耦合度匹配：
+**TTS 消费者的通道三分法**：不同消费方与语音的时间耦合度不同，通道选择按耦合度匹配：
 
 | 耦合度 | 通道 | 典型消费方 | 数据形态 |
 |--------|------|-----------|---------|
-| **帧级**（需要逐块 PCM 同步） | **工具 invoke 参数**（流式）—— 暂留白，详见 ADR-007 §后果 | （未来）皮套口型精准同步 | 原始音频块 |
+| **帧级**（需要逐块 PCM 同步） | **工具 invoke 参数**（流式）—— 暂留白，详见 ADR-007 | （未来）皮套口型精准同步 | 原始音频块 |
 | **起止对齐**（与播放区间对齐） | **订阅 `tts.utterance.started` / `finished`** | （预留）字幕写入器、播放耗时记账器 | `UtteranceStartedPayload` / `UtteranceFinishedPayload` |
 | **无耦合**（独立于播放时机） | **直接 invoke 工具**（不经 TTS 队列、不经事件） | emotion → `vts_set_expression`、action → （暂未接线） | 工具自身契约 |
 
@@ -268,4 +266,4 @@ v2 中不同数据走不同通道，不要混用：
 | 事件命名规范与语义域分层 | [事件命名](event-naming.md) |
 | Agent/工具/采集器三范式开发详解 | [组件开发指南](../guides/component.md) |
 | 拦截器开发指南 | [事件系统 - 事件拦截器](event-system.md#事件拦截器interceptor) |
-| ADR 决策记录（Wave 1-6 各次重构） | [架构决策记录](../decisions/README.md) |
+| ADR 决策记录 | [架构决策记录](../decisions/README.md) |

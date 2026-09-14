@@ -10,8 +10,8 @@
 **模拟器 = 开发基础设施**（与 Dashboard / `--dry` / 日志系统同类），不属于生产直播组件：
 
 - **默认关闭**：`[simulator].enabled = false`（生产零沾染）；
-- **按需装配**：组合根 `main.create_app_components` 第 ① 段（构造+接线）实例化 `SimulatorService` 并挂入生命周期，注入存储仓储；启动（setup/auto_start）在第 ② 段——Agent 订阅生效之后（两段装配纪律见 data-flow.md §7）；
-- **数据二等**：模拟器产生的事件 payload `simulated=True` 溯源标记贯穿，统计与入库一律排除（详见 §5）。
+- **按需装配**：组合根 `main.create_app_components` 第 ① 段（构造+接线）实例化 `SimulatorService` 并挂入生命周期，注入存储仓储；启动（setup/auto_start）在第 ② 段——Agent 订阅生效之后（两段装配纪律见[数据流规则 - 装配纪律](../architecture/data-flow.md#7-装配纪律两段装配)）；
+- **数据二等**：模拟器产生的事件 payload `simulated=True` 溯源标记贯穿，统计与入库一律排除（详见「simulated 溯源定案」一节）。
 
 **主体性判据检验**（AGENTS.md 红线）：模拟器不采集任何东西（不是采集器），不被调才干活（不是工具）；四态节奏与人设池自我驱动——按判据是 Agent 形态，但服务于开发者而非观众，故归入**开发工具分类**以可选装配的开发服务形态存在。
 

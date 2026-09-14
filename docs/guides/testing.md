@@ -130,16 +130,16 @@ async def test_event_bus_error_isolation(event_bus):
     async def normal_handler(event_name, payload, source):
         results.append("normal")
 
-    event_bus.on("test.event", failing_handler, RoomMessagePayload, priority=10)
-    event_bus.on("test.event", normal_handler, RoomMessagePayload, priority=20)
+    event_bus.on("test.event", failing_handler, RoomMessagePayload)
+    event_bus.on("test.event", normal_handler, RoomMessagePayload)
 
-    # 启用错误隔离
+    # 处理器异常在 EventBus 内部闭环（计数 + ERROR 日志），不向外传播
     await event_bus.emit("test.event", RoomMessagePayload(
         message_type="danmaku", user=RoomMessageUser(id="u1", name="观众A"), content="test"
-    ), source="test", error_isolate=True)
+    ), source="test")
     await asyncio.sleep(0.1)
 
-    # 验证两个处理器都执行了
+    # 验证一个处理器抛异常没有影响另一个
     assert "before_error" in results
     assert "normal" in results
 ```

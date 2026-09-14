@@ -12,7 +12,7 @@ Minecraft 游戏 Agent（AI 玩家）的架构设计。定位：事件驱动的 
 **MinecraftAgent = 一个用 MCP 工具玩 Minecraft 的普通 ReAct Agent。**
 
 - 系统提示词 + 工具列表 = 全部"编程"，不发明任何特殊协议
-- 主播 Agent 是它的用户：发指令（已退役 `minecraft_send_prompt`；跨 Agent 派活走框架委派 `framework_delegate`）/读工作文档（`minecraft_get_work_log`）/收上报（`game.report`）
+- 主播 Agent 是它的用户：发指令（跨 Agent 派活走框架委派 `framework_delegate`）/读工作文档（`minecraft_get_work_log`）/收上报（`game.report`）
 - execute 受理异步是唯一系统特判：`maicraft_execute` 返回受理回执（task_id），真实执行由 Mod 后台 tick 驱动（分钟级）——系统登记 handoff 跟踪，事件驱动唤醒（见下节），LLM 不用推理步数轮询
 - LLM 可一次返回多个 tool_calls（批量请求 → 串行执行 → 批量作为观察返回，标准 function calling 循环）
 
@@ -71,7 +71,7 @@ execute 受理 ≠ 完成：等待期 LLM 自由行动（推进其他 todo / 记
 | `maicraft_perceive` / `maicraft_execute` / `maicraft_task` 等 | registry 动态发现的 MCP 工具（每任务重新拉取）；参数按 Mod 定义填写 |
 
 **对外工具**（经 ToolRegistry 注册、主播工具列表可见，不进玩家 LLM 工具列表）：
-- `framework_delegate`：跨 Agent 委派通道——把工作交给另一 Agent（指令只当自然语言，不给步骤）；BaseAgent 默认拒收，minecraft 实现接收入口（指令入队带任务号 + 唤醒）。`minecraft_send_prompt` 已退役（职能并入接收委派入口），跨 Agent 派活的发送侧走框架委派而非 mcp 工具
+- `framework_delegate`：跨 Agent 委派通道——把工作交给另一 Agent（指令只当自然语言，不给步骤）；BaseAgent 默认拒收，minecraft 实现接收入口（指令入队带任务号 + 唤醒）。跨 Agent 派活的发送侧走框架委派而非 mcp 工具
 - `minecraft_get_work_log`：工作文档读服务——只读返回 `{todo, notebook, recent_reports}` 三元组；本工具不查异步任务记录表，查任务进度用 `framework_task_status`（跨 Agent 委派 + 回执型工具的当前状态与快照）
 
 ## 事件契约（确定性系统事件，无 LLM 自觉汇报）
@@ -114,7 +114,7 @@ url = "http://127.0.0.1:8766/mcp"
 ## 相关文档
 
 - 组件图与目录结构以代码为唯一事实源（`src/`、`ToolRegistry`）
-- [v2.0.0 架构叙事](v2-architecture.md) — Agent/Tool 判据推导
+- [架构叙事](v2-architecture.md) — Agent/Tool 判据推导
 - [事件系统](event-system.md) — game.* 事件语义单一事实源
 - [数据流规则](data-flow.md) — 事件流约束
 - [组件开发指南](../guides/component.md) — 游戏 Agent 范式

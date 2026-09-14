@@ -1,15 +1,15 @@
 # 事件命名规范（v2 语义域）
 
-> **本文档是 Amaidesu v2.0.0 事件命名的单一事实源**。所有新增事件必须先按本文档规则起名，再写代码；代码中的事件名以 [事件系统 - 事件事实表](event-system.md#事件事实表与拓扑) 为权威定义。
+> **本文档是 Amaidesu 事件命名的单一事实源**。所有新增事件必须先按本文档规则起名，再写代码；代码中的事件名以 [事件系统 - 事件事实表](event-system.md#事件事实表与拓扑) 为权威定义。
 >
-> **取代**：v1 三阶段命名规范（`{domain}.{entity}.{verb}` + `input/decision/output` 阶段前缀 + `received → generated → dispatched` 动词链）。v2 已无三阶段，命名全面改为**语义域 + 已发生事实**。
+> 命名格式：**语义域 + 已发生事实**——无三阶段（input / decision / output）、无动词链（received → generated → dispatched）。
 
 ---
 
 ## TL;DR
 
 > 事件名 = **域.子类（可选）.动作**，已发生事实语义（过去时），无阶段化、无动词链。
-> 域（首段）= **拥有这个事实的来源子系统**——世界适配器（直播平台、游戏）与内部组件（Planner、TTS 等）都是合法来源，**不是阶段**（input/decision/output 已删除）。
+> 域（首段）= **拥有这个事实的来源子系统**——世界适配器（直播平台、游戏）与内部组件（Planner、TTS 等）都是合法来源，**不是阶段名**（input/decision/output 不存在）。
 > payload 形态两规则：同族 + 同（超集）形状 → 一个类多注册 + 判别字段；形状不同 → 一事件一个类。
 > 一个概念一个名字（查术语表，不混用同义词）；一个动词一个意思（细化，不要 `updated` / `data` 这种泛词）。
 > 起名前先查这里；7 条自查清单不过 → 停下重审。
@@ -24,7 +24,7 @@
 
 | 部分 | 必填 | 说明 | 示例 |
 |---|---|---|---|
-| `域` | ✅ | **拥有这个事实的来源子系统**（见 §2）：core/live/room/game/rundown/planner/streamer/tts/task | `room` |
+| `域` | ✅ | **拥有这个事实的来源子系统**：core/live/room/game/rundown/planner/streamer/tts/task | `room` |
 | `子类` | 可选 | 该域内的**子层**：`message`（行为流）/ `state`（状态快照）/ `result`（工具结果）/ `command`（命令下发） | `message` |
 | `动作` | ✅ | **已发生的事实**（过去时语义）：具体、单一、无歧义 | `danmaku` |
 
@@ -58,13 +58,11 @@
 | **task** | 异步任务生命周期（受理 → 进行中含决策点 → 终态）。发起方订阅按 `payload.initiator` 过滤唤醒；**通知是提示、查询是事实源**（记录表是事实源） | `task.changed` |
 | **tool**（通配前缀） | 异步工具结果 / 工具健康切换。**通配 pattern**：`tool.result.#` / `tool.health.#` 一站式监听；emit 时用具体名 `tool.result.<tool_name>` | `tool.result.speak` / `tool.health.maicraft_speak` |
 
-> **v2.0.8 收口**：原 `output.sticker` 特例域（`output.sticker.command`，§1.46.1 保留事件）已随 C1 治理删除——StickerHelper 零实例化零调用、消费端 VTSProvider 仅空转订阅；接电线也救不了（无 LLM 工具暴露贴纸触发）。未来做表情功能时重新设计，本轮不留事件链。
-
 ---
 
 ## 3. 「语义域不命名阶段」原则（首要）
 
-> 2.0.0 无三阶段，**域 = 拥有事实的来源子系统**（见 §2），不是 input/decision/output。
+> 2.0.0 无三阶段，**域 = 拥有事实的来源子系统**，不是 input/decision/output。
 
 | ❌ 阶段命名 | ✅ 语义域命名 | 违反规则 |
 |---|---|---|
@@ -111,13 +109,13 @@
 - `.command` / `.control` = **命令下发**（将来时）→ 被调方执行
 - `.result.*` = **结果回传**（过去时）→ 工具结果通道
 
-> 旧 v1 用 `received` / `generated` / `dispatched` / `finished` 表达阶段流转；v2 **取消动词链**，事件已发生就是已发生，不存在"阶段流转"。
+> 事件名无动词链——事件已发生就是已发生，不存在"阶段流转"语义。
 
 ---
 
 ## 6. 命令 / 控制类：单事件 + payload 判别
 
-同类控制操作合并为**单事件 + action 判别**（沿用旧 OBS_COMMAND 模式）。
+同类控制操作合并为**单事件 + action 判别**。
 
 | ✅ 单事件 + action | ❌ 拆多事件 |
 |---|---|
@@ -299,23 +297,7 @@ class CoreEvents:
 | 工具时间线总结 | `tool.result.summarize_timeline` | `planner.timeline_ready`（散到 planner 域） | ⑦ 工具结果散落 |
 | 房间控制（未来） | `room.control` + `action: Literal[...]` | `room.set_title` / `room.ban` / `room.mute`（拆碎） | ⑥ 命令拆分 |
 | 系统启动 | `core.startup` | `system.startup`（重复 system 前缀） / `core.started`（与事件名一致而非字段） | ④ 概念名统一 |
-| 决策意图（v1 已删） | （无 Intent；v2 决策出口 = 工具调用，无事件） | `decision.intent.generated` | ① 阶段命名 + 无业务实体 |
-
----
-
-## 14. 与 v1 旧规范对照
-
-| 项 | v1 旧规范（阶段化） | v2 新规范（语义域） |
-|---|---|---|
-| 格式 | `{domain}.{entity}.{verb}` | `{域}.{子类(可选)}.{动作}` |
-| 首段 | 阶段（`input` / `decision` / `output` / `core`） | 拥有事实的来源子系统（`core` / `live` / `room` / `game` / `rundown` / `planner` / `streamer` / `tts` / `task` + `tool` 通配前缀） |
-| 动词链 | `received → generated → dispatched → finished` | **取消**（无阶段流转，用已发生事实） |
-| 层数 | 最多 3 | 最多 4（子类存在时） |
-| 动词 | 带方向性（进 / 决策 / 出） | 已发生事实（完成态、过去时） |
-| 行为 / 状态 | 同层平铺（如 `room.danmaku` + `room.online`） | **强制分层**：行为流 `.message.*` vs 状态 `.state.*` |
-| 命令类 | 拆多事件（早期 `OUTPUT_OBS_SEND_TEXT` 等） | 单事件 + payload 判别（v2 实际未触发任何保留命令事件；`output.obs.*` 与 `output.sticker.*` 等命令类已在 Wave 6 / v2.0.8 删除） |
-| 工具结果 | 散落到 `output.*` | 统一 `tool.result.#` 通配 |
-| 通配风格 | — | AMQP topic 风格（`*` 单层 / `#` 多层），订阅者并发无序 |
+| 决策意图 | （无 Intent；v2 决策出口 = 工具调用，无事件） | `decision.intent.generated` | ① 阶段命名 + 无业务实体 |
 
 ---
 

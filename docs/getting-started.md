@@ -78,18 +78,21 @@ config/
 ```toml
 # config/model.toml
 [[llm_providers]]
-name = "deepseek"            # provider 名称（profile 中引用）
+name = "deepseek"            # provider 唯一名称（被 llm_models 的 api_provider 引用）
 client_type = "openai"       # 客户端类型
 base_url = "https://api.deepseek.com"
 api_key = "sk-your-key"      # 填入你的 API Key（留空会用 sk-dummy 并警告）
 
 [[llm_models]]
-provider = "deepseek"        # 引用上方 provider
-model_identifier = "deepseek-chat"
+name = "deepseek-chat"              # 模型唯一名（被 model_list 引用）
+model_identifier = "deepseek-chat"  # 传给 API 的 model 字段
+api_provider = "deepseek"           # 关联上方 provider
 
-[llm_profiles.planner]       # 决策核心（质量敏感）
+[llm_profiles.planner]              # 决策核心（质量敏感）
 model_list = ["deepseek-chat"]
-selection_strategy = "sequential"
+
+[llm_profiles.planner.selection_strategy]
+name = "sequential"
 
 [llm_profiles.replyer]       # 表达引擎
 model_list = ["deepseek-chat"]
@@ -179,7 +182,8 @@ uv run python main.py --dry
 | `tools.toml` | `[tools]` | 提供者开关（`[tools.avatar.*]` / `[tools.studio.*]` / `[tools.vision]` / `[tools.memory]` / `[tools.mcp]`）+ `disabled_tools` + `[tools.tasks]` / `[tools.health]` |
 | `model.toml` | `[[llm_providers]]` / `[[llm_models]]` / `[llm_profiles.<用途>]` | 三层模型结构；六用途 profile（planner/replyer/summary/minecraft/vision/simulator）必填 |
 | `storage.toml` | `[sqlite]` / `[memory]` | SQLite 连接（db_path / busy_timeout_ms）与记忆后端（backend="simple"） |
-| `infra.toml` | `[tts]` / `[subtitle]` / `[dashboard]` / `[logging]` / `[simulator]` / `[events]` / `[interceptors.*]` | 基础设施段集（hot 段：写后即时重载） |
+| `infra.toml` | `[tts]` / `[subtitle]` / `[dashboard]` / `[logging]` / `[simulator]` / `[events]` / `[agent_supervisor]` / `[interceptors.*]` | 基础设施段集（hot 段：写后即时重载） |
+
 > 字段权威定义在 `src/modules/config/*_schemas.py`；修改后加载管线自动写回补齐默认值；每文件 `[meta].version` 独立递进。
 
 ### 3.2 组件类型
@@ -348,7 +352,7 @@ port = 60214                                        # 监听端口
 cors_origins = ["http://localhost:60315", "http://127.0.0.1:60315"]  # 允许的跨域来源
 max_history_messages = 1000                         # WebSocket 推送的最大历史消息数
 websocket_heartbeat = 30                            # WebSocket 心跳间隔（秒）
-auto_open_browser = false                           # 启动时自动打开浏览器（生产模式生效）
+auto_open_browser = true                            # 启动时自动打开浏览器（生产模式生效）
 dev_mode = false                                    # 开发模式（通常由 CLI --dev-webui 启用）
 vite_dev_port = 60315                               # Vite 开发服务器端口（与 dashboard/vite.config.ts 保持一致）
 ```
@@ -363,28 +367,25 @@ vite_dev_port = 60315                               # Vite 开发服务器端口
 
 ## 5. 快速验证
 
-启动后，你应该能在日志里依次看到这些关键行（措辞与代码完全一致；实际 N 因注册的事件数变化）：
+启动后，你应该能在日志里依次看到这些关键行（措辞与代码一致；N / M / T 随启用的组件与注册的事件数变化）：
 
 ```
 [Info] 配置验证通过（v2 6-file tree 存在性 + 类型检查）
 [Info] 所有必要的配置文件已存在。继续正常启动...
+[Info] 初始化存储与记忆（SQLiteDatabase + SimpleMemory）...
 [Info] 初始化 LLM 服务...
 [Info] 已创建 LLM 服务实例
-[Info] 初始化上下文服务...
-[Info] 已创建上下文服务实例
 [Info] 初始化事件总线...
+[Info] SessionStampInterceptor 已注册（场次归属单点注入）
 [Info] RateLimitInterceptor 已注册（[interceptors.rate_limit]）
 [Info] SimilarFilterInterceptor 已注册（[interceptors.similar_filter]）
-[Info] 事件总线已初始化，事件拦截器已挂载
 [Info] 事件历史记录器已启动
 [Info] 初始化 CollectorManager（src/modules/collectors/）...
 [Info] CollectorManager 已启动（N 个 Collector）
 [Info] 初始化 AgentManager（src/agents/）...
+[Info] 核心工具包已绑定: 成功 N/M（尝试装配数）…
 [Info] AgentManager 已启动（N 个 Agent）
-[Info] bind_core_tools: 'vts' 已绑定，新增 N 个工具（VTubeStudio 控制）
-[Info] bind_core_tools: 'obs' 已绑定，新增 N 个工具（OBS Studio 控制）
-[Info] bind_core_tools: 'warudo' 未启用，跳过（Warudo 控制）
-[Info] AgentManager.audit_tools 完成；未实现声明：T（0 即通过）
+[Info] ToolRegistry 就绪（N 个工具已注册）
 [Info] 核心事件注册完成，共 N 个事件
 [Info] 应用程序正在运行。按 Ctrl+C 退出。
 ```

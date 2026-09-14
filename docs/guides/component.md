@@ -838,7 +838,7 @@ class MyToolProvider(ToolProvider):
         ↓
 4. EventBus 分发 → [拦截器链] RateLimitInterceptor / SimilarFilterInterceptor
         ↓ （返回 None = 丢弃；返回 dict = 放行）
-5. StreamerAgent._on_danmaku_received(payload) → handle_message(msg)
+5. StreamerAgent._on_room_message_received(payload) → handle_message(msg)
         ↓ 进入 MessageBuffer；TimingGate 判定是否强制响应
 6. StreamerAgent._flush_loop 周期检查 → MessageBuffer.should_flush()
         ↓ 取出一批弹幕

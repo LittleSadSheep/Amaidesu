@@ -268,7 +268,7 @@ uv run python main.py
 - [主播上下文构成](../architecture/streamer-context.md) - 主播 Agent 决策窗的消息形态、参考段与输入预算
 - [事件拦截器](../architecture/event-system.md#事件拦截器interceptor) - 如何开发自定义拦截器
 - [开发规范](../../AGENTS.md#代码约定) - 代码风格和约定
-- [v2 架构叙事](../architecture/v2-architecture.md) - v2.0.0 架构设计总览
+- [架构叙事](../architecture/v2-architecture.md) - 架构设计总览
 - [事件系统](../architecture/event-system.md) - EventBus 使用指南
 
 ---
