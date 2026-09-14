@@ -1,7 +1,4 @@
-"""ProactiveTrigger 单元测试（Wave 6 Streamer Agent 主动发言纯规则判定）。
-
-迁移自 ``tests/stages/decision/test_proactive_trigger.py``，verbatim 保留核心逻辑。
-"""
+"""ProactiveTrigger 单元测试——主播主动发言的纯规则判定器。"""
 
 from __future__ import annotations
 

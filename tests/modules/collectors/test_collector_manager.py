@@ -1,5 +1,5 @@
 """
-CollectorManager / BaseCollector 单元测试（Wave 3 / §1.52）
+CollectorManager / BaseCollector 单元测试
 
 覆盖：
 - 注册 / 去重

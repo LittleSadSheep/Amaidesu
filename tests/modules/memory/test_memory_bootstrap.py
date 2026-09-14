@@ -1,5 +1,5 @@
 """
-memory/bootstrap.py 单元测试（Wave 8 / 记忆接线修复）
+memory/bootstrap.py 单元测试
 
 覆盖：
 - ``build_memory_stack``：

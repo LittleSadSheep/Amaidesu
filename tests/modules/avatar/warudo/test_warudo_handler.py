@@ -1,4 +1,4 @@
-"""Warudo Provider 测试（Wave 4 迁移）
+"""Warudo Provider 测试
 
 注意：大部分需要外部环境的测试已被删除。
 本文件保留不需要外部环境的测试。

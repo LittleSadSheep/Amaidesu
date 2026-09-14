@@ -1,8 +1,7 @@
 """
-SimilarFilterInterceptor 事件拦截器测试（Wave 5）
+SimilarFilterInterceptor 事件拦截器测试
 
-由 ``test_similar_filter_pipeline.py`` 改造：从 Pipeline 测试改为 Interceptor 测试。
-verbatim 行为：
+行为：
 - 相似度算法（difflib.SequenceMatcher + 包含关系加权）
 - 跨用户过滤策略
 - 时间窗口缓存

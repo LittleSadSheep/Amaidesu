@@ -1,11 +1,7 @@
 """
-B 站消息类型测试（v2 / Wave 5+8 迁移后）
+B 站消息类型测试（v2）
 
-迁移自 ``tests/stages/input/shared/bili_messages/test_bili_messages.py``，现
-通过 ``src.modules.types.bili`` 公共共享类型验证。
-
-Wave 8 后 ``src/stages/`` 整体删除，BiliMessageType 等类型已完全归并到
-``src.modules.types.bili``，无 re-export 垫片。
+BiliMessageType 等类型归并在 ``src.modules.types.bili`` 下，通过该公共共享类型验证。
 """
 
 from src.modules.types.bili import (
@@ -151,10 +147,9 @@ class TestEnterMessage:
 
 
 class TestBiliMessageTypeConfig:
-    """消息类型过滤配置测试（v2 保留）
+    """消息类型过滤配置测试（v2 保留）。
 
-    注：``disable_via_key`` 路径在原 ``stages/input/shared/bili_messages/config.py``
-    中存在变量遮蔽 bug（W5 verbatim 保留，未修）。本测试仅覆盖默认行为。
+    注：``disable_via_key`` 路径存在变量遮蔽 bug，本测试仅覆盖默认行为。
     """
 
     def test_default_all_enabled(self) -> None:

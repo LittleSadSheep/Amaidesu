@@ -1,5 +1,5 @@
 """
-bilibili 采集器注册 + 基本 import 测试（Wave 5）
+bilibili 采集器注册 + 基本 import 测试
 
 覆盖：
 - 官方版 BiliDanmakuOfficialCollector 继承 BaseCollector

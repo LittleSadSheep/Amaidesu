@@ -1,8 +1,7 @@
 """
-Architecture tests to enforce proper dependency direction constraints（Wave 6 重写）
+Architecture tests to enforce proper dependency direction constraints
 
-Wave 6 重写：原 3-domain 架构（Input/Decision/Output）已演进为 Agent + Tool 体系。
-新分层（低 → 高）：
+分层（低 → 高）：
 - Core:    基础设施（src/modules/config, events, logging, llm, storage, ...）
 - Input:   采集器（src/modules/collectors/）
 - Agent:   Agent 子系统（src/agents/streamer/）
@@ -218,7 +217,7 @@ def analyze_layer_dependencies(layer: str) -> Dict[str, List[Dict]]:
 
 
 class TestDependencyDirection:
-    """Test suite for dependency direction architectural constraints (Wave 6 重写)。"""
+    """Test suite for dependency direction architectural constraints."""
 
     def test_input_domain_does_not_import_agent_or_tool(self):
         """采集器（Input Domain）不能直接 import Agent 或 Tool 模块。

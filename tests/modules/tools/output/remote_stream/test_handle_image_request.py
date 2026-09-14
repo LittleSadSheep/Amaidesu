@@ -1,7 +1,6 @@
-"""RemoteStream 消息协议测试（Wave 4 迁移）
+"""RemoteStream 消息协议测试
 
-原 RemoteStreamHandler 是带 websocket 脚手架的渲染器；Wave 4 拆分后只保留
-消息协议与分发器：
+RemoteStreamHandler 只保留消息协议与分发器，websocket 脚手架由外部承载：
 
 - ``MessageType`` / ``StreamMessage`` / ``AudioConfig`` / ``ImageConfig``
 - ``RemoteStreamTypes.dispatch_message()`` 消息分发

@@ -1,5 +1,5 @@
 """
-stt 采集器注册 + 基本 import 测试（Wave 5）
+stt 采集器注册 + 基本 import 测试
 
 覆盖：
 - STTCollector 继承 BaseCollector

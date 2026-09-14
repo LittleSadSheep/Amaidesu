@@ -1,13 +1,12 @@
-"""OBS Provider 工具测试（Wave 4 迁移）
+"""OBS Provider 工具测试
 
-原 ObsControlHandler 拆分为三个独立工具：
+OBS 能力以三个独立工具形式提供：
 - ``obs_send_text``
 - ``obs_switch_scene``
 - ``obs_set_source_visibility``
 
-``OUTPUT_OBS_COMMAND`` 事件被删除（用户拍板：OBS 是工具，无事件），
-因此旧 handler 的 ``_handle_obs_command_event`` 三参数签名测试不再适用。
-本文件保留针对三个工具的单元测试。
+OBS 作为工具直接调用，不通过事件总线投递命令。
+本文件对三个工具做单元测试。
 """
 
 from unittest.mock import AsyncMock, MagicMock

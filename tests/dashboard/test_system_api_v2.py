@@ -1,8 +1,8 @@
-"""系统状态 API 测试套件（Wave U1 / B1-B2）
+"""系统状态 API 测试套件
 
 覆盖：
 1. **GET /api/v1/system/status** — v2 响应形状（groups + event_bus）
-2. **/api/v1/system/stats 端点已删除**（旧桩清理）
+2. **/api/v1/system/stats 端点已下线**（旧桩清理）
 3. 工具组计数全部等于 len(tool_registry)（被动契约，无启用/运行区分）
 4. EventBus 总吞吐 = sum(emit_count)
 """
@@ -124,13 +124,13 @@ def test_status_groups_count_correctly(client: TestClient) -> None:
 
 
 def test_stats_endpoint_removed(client: TestClient) -> None:
-    """Wave U1 / B2：/api/v1/system/stats 端点已删除"""
+    """/api/v1/system/stats 端点已下线：GET 应返回 404。"""
     resp = client.get("/api/v1/system/stats")
     assert resp.status_code == 404
 
 
 def test_health_endpoint_still_present(client: TestClient) -> None:
-    """健康检查不受 Wave U1 影响。"""
+    """健康检查端点独立于统计端点：仍返回 ok。"""
     resp = client.get("/api/v1/system/health")
     assert resp.status_code == 200
     assert resp.json()["status"] == "ok"

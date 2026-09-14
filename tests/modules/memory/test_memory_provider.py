@@ -1,12 +1,12 @@
 """
-MemoryProvider / SimpleMemory 单元测试（Wave 3 / §1.50 + Wave 8 中文召回修复）
+MemoryProvider / SimpleMemory 单元测试
 
 覆盖：
 - MemoryProvider 接口（Protocol）可被实现/检查
 - SimpleMemory（SQLite 关键词召回）：
   - ingest 写入后 recall 能命中
 - query_memory 工具：注册入 ToolRegistry 后 invoke 返回文本
-- Wave 8 CJK 召回：
+- CJK 召回（CJK-aware ``_extract_keywords``）：
   - 中文短句 query 能召回已 ingest 的中文事实（主场景：弹幕直播间）
   - CJK 2-gram 滑动窗口对长 query 起效
   - 混合中英文 query 中 ASCII 词 + CJK 段都被正确抽取
@@ -193,7 +193,7 @@ async def test_query_tool_via_tool_registry(memory: SimpleMemory) -> None:
 
 
 async def test_recall_hit_timestamp_is_millisecond(memory: SimpleMemory) -> None:
-    """MemoryHit.timestamp_ms 是 int 毫秒（§1.44 / §1.53 9d）。"""
+    """MemoryHit.timestamp_ms 是 int 毫秒。"""
     ts = 1_726_000_000_123  # 12 位（毫秒）
     res = await memory.ingest("时间戳测试", timestamp_ms=ts)
     assert res.accepted
@@ -203,7 +203,7 @@ async def test_recall_hit_timestamp_is_millisecond(memory: SimpleMemory) -> None
     assert hits[0].timestamp_ms == ts
 
 
-# Wave 8 / 中文召回修复（CJK-aware _extract_keywords）
+# 中文召回（CJK-aware _extract_keywords）
 
 
 class TestExtractKeywords:

@@ -130,7 +130,7 @@ def test_agents_section_without_enabled_still_lists_children() -> None:
 
 
 class TestDescriptionEnrichment:
-    """Wave U1 / B7：description 字段从管理器/ToolSpec 填充（缺失时空串）。"""
+    """description 字段从管理器 / ToolSpec 填充（缺失时空串）。"""
 
     def test_collector_description_from_manager(self) -> None:
         config = _make_config()

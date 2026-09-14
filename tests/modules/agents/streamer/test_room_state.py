@@ -1,4 +1,4 @@
-"""RoomState 单元测试（Wave 6 Streamer Agent 后台记账滑动窗口）。"""
+"""RoomState 单元测试——热度滑动窗口与话题聚合。"""
 
 from __future__ import annotations
 

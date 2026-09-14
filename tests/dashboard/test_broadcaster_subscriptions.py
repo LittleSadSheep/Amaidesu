@@ -1,4 +1,4 @@
-"""EventBroadcaster 订阅测试（Wave U1 / B5）
+"""EventBroadcaster 订阅测试
 
 覆盖：
 1. 订阅 CoreEvents.ROOM_MESSAGE_{GIFT,SUPER_CHAT,ENTER} 并以 "room.message"
@@ -54,7 +54,7 @@ def bus_and_handler():
 
 @pytest.mark.asyncio
 async def test_broadcaster_subscribes_to_4_new_events(bus_and_handler) -> None:
-    """Wave U1 / B5：4 项新增订阅。"""
+    """start() 应订阅 gift / super_chat / enter / rundown.changed / tool.result.# 四类。"""
     from src.modules.dashboard.websocket.broadcaster import EventBroadcaster
 
     bus, ws = bus_and_handler

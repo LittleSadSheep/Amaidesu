@@ -1,9 +1,7 @@
 """Schema 默认值测试（六文件新结构）
 
-历史：原 TestCoreConfig 类测试 core.toml 的 CoreConfig 根——core.toml
-已消亡（§6.2 重构），CoreConfig 现为 dashboard 旧调用点的占位壳；
 persona / context / events / dashboard / simulator / logging / interceptors
-各段的真实权威已分别迁出至：
+各段的真实权威分别位于：
 
 - persona       → agents/streamer/config.py StreamerPersonaConfig
 - context       → agents.toml [agents.streamer.context]（StreamerContextConfig）
@@ -13,8 +11,7 @@ persona / context / events / dashboard / simulator / logging / interceptors
 - logging       → infra.toml [logging]（LoggingConfig）
 - interceptors  → infra.toml [interceptors]（动态段，typed 化待 T15 后收口）
 
-TestCoreConfig 类已删除——旧断言所依赖的 CoreConfig 聚合形态已不存在；
-本文件保留 TestModelConfig 与新 TestStreamerPersonaConfig 等迁移后的断言。
+本文件保留 TestModelConfig 与新 TestStreamerPersonaConfig 等断言。
 """
 
 from src.modules.config.model_schemas import LLMProfilesConfig, ModelConfig
@@ -30,11 +27,11 @@ class TestStreamerPersonaConfig:
 
     def test_defaults(self):
         p = StreamerPersonaConfig()
-        # 草稿 §11 定案默认值
+        # StreamerPersonaConfig 权威默认值
         assert p.bot_name == "麦麦"
         assert p.personality == "活泼开朗，有些调皮，喜欢和观众互动"
         assert p.style_constraints == "口语化，使用网络流行语，避免机械式回复，适当使用emoji"
-        assert p.behavior_style.startswith("积极与观众互动"), "behavior_style 默认文本与权威定义漂移，请回归草稿 §11"
+        assert p.behavior_style.startswith("积极与观众互动"), "behavior_style 默认文本与权威定义漂移"
         assert p.audience_salutation == "大家"
 
     def test_behavior_style_non_empty(self):

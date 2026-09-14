@@ -1,6 +1,6 @@
-"""BackgroundMaintainer 单元测试（§1.7 + §1.50 写入面）
+"""BackgroundMaintainer 单元测试——记忆写入面
 
-聚焦 BackgroundMaintainer 新引入的 §1.50 记忆写入面：
+聚焦 BackgroundMaintainer 的记忆写入行为：
 - ``_summarize_topic`` 成功后调 ``memory.ingest(text=summary, source="topic_summary")``
   ，摘要为空时不调；
 - 高价值事件（礼物 / SC）→ ``_handle_memory_event`` → ``memory.ingest``，
@@ -63,7 +63,7 @@ def _make_maintainer(
     """构造一个带 mock 记忆的 BackgroundMaintainer。
 
     room_state / llm / context 都给最简实现（_summarize_topic 走真实路径
-    不需要——本测试只盯 §1.50 写入面）。
+    不需要——本测试只盯记忆写入面）。
 
     prompt_manager 注入满足 ``render() -> str`` 的最小 fake：摘要渲染路径
     在本测试集合内不被触达，避免被动加载全仓模板。
@@ -99,7 +99,7 @@ def _make_maintainer(
 
 
 # ---------------------------------------------------------------------------
-# §1.50 摘要 ingest
+# 摘要 ingest
 # ---------------------------------------------------------------------------
 
 
@@ -141,7 +141,7 @@ class TestBackgroundTopicSummaryIngest:
 
 
 # ---------------------------------------------------------------------------
-# §1.50 高价值事件 ingest
+# 高价值事件 ingest
 # ---------------------------------------------------------------------------
 
 
@@ -297,7 +297,7 @@ class TestBackgroundHighValueEventIngest:
 
 
 # ---------------------------------------------------------------------------
-# §1.50 事件订阅生命周期
+# 事件订阅生命周期
 # ---------------------------------------------------------------------------
 
 

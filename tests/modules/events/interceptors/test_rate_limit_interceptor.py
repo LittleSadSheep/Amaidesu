@@ -1,8 +1,7 @@
 """
-RateLimitInterceptor 事件拦截器测试（Wave 5）
+RateLimitInterceptor 事件拦截器测试
 
-由 ``test_rate_limit_pipeline.py`` 改造：从 Pipeline 测试改为 Interceptor 测试。
-verbatim 行为：
+行为：
 - 全局消息频率限制
 - 用户级消息频率限制
 - 滑动窗口算法

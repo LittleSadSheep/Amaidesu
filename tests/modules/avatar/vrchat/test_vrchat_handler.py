@@ -83,7 +83,7 @@ class TestVRChatHandlerGestures:
         assert GESTURE_MAP["Neutral"] == 0
 
     def test_gesture_map_wave_value(self):
-        """测试 Wave 手势值为 1"""
+        """测试挥手手势值为 1"""
         assert GESTURE_MAP["Wave"] == 1
 
     def test_gesture_map_peace_value(self):

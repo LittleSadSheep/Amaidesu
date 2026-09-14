@@ -1,10 +1,10 @@
 """
-console 采集器注册 + 基本 import 测试（Wave 5）
+console 采集器注册 + 基本 import 测试
 
 覆盖：
 - ConsoleInputCollector 继承 BaseCollector
 - 元数据（name/description）正确
-- 旧 InputCollectorManager 兼容接口（start/stop/cleanup/stream/collect）存在
+- 兼容接口（start/stop/cleanup/stream/collect）存在
 - v2 主动推事件：start() 开后台循环 → emit room.message.*
 """
 

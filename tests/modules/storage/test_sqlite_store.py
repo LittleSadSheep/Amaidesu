@@ -83,7 +83,7 @@ async def test_assert_schema_ready_passes(store: SQLiteDatabase) -> None:
 
 
 # =============================================================================
-# simulated 贯穿列（§1.6 用户拍板：默认 False / True 标记 / 消费方排除）
+# simulated 贯穿列（默认 False / True 标记 / 消费方排除）
 # =============================================================================
 
 
@@ -92,7 +92,7 @@ async def test_simulated_column_present_on_live_chat(store: SQLiteDatabase) -> N
     """live_chat 表必须包含 ``simulated`` 列（default 0）。"""
     rows = await store.execute("PRAGMA table_info(live_chat)")
     cols = {row["name"]: row for row in rows}
-    assert "simulated" in cols, "live_chat 缺少 simulated 列（§1.6 贯穿列缺失）"
+    assert "simulated" in cols, "live_chat 缺少 simulated 列（贯穿列缺失）"
     # 默认 0 = 真实源
     assert int(cols["simulated"]["dflt_value"]) == 0, "simulated 列默认值应为 0（真实源）"
 
@@ -153,7 +153,7 @@ async def test_is_healthy(store: SQLiteDatabase) -> None:
 
 @pytest.mark.asyncio
 async def test_millisecond_fields_exist(store: SQLiteDatabase) -> None:
-    """权威表必须以 *_ms 为时间字段命名（§1.44）。抽查关键表。"""
+    """权威表必须以 *_ms 为时间字段命名。抽查关键表。"""
     # live_sessions 必须有 started_at_ms / updated_at_ms
     rows = await store.execute("PRAGMA table_info(live_sessions)")
     cols = {row["name"] for row in rows}
