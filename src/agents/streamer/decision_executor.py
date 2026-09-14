@@ -35,6 +35,60 @@ from .thinking_stream import ThinkingStreamContext
 __all__ = ["DecisionRoundExecutor"]
 
 
+#: 批次刷新触发原因（MessageBuffer.should_flush 产出）→ 面板可读文案。
+#: 原始码仍是机器可读字段（planner.decision.trigger_reason 与日志），此处只译展示文本。
+_TRIGGER_REASON_LABEL: Dict[str, str] = {
+    "forced": "付费触发（SC / 礼物 / 上舰）",
+    "batch_full": "弹幕攒满一批",
+    "window_expired": "聚合窗口到期",
+    "idle_compensation": "冷场补足一批",
+}
+
+#: 主动发言触发源（ProactiveTrigger.should_trigger 返回值）→ 面板可读文案。
+_PROACTIVE_REASON_LABEL: Dict[str, str] = {
+    "external": "外部指令唤醒",
+    "schedule": "定时主动开麦",
+    "cold": "冷场主动开麦",
+    "rundown": "流程单推进",
+    "game": "游戏 Agent 待定夺",
+}
+
+#: 静默原因（Planner outcome.silent_reason）→ 面板可读文案。
+_SILENT_REASON_LABEL: Dict[str, str] = {
+    "natural": "自然终止",
+    "max_steps": "超出步数上限",
+    "llm_error": "LLM 调用异常",
+    "llm_failed": "LLM 返回失败",
+    "prompt_render_failed": "提示词渲染失败",
+    "assembler_failed": "上下文组装失败",
+    "low_confidence": "置信度不足",
+}
+
+
+def _trigger_reason_text(trigger_reason: str) -> str:
+    """触发原因码 → 面板可读文案。
+
+    未知码原样返回：新增触发源时面板先显示原码，据此补齐映射，不静默丢信息。
+    """
+    if not trigger_reason:
+        return ""
+    if trigger_reason in _TRIGGER_REASON_LABEL:
+        return _TRIGGER_REASON_LABEL[trigger_reason]
+    if trigger_reason.startswith("proactive:"):
+        reason = trigger_reason[len("proactive:") :]
+        if reason.startswith("dashboard"):
+            return "控制台手动触发"
+        return _PROACTIVE_REASON_LABEL.get(reason, f"主动发言（{reason}）")
+    if trigger_reason.startswith("dashboard"):
+        return "控制台决策测试"
+    return trigger_reason
+
+
+def _silent_reason_text(silent_reason: str) -> str:
+    """静默原因码 → 面板可读文案（未知码原样返回）。"""
+    return _SILENT_REASON_LABEL.get(silent_reason, silent_reason)
+
+
 class DecisionRoundExecutor:
     """一轮两阶段决策的执行体（批次 + 信号 → 决策结果视图）。"""
 
@@ -128,7 +182,7 @@ class DecisionRoundExecutor:
             stage="planning",
             agent_state="running",
             round_id=round_id,
-            detail=trigger_reason,
+            detail=_trigger_reason_text(trigger_reason),
         )
         result = await self._decide_round(
             batch,
@@ -145,7 +199,7 @@ class DecisionRoundExecutor:
         elif result.get("error"):
             closing += f"：{result['error']}"
         elif result.get("silent_reason"):
-            closing += f"：静默（{result['silent_reason']}）"
+            closing += f"：静默（{_silent_reason_text(str(result['silent_reason']))}）"
         await self._emit_streamer_stage(
             stage="idle",
             agent_state="wait",

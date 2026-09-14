@@ -11,7 +11,11 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from src.agents.streamer.decision_executor import DecisionRoundExecutor
+from src.agents.streamer.decision_executor import (
+    DecisionRoundExecutor,
+    _silent_reason_text,
+    _trigger_reason_text,
+)
 from src.agents.streamer.stats import StreamerStats
 from src.modules.events.names import CoreEvents
 
@@ -209,3 +213,49 @@ async def test_planner_no_reply_with_error_marks_planner_failure():
     assert result["error"] == "planner_failed: reply tool exploded"
     assert deps["stats"].planner_failures == 1
     assert deps["stats"].total_no_action == 1
+
+
+# ---------------------------------------------------------------------------
+# 阶段补充文案：原因码 → 可读中文（面板 detail 不裸奔英文单词）
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("reason", "expected"),
+    [
+        ("forced", "付费触发（SC / 礼物 / 上舰）"),
+        ("batch_full", "弹幕攒满一批"),
+        ("window_expired", "聚合窗口到期"),
+        ("idle_compensation", "冷场补足一批"),
+        ("proactive:cold", "冷场主动开麦"),
+        ("proactive:rundown", "流程单推进"),
+        ("proactive:dashboard_debug", "控制台手动触发"),
+        ("dashboard:debug_test", "控制台决策测试"),
+        ("mystery_reason", "mystery_reason"),
+        ("", ""),
+    ],
+)
+def test_trigger_reason_text_maps_known_codes(reason: str, expected: str):
+    assert _trigger_reason_text(reason) == expected
+
+
+@pytest.mark.parametrize(
+    ("reason", "expected"),
+    [
+        ("natural", "自然终止"),
+        ("max_steps", "超出步数上限"),
+        ("brand_new_reason", "brand_new_reason"),
+    ],
+)
+def test_silent_reason_text_maps_known_codes(reason: str, expected: str):
+    assert _silent_reason_text(reason) == expected
+
+
+@pytest.mark.asyncio
+async def test_execute_emits_human_readable_stage_detail():
+    executor, deps = _make_executor(dict(_OKAY_OUTCOME))
+
+    await executor.execute([], forced=False, trigger_reason="window_expired")
+
+    stage_details = [p.detail for name, p, _ in deps["emissions"] if name == CoreEvents.STREAMER_STAGE]
+    assert stage_details == ["聚合窗口到期", "决策轮结束：发言已出"]
