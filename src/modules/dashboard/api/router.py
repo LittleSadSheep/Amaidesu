@@ -29,10 +29,9 @@ from src.modules.dashboard.api import (
 def create_app() -> FastAPI:
     """创建 FastAPI 应用。
 
-    v2 路由列表：
-    - 删除 maibot / outline / proactive 旧阶段路由；
-    - 模拟直播能力由 ``SimulatorService`` 统一承载（generate 生成 / replay
-      回放三模式），挂载在 ``/api/v1/simulator/*`` 控制面。
+    路由域：system / components / config / debug / llm / tools / events /
+    agenda / rundowns / streamer / simulator / live-sessions / viewers /
+    agents / vision，全部挂在 ``/api/v1`` 前缀下。
     """
     app = FastAPI(
         title="Amaidesu Dashboard API",

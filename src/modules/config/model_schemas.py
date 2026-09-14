@@ -58,7 +58,10 @@ class LLMProviderConfig(BaseConfig):
         default="https://api.openai.com/v1",
         description="API 端点（可自定义为任何 OpenAI 兼容服务）",
     )
-    api_key: str = Field(default="", description="API 密钥（留空则使用环境变量）")
+    api_key: str = Field(
+        default="",
+        description="API 密钥（留空时客户端以占位符 sk-dummy 兜底，需填真实 Key 才能调用）",
+    )
     auth_type: str = Field(
         default="bearer",
         description="鉴权方式：bearer / header / query / none",
