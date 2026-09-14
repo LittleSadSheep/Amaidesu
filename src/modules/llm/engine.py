@@ -127,6 +127,41 @@ def _content_to_parts(content: Any) -> List[Any]:
     return parts
 
 
+def _tool_calls_from_protocol(raw: Any) -> List[ToolCall]:
+    """厂商协议形态的 assistant ``tool_calls`` → 中立 ToolCall 列表。
+
+    消费方（Planner / MinecraftAgent）喂回多轮 ReAct 上下文时按 OpenAI
+    嵌套形态给值（``{"id", "type", "function": {"name", "arguments"}}``，
+    arguments 为 JSON 字符串）；中立契约要求 arguments 已是对象，转换在此
+    完成，非列表输入与解析失败的 arguments 一律退化为空结果。
+    """
+    calls: List[ToolCall] = []
+    if not isinstance(raw, list):
+        return calls
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        function = item.get("function")
+        if not isinstance(function, dict):
+            continue
+        arguments = function.get("arguments", {})
+        if isinstance(arguments, str):
+            try:
+                arguments = json.loads(arguments) if arguments else {}
+            except (json.JSONDecodeError, TypeError):
+                arguments = {}
+        if not isinstance(arguments, dict):
+            arguments = {}
+        calls.append(
+            ToolCall(
+                id=str(item.get("id", "") or ""),
+                name=str(function.get("name", "") or ""),
+                arguments=arguments,
+            )
+        )
+    return calls
+
+
 def _normalize_generate_input(
     input: Any,
     *,
@@ -157,7 +192,15 @@ def _normalize_generate_input(
                     continue
                 if role not in ("user", "assistant", "tool"):
                     raise ValueError(f"不支持的消息 role: {role!r}")
-                messages.append(Message(role=role, parts=_content_to_parts(content)))
+                tool_call_id = item.get("tool_call_id")
+                messages.append(
+                    Message(
+                        role=role,
+                        parts=_content_to_parts(content),
+                        tool_calls=_tool_calls_from_protocol(item.get("tool_calls")),
+                        tool_call_id=str(tool_call_id) if tool_call_id else None,
+                    )
+                )
             else:
                 raise TypeError(f"不支持的消息类型: {type(item).__name__}")
     else:

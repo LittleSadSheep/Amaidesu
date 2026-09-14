@@ -38,6 +38,20 @@ Part = Union[str, TextPart, ImagePart]
 """消息内容片段：裸字符串是文本的简写形式。"""
 
 
+class ToolCall(BaseModel):
+    """模型发起的一次工具调用（中立形状）
+
+    注意这不是任何厂商协议的原始形状（如嵌套的
+    ``{"function": {"name": ..., "arguments": ...}}`` dict）——协议形状
+    由 ``clients/<vendor>/`` 适配端负责双向转换。
+    ``arguments`` 已解析为对象（JSON 解析失败由适配端兜底修复）。
+    """
+
+    id: str = ""
+    name: str
+    arguments: Dict[str, Any] = Field(default_factory=dict)
+
+
 class Message(BaseModel):
     """对话消息（system 不在此列）
 
@@ -46,10 +60,16 @@ class Message(BaseModel):
     首条消息 / system 指令），由适配端决定翻译方式。
 
     role 限 user / assistant / tool；parts 依次表达文本与图像片段。
+    assistant 既往发起的工具调用由 ``tool_calls`` 承载，role="tool" 的观察
+    经 ``tool_call_id`` 关联回对应调用——多轮工具循环喂养上下文时两者缺一
+    都会得到协议非法的消息序列（tool 消息必须回应带 tool_calls 的
+    assistant），故随 role 一并建模，而非仅存在于各厂商协议形状中。
     """
 
     role: Literal["user", "assistant", "tool"]
     parts: List[Part] = Field(default_factory=list)
+    tool_calls: List[ToolCall] = Field(default_factory=list)
+    tool_call_id: Optional[str] = None
 
 
 class ToolSpec(BaseModel):
@@ -64,20 +84,6 @@ class ToolSpec(BaseModel):
     name: str
     description: str = ""
     parameters: Dict[str, Any] = Field(default_factory=dict)
-
-
-class ToolCall(BaseModel):
-    """模型发起的一次工具调用（中立形状）
-
-    注意这不是任何厂商协议的原始形状（如嵌套的
-    ``{"function": {"name": ..., "arguments": ...}}`` dict）——协议形状
-    由 ``clients/<vendor>/`` 适配端负责双向转换。
-    ``arguments`` 已解析为对象（JSON 解析失败由适配端兜底修复）。
-    """
-
-    id: str = ""
-    name: str
-    arguments: Dict[str, Any] = Field(default_factory=dict)
 
 
 class Usage(BaseModel):

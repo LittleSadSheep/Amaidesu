@@ -170,7 +170,13 @@ class OpenAIClient(BaseLLMClient):
 
     @staticmethod
     def _part_to_openai(part: Any) -> Dict[str, Any]:
-        """单个中立片段 → OpenAI content 片段（文本直出，图像转 image_url）"""
+        """单个中立片段 → OpenAI content 片段（文本直出，图像转 image_url）
+
+        裸字符串是中立契约里文本的简写形式（``Part`` 联合类型），必须与
+        ``TextPart`` 等价处理——Engine 归一化文本消息时产出的正是这种形态。
+        """
+        if isinstance(part, str):
+            return {"type": "text", "text": part}
         if isinstance(part, TextPart) or (isinstance(part, dict) and part.get("type") == "text"):
             text = part.text if isinstance(part, TextPart) else part.get("text", "")
             return {"type": "text", "text": text}
@@ -180,13 +186,33 @@ class OpenAIClient(BaseLLMClient):
 
     @classmethod
     def _message_to_openai(cls, message: Message) -> Dict[str, Any]:
-        """中立 Message → OpenAI 消息 dict（纯文本折叠为字符串 content）"""
+        """中立 Message → OpenAI 消息 dict（纯文本折叠为字符串 content）
+
+        assistant 既往发起的调用还原为 ``tool_calls``（arguments 回到协议要求
+        的 JSON 字符串形态），tool 观察还原 ``tool_call_id``——喂回多轮工具
+        循环时这两项是协议合法性前提，缺则服务端拒绝整个消息序列。
+        """
         contents = [cls._part_to_openai(p) for p in message.parts]
         if contents and all(c["type"] == "text" for c in contents):
             content: Any = "".join(c["text"] for c in contents)
         else:
             content = contents
-        return {"role": message.role, "content": content}
+        result: Dict[str, Any] = {"role": message.role, "content": content}
+        if message.tool_calls:
+            result["tool_calls"] = [
+                {
+                    "id": call.id,
+                    "type": "function",
+                    "function": {
+                        "name": call.name,
+                        "arguments": json.dumps(call.arguments, ensure_ascii=False, default=str),
+                    },
+                }
+                for call in message.tool_calls
+            ]
+        if message.tool_call_id:
+            result["tool_call_id"] = message.tool_call_id
+        return result
 
     @classmethod
     def _request_to_openai_messages(cls, request: GenerateRequest) -> List[Dict[str, Any]]:

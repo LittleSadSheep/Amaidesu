@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from src.modules.llm.clients.openai.client import OpenAIClient
+from src.modules.llm.payload import GenerateRequest, Message, ToolCall
 
 
 MESSAGES = [{"role": "user", "content": "hello"}]
@@ -388,3 +389,54 @@ async def test_chat_streaming_falls_back_to_non_streaming_on_create_error():
     assert result.content == "fallback"
     assert received == []  # 降级路径不产生增量
     assert sdk_client.chat.completions.create.await_count == 2
+
+
+# ---------------------------------------------------------------------------
+# 中立 payload 路径：Engine 归一化后的 Message → OpenAI 协议翻译
+# （legacy chat/vision 直接收 dict，不经过该路径，故单列覆盖）
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_generate_payload_path_folds_bare_string_parts():
+    """裸字符串 parts（中立契约的文本简写）→ OpenAI 字符串 content。
+
+    回归：Engine 归一化文本消息产出的正是 ``parts=["..."]``，适配端必须与
+    ``TextPart`` 等价处理，而不是抛「未知的消息片段类型: str」。
+    """
+    client, sdk_client = _make_client()
+    sdk_client.chat.completions.create.return_value = _response()
+
+    request = GenerateRequest(messages=[Message(role="user", parts=["你好"])], system="你是助手")
+    result = await client.generate(request, model="test-model")
+
+    assert result.success is True
+    assert sdk_client.chat.completions.create.await_args.kwargs["messages"] == [
+        {"role": "system", "content": "你是助手"},
+        {"role": "user", "content": "你好"},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_generate_payload_path_restores_tool_context():
+    """assistant tool_calls 还原协议嵌套形态（arguments 回 JSON 字符串），tool 观察带 tool_call_id。"""
+    client, sdk_client = _make_client({"reasoning_parse_mode": "none"})
+    sdk_client.chat.completions.create.return_value = _response(content="好的")
+
+    request = GenerateRequest(
+        messages=[
+            Message(
+                role="assistant",
+                parts=[""],
+                tool_calls=[ToolCall(id="c1", name="query_memory", arguments={"q": "x"})],
+            ),
+            Message(role="tool", parts=['{"ok": true}'], tool_call_id="c1"),
+        ]
+    )
+    await client.generate(request, model="test-model")
+
+    messages = sdk_client.chat.completions.create.await_args.kwargs["messages"]
+    assert messages[0]["tool_calls"] == [
+        {"id": "c1", "type": "function", "function": {"name": "query_memory", "arguments": '{"q": "x"}'}}
+    ]
+    assert messages[1] == {"role": "tool", "tool_call_id": "c1", "content": '{"ok": true}'}

@@ -20,7 +20,7 @@ from src.modules.llm.bootstrap import ProfileNames
 from src.modules.llm.client import BaseLLMClient
 from src.modules.llm.clients import _CLIENT_DISPATCH
 from src.modules.llm.engine import LLMManager
-from src.modules.llm.payload import GenerateRequest, Response, ToolSpec, Usage
+from src.modules.llm.payload import GenerateRequest, Response, ToolCall, ToolSpec, Usage
 
 PAYLOAD_FILE = Path(__file__).resolve().parents[3] / "src" / "modules" / "llm" / "payload.py"
 
@@ -173,6 +173,39 @@ class TestFakeVendorThroughGenerate:
         request = fake.requests[0]
         assert request.system == "视觉助手"
         assert request.messages[0].parts == ["描述屏幕"]
+
+    @pytest.mark.asyncio
+    async def test_generate_preserves_tool_context(self, fake_vendor_manager):
+        """喂回的多轮 ReAct 上下文（assistant tool_calls + tool 观察）经归一化不丢失。
+
+        回归：这些字段一旦被归一化吞掉，tool 消息就会失去与 assistant 调用的
+        关联，真实端点按协议拒绝整个消息序列。
+        """
+        manager = fake_vendor_manager
+        await manager.setup(FAKE_CONFIG)
+        fake = manager._provider_clients["fake"]
+
+        await manager.generate(
+            [
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": "c1",
+                            "type": "function",
+                            "function": {"name": "query_memory", "arguments": '{"q": "x"}'},
+                        }
+                    ],
+                },
+                {"role": "tool", "tool_call_id": "c1", "content": "ok"},
+            ],
+            profile="planner",
+        )
+
+        request = fake.requests[0]
+        assert request.messages[0].tool_calls == [ToolCall(id="c1", name="query_memory", arguments={"q": "x"})]
+        assert request.messages[1].tool_call_id == "c1"
 
     @pytest.mark.asyncio
     async def test_unknown_profile_rejected_at_setup(self):
