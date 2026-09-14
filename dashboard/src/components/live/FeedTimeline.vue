@@ -6,9 +6,26 @@
     </div>
 
     <ol v-else class="feed">
-      <li v-for="entry in entries" :key="entry.id" class="feed-row" :class="rowAlignClass(entry)">
+      <li v-for="entry in feedRows" :key="entry.id" class="feed-row" :class="rowAlignClass(entry)">
+        <!-- 会话模式的过程折叠条（合成条目）：挂在主播发言之后，点击展开该轮过程 -->
+        <button
+          v-if="entry.kind === 'process_group'"
+          type="button"
+          class="chat-process-strip"
+          :aria-expanded="expandedChatGroups.has(entry.id)"
+          @click="toggleChatGroup(entry.id)"
+        >
+          <span class="chat-process-mark" aria-hidden="true">⚙</span>
+          <span class="chat-process-summary">{{ entry.note }} 个过程记录 · {{ entry.text }}</span>
+          <span class="grow" />
+          <span class="chat-process-action">{{
+            expandedChatGroups.has(entry.id) ? '收起' : '展开'
+          }}</span>
+          <span class="chat-process-arrow" aria-hidden="true">▸</span>
+        </button>
+
         <!-- 环节推进 / 场次边界：横贯分隔行 -->
-        <div v-if="entry.kind === 'rundown' || entry.kind === 'boundary'" class="beat">
+        <div v-else-if="entry.kind === 'rundown' || entry.kind === 'boundary'" class="beat">
           <span class="beat-rule" aria-hidden="true" />
           <span class="beat-body">
             <span class="beat-eyebrow">{{ entry.kind === 'boundary' ? '场次' : '环节' }}</span>
@@ -293,8 +310,10 @@ import 'vue-json-pretty/lib/styles.css';
 import {
   agentGroupOf,
   batchSizeOf,
+  buildChatRows,
   confidenceLabel,
   guidanceOf,
+  isChatProcessKind,
   isSilentDecision,
   plannerMsOf,
   rawOf,
@@ -329,21 +348,28 @@ const props = withDefaults(defineProps<Props>(), {
 
 const isChat = computed(() => props.layout === 'chat');
 
-/** 会话布局的行对齐类：观众消息默认靠左，主播发言靠右，
- * 决策/工具/阶段等过程行居中；环节/边界/里程碑保持通栏不参与对齐 */
+/** 会话模式下已展开过程条的组（键为过程条合成条目的 id） */
+const expandedChatGroups = ref<Set<string>>(new Set());
+
+/** 渲染行序：会话模式把每轮过程折叠成一条过程条；时间线模式原样透传 */
+const feedRows = computed<ShowEntry[]>(() =>
+  isChat.value ? buildChatRows(props.entries, expandedChatGroups.value) : props.entries,
+);
+
+function toggleChatGroup(key: string): void {
+  const next = new Set(expandedChatGroups.value);
+  if (next.has(key)) next.delete(key);
+  else next.add(key);
+  expandedChatGroups.value = next;
+}
+
+/** 会话布局的行对齐类：观众消息靠左、主播发言靠右、过程行与折叠条随主播侧右对齐；
+ *  时间线布局不加任何对齐修饰 */
 function rowAlignClass(entry: ShowEntry): string {
   if (!isChat.value) return '';
+  if (entry.kind === 'process_group') return 'row-strip';
   if (entry.kind === 'speech') return 'row-right';
-  if (
-    entry.kind === 'decision' ||
-    entry.kind === 'verdict' ||
-    entry.kind === 'tool' ||
-    entry.kind === 'stage' ||
-    entry.kind === 'enter' ||
-    entry.kind === 'game'
-  ) {
-    return 'row-center';
-  }
+  if (isChatProcessKind(entry.kind)) return 'row-process';
   return '';
 }
 
@@ -1258,13 +1284,68 @@ async function copyText(text: string): Promise<void> {
   margin-left: 0;
   max-width: min(78%, 560px);
 }
-.feed-timeline.is-chat .feed-row.row-center {
-  align-items: center;
+/* 会话模式：过程行与折叠条跟随主播气泡右对齐（右内边距对齐气泡内缘），
+   卡片与折叠条按内容自适应宽度，不再居中也不再撑满整行 */
+.feed-timeline.is-chat .feed-row.row-process,
+.feed-timeline.is-chat .feed-row.row-strip {
+  align-items: flex-end;
+  padding-right: 38px; /* 28px 主播头像 + 10px 间距，与发言气泡内缘对齐 */
 }
-.feed-timeline.is-chat .feed-row.row-center .decision,
-.feed-timeline.is-chat .feed-row.row-center .act {
+.feed-timeline.is-chat .feed-row.row-process .decision,
+.feed-timeline.is-chat .feed-row.row-process .act {
   margin-left: 0;
-  max-width: min(82%, 640px);
+  max-width: min(78%, 560px);
+}
+
+.chat-process-strip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  width: fit-content;
+  max-width: min(78%, 560px);
+  padding: 4px 12px;
+  border: 1px solid var(--border-color-light);
+  border-radius: 999px;
+  background: var(--bg-hover);
+  font-family: inherit;
+  font-size: 11px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition:
+    background var(--transition-fast),
+    border-color var(--transition-fast);
+}
+.chat-process-strip:hover {
+  border-color: var(--color-agent);
+  color: var(--text-primary);
+}
+.chat-process-strip[aria-expanded='true'] {
+  background: var(--color-agent-bg);
+  border-color: var(--color-agent);
+  color: var(--color-agent);
+}
+.chat-process-mark,
+.chat-process-action,
+.chat-process-arrow {
+  flex-shrink: 0;
+}
+.chat-process-mark {
+  font-size: 12px;
+  color: var(--text-placeholder);
+}
+.chat-process-strip[aria-expanded='true'] .chat-process-mark {
+  color: var(--color-agent);
+}
+.chat-process-action {
+  font-size: 10px;
+  color: var(--text-placeholder);
+}
+.chat-process-arrow {
+  font-size: 10px;
+  transition: transform var(--transition-fast);
+}
+.chat-process-strip[aria-expanded='true'] .chat-process-arrow {
+  transform: rotate(90deg);
 }
 /* 主播侧头像：与观众头像同形，紫色系归到主播 */
 .avatar--host {

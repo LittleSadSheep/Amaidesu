@@ -50,7 +50,9 @@ export type EntryKind =
   | 'decision'
   | 'stage'
   | 'boundary'
-  | 'game';
+  | 'game'
+  /** 会话模式的过程折叠条（合成展示条目，不对应任何事件） */
+  | 'process_group';
 
 /** 事件缓冲条目：events store 在 WebSocketMessage 上补了去重 id */
 export type FeedEvent = WebSocketMessage & { id: string };
@@ -597,4 +599,105 @@ export function relativeTime(nowSec: number, tsSec: number): string {
   if (diff < 3600) return `${Math.floor(diff / 60)}m 前`;
   if (diff < 86400) return `${Math.floor(diff / 3600)}h 前`;
   return `${Math.floor(diff / 86400)}d 前`;
+}
+
+// ============================================================
+// 会话模式：对话优先的行序（过程行折叠成每轮一条过程条）
+// ============================================================
+
+/** 会话模式里会被折叠进过程条的过程行类型 */
+const CHAT_PROCESS_KINDS: ReadonlySet<EntryKind> = new Set<EntryKind>([
+  'tool',
+  'decision',
+  'verdict',
+  'stage',
+  'game',
+  'milestone',
+  'rundown',
+  'boundary',
+]);
+
+/** 过程条合成条目 id 前缀（与事件条目 id 区分，避免 key 冲突） */
+const CHAT_GROUP_PREFIX = 'chat-process:';
+
+const CHAT_PROCESS_LABEL: Record<string, string> = {
+  tool: '工具',
+  decision: '决策',
+  verdict: '决策',
+  stage: '阶段',
+  game: '游戏 Agent',
+  milestone: '里程碑',
+  rundown: '环节',
+  boundary: '场次',
+};
+
+/** 该条目在会话模式是否属于过程行（折叠进过程条） */
+export function isChatProcessKind(kind: EntryKind): boolean {
+  return CHAT_PROCESS_KINDS.has(kind);
+}
+
+/** 过程条摘要：按类型计数（如「2 阶段 · 3 工具 · 1 决策」） */
+export function chatProcessSummary(process: ShowEntry[]): string {
+  const counts = new Map<string, number>();
+  for (const entry of process) {
+    const label = CHAT_PROCESS_LABEL[entry.kind];
+    if (!label) continue;
+    counts.set(label, (counts.get(label) ?? 0) + 1);
+  }
+  return Array.from(counts, ([label, n]) => `${n} ${label}`).join(' · ');
+}
+
+/**
+ * 会话模式行序：观众气泡与主播发言保持原时序，每轮的过程行折叠成一条挂在
+ * 发言之后的过程条；展开的组把过程行按原时序铺回，折叠时这些行不进入渲染。
+ *
+ * 分组按位置（以主播发言为界）而非 roundId——真实的 ``streamer.stage`` 事件
+ * 不带 ``round_id``（fromStage 未映射），按 roundId 分组会把阶段行孤立。
+ * 无发言的过程行（静默轮、尾部残留）自成一组，绝不丢行。
+ */
+export function buildChatRows(
+  entries: ShowEntry[],
+  expandedGroups: ReadonlySet<string>,
+): ShowEntry[] {
+  const rows: ShowEntry[] = [];
+  let pending: ShowEntry[] = [];
+  let seq = 0;
+
+  /** 把缓冲里的观众消息按原序铺回，只给过程行留在缓冲里等结算 */
+  const takeAudience = () => {
+    rows.push(...pending.filter(entry => !CHAT_PROCESS_KINDS.has(entry.kind)));
+    pending = pending.filter(entry => CHAT_PROCESS_KINDS.has(entry.kind));
+  };
+
+  /** 结算一个过程组；speech 为 null 表示这组没有发言（静默轮 / 尾部残留） */
+  const flushGroup = (speech: ShowEntry | null) => {
+    const process = pending;
+    pending = [];
+    if (speech) rows.push(speech);
+    if (process.length === 0) return;
+    seq += 1;
+    const key = `${CHAT_GROUP_PREFIX}${speech ? speech.id : `silent-${seq}`}`;
+    rows.push(
+      makeEntry({
+        id: key,
+        kind: 'process_group',
+        tsSec: process[process.length - 1].tsSec,
+        text: chatProcessSummary(process),
+        note: String(process.length),
+      }),
+    );
+    if (expandedGroups.has(key)) rows.push(...process);
+  };
+
+  for (const entry of entries) {
+    if (entry.kind === 'speech') {
+      takeAudience();
+      flushGroup(entry);
+    } else {
+      pending.push(entry);
+    }
+  }
+  takeAudience();
+  flushGroup(null);
+  return rows;
 }
