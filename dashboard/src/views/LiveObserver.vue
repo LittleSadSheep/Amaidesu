@@ -986,6 +986,7 @@ async function submitTestDecision(): Promise<void> {
 const scrollRef = ref<HTMLElement | null>(null);
 const atBottom = ref(true);
 const unseen = ref(0);
+let resizeObserver: ResizeObserver | null = null;
 
 function isAtBottom(el: HTMLElement): boolean {
   return el.scrollHeight - el.scrollTop - el.clientHeight <= BOTTOM_THRESHOLD_PX;
@@ -1073,10 +1074,20 @@ onMounted(async () => {
   void loadSimulatorStatus();
   await nextTick();
   scrollToBottom();
+  // 容器尺寸变化（窗口缩放、注入面板开合）时维持贴底跟随。仅靠 entries
+  // 变化触发不够——布局一变，最新条目就会滑出可视区且不再自动回位
+  if (scrollRef.value) {
+    resizeObserver = new ResizeObserver(() => {
+      if (atBottom.value) scrollToBottom();
+    });
+    resizeObserver.observe(scrollRef.value);
+  }
 });
 
 onUnmounted(() => {
   wsStore.unsubscribe(handleThinkingMessage);
+  resizeObserver?.disconnect();
+  resizeObserver = null;
   if (tickTimer) {
     clearInterval(tickTimer);
     tickTimer = null;
@@ -1088,12 +1099,16 @@ onUnmounted(() => {
 /* ============================================================ */
 /* 版面：顶栏常驻；左场次栏 + 右时间线                             */
 /* ============================================================ */
+/* 高度直接铺满父容器 .app-main 的内容盒（它已扣掉顶栏与自身内边距）。
+   早先用 100vh 自算高度并加 min-height 夹底，矮窗口下会反超父容器：外层
+   .app-main 冒出第二条几乎无用的滚动条，而时间线仍被 .stage 的
+   overflow:hidden 裁住，看起来就是"内容被截断且滚不动"。 */
 .console-page {
   display: flex;
   flex-direction: column;
   gap: var(--spacing-sm);
-  height: calc(100vh - var(--header-height) - 2 * var(--spacing-lg));
-  min-height: 560px;
+  height: 100%;
+  min-height: 0;
 }
 
 .grow {
