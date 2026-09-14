@@ -2,9 +2,9 @@
 
 - 状态：已采纳（主体性判据于 2026-09-07 部分修正：驱动方式三分——主播 Agent 自我驱动为唯一，游戏 Agent 命令驱动（类 Code Agent），Agent vs 工具判别不变）
 - 日期：2026-08-23（定案）/ 2026-08-25（实现落库）/ 2026-09-07（判据修正）
-- 实现提交：`22519a5c057b8675fdd83faca2e6e0ac0a070f1b`（feat(v2): 主播 Agent——planner/replyer 决策内核与 Agenda 子系统）；配套落地见 `1012b31`（采集器主动推事件）、`4187a54`（webui 适配）等 v2 提交链
+- 实现提交：`22519a5c057b8675fdd83faca2e6e0ac0a070f1b`（feat(v2): 主播 Agent——planner/replyer 决策内核与 Agenda 子系统）；配套落地 `1012b31c3a029dbf9b9335867222707ea8fc2b0a`（采集器主动推事件）、`4187a544e57572d230ba8dce60e2170d216032b7`（webui 适配）
 
-> **完整叙事**（四代架构史、主体性判据推导、防换皮铁闸、九 Wave 落地过程）见 [v2-architecture.md](../architecture/v2-architecture.md)；本文仅保留决策记录的标准四段式。
+> **完整叙事**（主体性判据推导、防换皮铁闸、全景与支撑系统）见 [v2-architecture.md](../architecture/v2-architecture.md)；本文仅保留决策记录的标准四段式。
 
 ## 背景（Context）
 
@@ -27,7 +27,7 @@ Amaidesu v1 采用 Input → Decision → Output 三阶段架构：InputCollecto
    - 直播内容是编排配置 + Planner 上下文/行为模式的变化，不是代码模块
 2. **组件收敛为三类范式**：采集器（BaseCollector，`collect()` AsyncIterator + 主动推语义域事件）、业务 Agent（BaseAgent 协议六面 + `list_tools()` 抽象，自包含包放 `src/agents/<family>/<name>/`）、工具（ToolProvider Protocol + ToolSpec，经 ToolRegistry 统一调度，失败兜底不抛异常）。
 3. **Planner/Replyer 是主播 Agent 内脏**，不注册为工具；决策出口 = Agent 调用自有 `reply` 工具，删除 Intent 中间表示与 `decision.intent.generated` / `output.intent.*` 事件链。
-4. **事件系统升级为语义域命名 + 通配订阅**：`live.*` / `room.message.*` / `game.*` / `agenda.*` / `planner.checkpoint` / `tool.result.#`；旧三阶段事件名全部删除；输入净化职责由 EventBus 分发层的事件拦截器承担（见 ADR-001~003 废弃记录与 §1.46.1 定案）。
+4. **事件系统升级为语义域命名 + 通配订阅**：`live.*` / `room.message.*` / `game.*` / `agenda.*` / `planner.checkpoint` / `tool.result.#`；旧三阶段事件名全部删除；输入净化职责由 EventBus 分发层的事件拦截器承担（见 ADR-001~003 废弃记录）。
 5. **防插件换皮红线**：内容特有逻辑内聚 `src/agents/<family>/<name>/` 包内，加内容=加包+配置，框架层（src/modules/）零改动、不含内容逻辑。
 6. **配置收敛为七文件**（core/model/agents/tools/memory/storage/background），Schema 即真相 + 版本化迁移钩子。
 
@@ -48,5 +48,5 @@ Amaidesu v1 采用 Input → Decision → Output 三阶段架构：InputCollecto
 ## 后果（Consequences）
 
 - 收益：单一 Agent 包内聚完整决策闭环；扩展内容 = 新增自包含包；工具生态统一 ToolSpec 契约（约 60 个工具可被任意 Agent 复用）；事件名自带语义便于监控与通配订阅。
-- 代价：一次性迁移成本高（九个 Wave 的渐进重构）；Agent 内部复杂度上升（Planner 循环、Agenda 子系统、后台双任务都在一个包里），需要靠包内模块边界自律。
-- 需持续关注：渲染工具的注册接线尚未完全自动化（已知缺口）；旧 `schemas/input_schemas.py`、`output_schemas.py` 与 `src/modules/simulator/` 为迁移期遗留，待清理。
+- 代价：一次性迁移成本高；Agent 内部复杂度上升（Planner 循环、Rundown 子系统、后台双任务都在一个包里），需要靠包内模块边界自律。
+- 需持续关注：渲染工具的注册接线尚未完全自动化（已知缺口）；旧 `schemas/input_schemas.py`、`output_schemas.py` 与 `src/modules/simulator/` 当前未启用。

@@ -1,8 +1,8 @@
 # ADR-014：配置体系六文件重构
 
-- 状态：已接受（2026-09-12 定案并实现）
+- 状态：已采纳（2026-09-12 定案并实现）
 - 日期：2026-09-12
-- 实现提交：`6e593a9e`（六文件配置域落地）→ `8484c2bc`（加载管线阶段化）→ `b0ba80be`（写回推进与热重载策略）→ `858a5ce7`（dashboard 配置 API 自描述重写）→ `28c38b37`（合流工具线批次）
+- 实现提交：`6e593a9e66ffff5898a95a858fd7374be65256c1`（六文件配置域落地）→ `8484c2bc3a0ac8dc9b4a14633f554bbfa8d4f202`（加载管线阶段化）→ `b0ba80be25e66fe3ece9e0b4738d795719de41d3`（写回推进与热重载策略）→ `858a5ce772a1dded32db046bf335f3a1bdaf8252`（dashboard 配置 API 自描述重写）→ `28c38b37cc8567addacba19f6599d0954b6a0791`（合流工具线批次）
 
 ## 背景（Context）
 
@@ -71,4 +71,4 @@ dashboard 维持三张映射表 + 手写类型/约束校验（复刻 Pydantic �
 ## 参考
 
 - [组件开发指南 · 配置 Schema 约定](../guides/component.md#配置-schema-约定包内权威)
-- [v2 架构叙事 · §6.2 配置](../architecture/v2-architecture.md)
+- [v2 架构叙事 · 配置：六文件 + 每文件版本 + 包内权威 + 单一管线](../architecture/v2-architecture.md)

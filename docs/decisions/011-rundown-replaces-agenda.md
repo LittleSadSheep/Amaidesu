@@ -1,12 +1,12 @@
 # ADR-011：Rundown 流程单取代 Agenda 编排子系统
 
-- 状态：已实现（已并入 v2.0.0）
+- 状态：已采纳（已并入 v2.0.0）
 - 日期：2026-09-09
 - 实现提交：
-  - `f535fbf1`（docs(rundown): 流程单机制规范与 ADR-011）
-  - `5eb0b9b5`（feat(dashboard): 编排页与控制台对齐流程单契约）
-  - `227fc947`（docs: 架构文档对齐流程单重设计）
-  - `20f3563a`（feat(rundown): 流程单子系统落地并取代 Agenda——主体 55 文件，快进并入 v2.0.0）
+  - `f535fbf1934cd0308b871bc0aeefdc53675bc3bc`（docs(rundown): 流程单机制规范与 ADR-011）
+  - `5eb0b9b55624e24897e0801bf84a6d66c02ed797`（feat(dashboard): 编排页与控制台对齐流程单契约）
+  - `227fc9478c144b407a38c4201e1ac4a35b36a267`（docs: 架构文档对齐流程单重设计）
+  - `20f3563a75f9a8ba6c7a4c8aeb943ee05bbe618b`（feat(rundown): 流程单子系统落地并取代 Agenda——主体 55 文件，快进并入 v2.0.0）
 
 ## 背景（Context）
 

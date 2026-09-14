@@ -1,8 +1,8 @@
 # ADR-017：主播 Agent 分包按接缝抽厚簇（执行抽、调度不抽）
 
-- 状态：已接受（2026-09-13）
+- 状态：已采纳（2026-09-13）
 - 日期：2026-09-13
-- 实现提交：见 git log `refactor(streamer)` / `refactor(rundown)` 系列（`task/streamer-agent-split` 分支）
+- 实现提交：`4814cc94fe8aecbccc8d8937f5804d73bdc3d265`（docs(adr): 记录主播 Agent 分包边界——`task/streamer-agent-split` 分支并入主线时的 ADR-017 落地提交）
 
 ## 背景（Context）
 

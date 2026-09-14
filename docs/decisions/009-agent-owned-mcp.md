@@ -8,7 +8,7 @@
   - `0e23998d11eb1044af5a0e60869f554cde573665`（feat(minecraft): 私有 MCP 装配走自身配置段）
   - `2ff7dd3d83b90449b5cf4d9ba0b05154bf4548c0`（feat(dashboard): 工具列表透出归属字段）
   - `1e2b90584a8edfedb5945904bb930a78e748ae92`（docs(development): 补工具可见性三维模型与MCP二分）
-  - 修订（名单双轴）实现提交：`0b8b465e`（refactor(tools): 工具系统重设计）+ `d754fe8c`（refactor(tools,config): provider 包内 ConfigSchema 转正）
+  - 修订（名单双轴）实现提交：`0b8b465e9c62498693b4d2f75312f435a5bbf864`（refactor(tools): 工具系统重设计）+ `d754fe8cb5c5fdbf7366410462801e0f3d65c57d`（refactor(tools,config): provider 包内 ConfigSchema 转正）
 
 ## 背景（Context）
 
